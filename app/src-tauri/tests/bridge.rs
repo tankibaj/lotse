@@ -18,6 +18,8 @@ struct Recorder {
     pty: Mutex<Vec<u8>>,
     states: Mutex<Vec<&'static str>>,
     settings: Mutex<Vec<NotificationSettings>>,
+    /// Runs once, right after the first notification toggles arrive (a reconnect is then still in progress).
+    on_settings: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 impl Sink for Recorder {
@@ -32,6 +34,10 @@ impl Sink for Recorder {
     }
     fn notification_settings(&self, settings: NotificationSettings) {
         self.settings.lock().unwrap().push(settings);
+        let hook = self.on_settings.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 }
 
@@ -235,6 +241,37 @@ fn a_dead_daemon_is_noticed_restarted_and_reconnected() {
     assert!(matches!(call(&s, &a, Request::Ping), Response::Pong));
     // the notifier got the fresh toggles (a persisted pause must not be ignored after a reconnect)
     assert!(!rec.settings.lock().unwrap().is_empty());
+    shutdown_daemon(&s, &a);
+}
+
+/// The new link drops while the reconnect thread is still syncing settings: no stale "reconnected"
+/// after "disconnected", and a fresh reconnect still starts.
+#[test]
+fn a_link_that_drops_during_the_reconnect_sync_is_not_announced_as_reconnected() {
+    let s = setup();
+    let (a, rec) = open(&s);
+    a.connect_blocking().unwrap();
+    let bridge = a.clone();
+    *rec.on_settings.lock().unwrap() = Some(Box::new(move || {
+        // kill the daemon (and so the just-installed link) before the reconnect thread announces it
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _ = rt.block_on(bridge.request(Request::Shutdown));
+        wait_for("the new link to drop", || !bridge.is_connected());
+    }));
+    let _ = s.rt.block_on(a.request(Request::Shutdown));
+    wait_for("the second reconnect to finish", || {
+        let states = rec.states.lock().unwrap();
+        a.is_connected() && states.len() >= 3 && states.last() == Some(&"reconnected")
+    });
+    // let a stale announcement, if one is coming, arrive
+    wait_for("the last settings sync", || {
+        rec.settings.lock().unwrap().len() >= 2
+    });
+    assert_eq!(
+        *rec.states.lock().unwrap(),
+        ["disconnected", "disconnected", "reconnected"]
+    );
+    assert!(a.is_connected());
     shutdown_daemon(&s, &a);
 }
 

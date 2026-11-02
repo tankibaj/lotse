@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const HOOK_BIN_ENV: &str = "LOTSE_HOOK_BIN";
-/// Most child folders looked at when scanning a folder for repositories.
+/// Most child folders (files do not count) looked at when scanning a folder for repositories.
 const SCAN_LIMIT: usize = 500;
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -21,6 +21,8 @@ pub struct RepoScan {
     pub is_repo: bool,
     /// The folder itself, or its direct children that are repositories.
     pub repos: Vec<String>,
+    /// More than `SCAN_LIMIT` child folders: only the first ones by name were looked at.
+    pub truncated: bool,
 }
 
 /// `~` and `~/…` → the home directory; anything else must already be absolute.
@@ -58,20 +60,28 @@ pub fn scan(dir: &Path) -> Result<RepoScan, String> {
         return Ok(RepoScan {
             is_repo: true,
             repos: vec![dir.to_string_lossy().into_owned()],
+            truncated: false,
         });
     }
-    let mut repos: Vec<String> = std::fs::read_dir(dir)
+    let mut folders: Vec<PathBuf> = std::fs::read_dir(dir)
         .map_err(|e| format!("reading {}: {e}", dir.display()))?
         .filter_map(Result::ok)
-        .take(SCAN_LIMIT)
         .map(|e| e.path())
-        .filter(|p| p.is_dir() && is_repo(p))
+        .filter(|p| p.is_dir())
+        .collect();
+    // sort first: the cut must not depend on the directory order
+    folders.sort();
+    let truncated = folders.len() > SCAN_LIMIT;
+    folders.truncate(SCAN_LIMIT);
+    let repos = folders
+        .into_iter()
+        .filter(|p| is_repo(p))
         .map(|p| p.to_string_lossy().into_owned())
         .collect();
-    repos.sort();
     Ok(RepoScan {
         is_repo: false,
         repos,
+        truncated,
     })
 }
 
@@ -307,6 +317,34 @@ mod tests {
         assert!(own.is_repo);
         assert_eq!(own.repos.len(), 1);
         assert!(scan(&root.join("file.txt")).is_err());
+    }
+
+    #[test]
+    fn scan_counts_only_folders_toward_the_limit_and_sorts_before_cutting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // far more plain files than the limit must not push repositories out of the scan
+        for i in 0..SCAN_LIMIT + 100 {
+            std::fs::write(root.join(format!("f{i}.txt")), "x").unwrap();
+        }
+        for n in ["a-repo", "z-repo"] {
+            std::fs::create_dir_all(root.join(n).join(".git")).unwrap();
+        }
+        let s = scan(root).unwrap();
+        assert_eq!(s.repos.len(), 2, "{:?}", s.repos);
+        assert!(!s.truncated);
+
+        // more folders than the limit: the first SCAN_LIMIT by name are looked at, and it says so
+        for i in 0..SCAN_LIMIT {
+            std::fs::create_dir(root.join(format!("d{i:04}"))).unwrap();
+        }
+        let s = scan(root).unwrap();
+        assert!(s.truncated);
+        // "a-repo" sorts first, "z-repo" is past the limit: the cut is by name, not by directory order
+        assert_eq!(
+            s.repos,
+            vec![root.join("a-repo").to_string_lossy().into_owned()]
+        );
     }
 
     #[test]

@@ -79,6 +79,12 @@ export function TerminalView({
         fontFamily: initialFont.current.fontFamily,
         fontSize: initialFont.current.fontSize,
         lineHeight: LINE_HEIGHT,
+        // OSC 8 hyperlinks: xterm's default handler uses confirm() + window.open(), a no-op in WKWebView.
+        linkHandler: {
+          activate: (e, uri) => {
+            if (isLinkClick(e)) openExternal(uri);
+          },
+        },
         scrollback: SCROLLBACK_LINES,
         theme: readXtermTheme(),
       });

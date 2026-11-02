@@ -11,6 +11,8 @@ export interface RepoScan {
   is_repo: boolean;
   /** Git repositories found (the folder itself, or its direct children). */
   repos: string[];
+  /** More child folders than the scan limit: only the first ones by name were looked at. */
+  truncated?: boolean;
 }
 
 export interface HostBridge {

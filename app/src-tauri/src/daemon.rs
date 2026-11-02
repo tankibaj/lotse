@@ -289,16 +289,20 @@ impl Bridge {
             .ok_or_else(|| "not connected".into())
     }
 
-    /// Install a freshly handshaken connection and start reading from it.
-    fn install(self: &Arc<Self>, stream: UnixStream, hello: HelloOk) -> Result<(), String> {
+    /// Install a freshly handshaken connection and start reading from it. Returns the generation of the
+    /// link now in place (the one just installed, or the one that won the race).
+    fn install(self: &Arc<Self>, stream: UnixStream, hello: HelloOk) -> Result<u64, String> {
         let reader = stream.try_clone().map_err(|e| e.to_string())?;
         let generation = self.generation.fetch_add(1, Ordering::AcqRel) + 1;
         {
             // A connect command and the reconnect thread can both get here: the first one wins, the
             // other's stream is dropped (two links would deliver every event twice).
             let mut link = lock(&self.link);
-            if link.is_some() {
-                return Ok(());
+            // Under the lock: a drop of this link is handled by `link_lost` only after this, so it
+            // sees `reconnecting == false` and starts a new reconnect thread.
+            self.reconnecting.store(false, Ordering::Release);
+            if let Some(current) = link.as_ref() {
+                return Ok(current.generation);
             }
             *link = Some(Arc::new(Link {
                 writer: Mutex::new(stream),
@@ -311,7 +315,7 @@ impl Bridge {
             .name("lotse-daemon-reader".into())
             .spawn(move || bridge.read_loop(reader, generation))
             .map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(generation)
     }
 
     fn write(&self, bytes: &[u8]) -> Result<(), String> {
@@ -430,13 +434,21 @@ impl Bridge {
             pause = (pause * 2).min(Duration::from_secs(5));
             match self.config.establish() {
                 Ok((stream, hello)) => {
-                    if let Err(e) = self.install(stream, hello) {
-                        tracing::warn!("reconnect: {e}");
-                        continue;
-                    }
-                    self.reconnecting.store(false, Ordering::Release);
+                    let generation = match self.install(stream, hello) {
+                        Ok(g) => g,
+                        Err(e) => {
+                            tracing::warn!("reconnect: {e}");
+                            continue;
+                        }
+                    };
                     self.sync_notification_settings_blocking();
-                    if let Some(sink) = self.sink() {
+                    // The link may have dropped during the sync (a new reconnect thread then owns
+                    // the announcement). Announce under the link lock so a "disconnected" cannot
+                    // overtake it: `link_lost` clears the link under the same lock first.
+                    let link = lock(&self.link);
+                    if link.as_ref().is_some_and(|l| l.generation == generation)
+                        && let Some(sink) = self.sink()
+                    {
                         sink.connection("reconnected");
                     }
                     return;

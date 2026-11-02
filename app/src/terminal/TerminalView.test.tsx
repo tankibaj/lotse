@@ -149,6 +149,22 @@ describe('TerminalView', () => {
     expect(key({ key: 'a' })).toBe(true);
   });
 
+  it('routes OSC 8 hyperlinks through openExternal: ⌘-click on http(s) only', () => {
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+    mount();
+    const handler = FakeTerminal.last.options.linkHandler as {
+      activate: (e: Pick<MouseEvent, 'metaKey' | 'ctrlKey'>, uri: string) => void;
+    };
+    expect(handler).toBeDefined();
+    handler.activate({ metaKey: false, ctrlKey: false }, 'https://example.com/plain');
+    handler.activate({ metaKey: true, ctrlKey: false }, 'file:///etc/passwd');
+    handler.activate({ metaKey: true, ctrlKey: false }, 'javascript:alert(1)');
+    expect(open).not.toHaveBeenCalled();
+    handler.activate({ metaKey: true, ctrlKey: false }, 'https://example.com/a');
+    expect(open).toHaveBeenCalledWith('https://example.com/a', '_blank', 'noopener,noreferrer');
+    open.mockRestore();
+  });
+
   it('says so when the terminal cannot start', async () => {
     FakeTerminal.failOpen = 'no canvas';
     mount();
