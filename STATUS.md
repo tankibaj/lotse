@@ -14,8 +14,8 @@ Orchestrator ledger and the truth after compaction. Plan: [ALPHA_PLAN.md](ALPHA_
 | WP5 | Sheets, Settings, palette | merged | done | ~03:57 | 22m | $5.67 | 0 / 1 | full CI set on main green (vitest 301); playwright 39/39 + 12/12 combined after dev-handle fix | match (spot-checked new-session sheet); accepted: Shortcuts close ✕, focus ring, Remote disabled | 8bdf87d |
 | WP6 | Codex + OpenCode detection | merged | done | 04:15 | 29m | $6.19 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 208, vitest 301) | non-UI match from mock data; accepted: Codex `Fail` only on "Reconnect failed"/non-zero exit; no PNGs | cc8ad31 |
 | WP7 | Git, notifications, native | merged | done | ~03:56 | 10m | $1.79 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 164) | non-UI match; `notify.rs` not compiled until WP8 adds `pub mod notify;` | a1ca9cd |
-| WP8 | Integration | running | launched 04:18 · `wp8-integration` | ≤05:48 | | | | | | |
-| WP9 | Hardening + Alpha build | pending | | | | | | | | |
+| WP8 | Integration | merged | done | 04:57 | 39m | $10.87 | 0 / 1 | full CI set on main green (cargo 261, vitest 322), playwright 48/48 + 12/12, `tauri build --debug --no-bundle` ✓ | match (menus, split); accepted: Reveal in Finder app-only, static mock pane | 5ed83eb |
+| WP9 | Hardening + Alpha build | running | launched 05:02 · `wp9-hardening` | ≤06:32 | | | | | | |
 
 States: pending · running · review · merged · blocked. Branch, worktree and run dir live in each `status/WPn.md`.
 
@@ -23,13 +23,13 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Metric | Value | Notes |
 |---|---|---|
-| Session time (Alpha total) | 4h 30m | wall-clock of all runs; per WP in the table |
-| Merges into `main` | 8 | |
+| Session time (Alpha total) | 5h 09m | wall-clock of all runs; per WP in the table |
+| Merges into `main` | 9 | |
 | Failed changes | 2 | merge needed a fix or revert |
-| Change failure rate | 25 % | failed ÷ merges; target ≤ 15 % |
+| Change failure rate | 22 % | failed ÷ merges; target ≤ 15 % |
 | Escaped bugs | 0 | found after merge; see table below |
 | Handoffs / bounce-backs | 1 / 2 | |
-| Cost (Alpha total) | $45.00 | |
+| Cost (Alpha total) | $55.87 | |
 
 ## Escaped bugs
 
@@ -89,3 +89,6 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 04:05 · WP8 brief prepared (`_orch/wp8-extra.md`: widened owns + 12-item integration backlog from WP1–WP7 requests). Launch after WP6 merges (plan: WP8 serial). Only WP6 running.
 - 2026-11-02 04:16 · WP6 done exit 0, $6.19, session 5f02477c. Owns respected. It copied 6 real Codex PTY recordings from Orca (MIT, Lovecast Inc.) into `integrations/manifests/fixtures/recorded/`; scanned: no secrets, usernames anonymised. Orchestrator added `LICENSE-orca` beside them. `codex.toml`/`opencode.toml` derive from herdr (Apache-2.0) → license/NOTICE check for WP9. Merged → `cc8ad31`, full CI on main green, pushed, worktree + branch removed. Unverified: OSC 7501 spec, OpenCode plugin API/events (authored fixtures), Codex > 0.160.
 - 2026-11-02 04:18 · WP8 launched (serial, `harnex`, $15/90 min): `lotse-wt/wp8-integration` `feature/wp8-integration` run `_orch/runs/wp8-integration-0418` port 1421 (sheets e2e 1424). Brief extras `_orch/wp8-extra.md`: widened owns (lotsed, lotse-hook env contract, commands.ts, UI wiring, plugin-opener deps) + 13-item backlog. Extra allow `Bash(npm install:*)` for `@tauri-apps/plugin-opener`. WP8 touches auth/token contract, Tauri capabilities/CSP and deps → `/code-review` before Alpha.
+- 2026-11-02 04:58 · WP8 done exit 0, $10.87, session 14710652. All 13 backlog items done (none skipped); `tauri-plugin-opener` NOT added — WP8 uses `/usr/bin/open` with validated args (decision for Naim). Orchestrator spot-read `host.rs`: no shell, `git clone --` + `GIT_ALLOW_PROTOCOL` (no `ext::`), `open_url` http/https only, capability adds only `dialog:allow-open`. Excluded regenerated `parity/wp3|wp4` PNGs. Merged → `5ed83eb`; main: full CI set green (cargo 261, vitest 322), Playwright 48/48 + 12/12, `tauri build --debug --no-bundle` ✓; pushed; worktree + branch removed. Touches token contract, capabilities, host commands → `/code-review`.
+- 2026-11-02 05:00 · **Checkpoint 3 (show-and-continue):** real Claude Code session run → perm → run → done NOT run (headless). Steps in `status/WP8.md` "Unverified"; scripted equivalent passes (`app/src-tauri/tests/bridge.rs`, `lotsed/tests/detection.rs`). Not waiting.
+- 2026-11-02 05:02 · WP9 launched (serial, `harnex quick`, $15/90 min): `lotse-wt/wp9-hardening` `feature/wp9-hardening` run `_orch/runs/wp9-hardening-0502` port 1421. Brief extras `_orch/wp9-extra.md` (owns grant, 9-item checklist incl. packaging `lotsed`/`lotse-hook` into the `.app`, licences, audits, DOGFOOD.md, open decisions). Extra allows: `cargo install cargo-audit`, `cargo audit`, `npm audit`, `codesign`, `lsof`.
