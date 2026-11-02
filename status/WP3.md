@@ -8,7 +8,7 @@
 | Worktree / branch | ~/Repos/incubator/lotse-wt/wp3-sidebar · feature/wp3-sidebar (uncommitted, orchestrator commits) |
 | Started | 2026-11-02 03:11 |
 | ETA (first) | 04:45 (≈ 95 min) |
-| ETA (current) | done 03:40 |
+| ETA (current) | done 03:45 (after parity bounce-back) |
 | Phase | done |
 | Progress | 8 / 8 tasks · 100 % |
 | Last update | 2026-11-02 03:40 |
@@ -31,15 +31,21 @@
 - 03:29 fix round 1 — added 4 race tests (mutation-checked: removing the replay line fails one), stable clock timer, ↑/↓ from project row, "Custom" no-op when already custom, ⌘J on typed letter.
 - 03:35 UI review — CHANGES: 3 MUST-FIX. Fixed focus return after Allow/Retry/rename, perm buttons wrap at 200 px, Remove button contrast. Contrast of mock-inherited tokens (orange text, white on #007AFF, blue links) logged as accepted deviation.
 - 03:40 done — final: lint clean, typecheck clean, vitest 96/96 (10 files), build ok, playwright 12/12.
+- 03:41 bounce-back (orchestrator parity rejection) — agent label truncated before the branch on cards. Wrote failing tests first (Vitest class assertion + Playwright geometry at 260 and 200 px; both red on old code), then fixed.
+- 03:45 done again — lint clean, typecheck clean, vitest 97/97 (10 files), build ok, playwright 13/13. Parity PNGs retaken.
 
 ## Handoffs and bounce-backs
 | Time | Type | From → To | Reason | Resolved |
 |---|---|---|---|---|
 | 03:27 | bounce-back | reviewer → me | MUST-FIX: no tests for snapshot/event race in store.ts | yes, 03:29 |
 | 03:35 | bounce-back | UI reviewer → me | MUST-FIX: focus lost after inline actions; perm buttons clipped at 200 px; contrast | yes (contrast of mock tokens: accepted deviation) |
+| 03:41 | bounce-back | orchestrator → me | Parity gap: agent name truncated ("Claud…") while the branch kept width; mock truncates the branch | yes, 03:45 (see "Parity fix" below) |
 
 ## Blockers / requests for shared files
 See "Requests" in the final report.
+
+## Parity fix (bounce-back 03:41)
+`SessionCard.tsx` agent · branch line: agent label `shrink-0 whitespace-nowrap`, separator and ↑/± counts `shrink-0`, only the branch `min-w-0 truncate` (full name in `title`). Card is an `@container`; below 170 px card width (sidebar ≈ 220 px and narrower) the branch icon and the separator margin drop out so agent and counts stay whole with no overflow at 200 px (the branch can shrink to "…"). Tests (red before, green after): `Sidebar.test.tsx` "agent · branch line: only the branch truncates…" and `e2e/wp3-sidebar.spec.ts` "agent · branch line: the branch truncates, the agent label and counts stay whole, at 260 and 200 px" (clip/width/overflow geometry per card). Retaken: `parity/wp3/{light,dark}-1440-default.png`, `light-1440-w200.png` (also the other e2e shots). Numbers now: vitest 97/97, playwright 13/13. Parity table row "Card layout" stays match; the 200 px note: icon hidden below ≈ 220 px sidebar (accepted).
 
 ## Final report
 

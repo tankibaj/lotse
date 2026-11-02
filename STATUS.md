@@ -9,11 +9,11 @@ Orchestrator ledger and the truth after compaction. Plan: [ALPHA_PLAN.md](ALPHA_
 | WP0 | Foundation and contracts | merged | done · 9/9 | 02:12 | 81m | $5.10 | 0 / 1 | CI set on main green (cargo 23 pass/3 ign; vitest 24; lint/typecheck/build ✓) | match (accepted: page window frame, Beta right toolbar; placeholders by design) | 9d8374e |
 | WP1 | Daemon core | running | launched 03:10 · `wp1-daemon` | ≤04:40 | | | | | | |
 | WP2 | Status engine + Claude detection | merged | done | 03:30 | ~22m | $4.22 | 0 / 1 | Rust CI on worktree + full CI set on main green (detect 17+3, hook 30+4, proto 22, lotsed 1; vitest 24) | match from mock source (non-UI; no screenshots: Playwright MCP blocks file://) | 50acff6 |
-| WP3 | App shell, sidebar, status bar | review | run 1 done 03:37 ($6.74; vitest 96, playwright 12/12); parity bounce-back → resumed `wp3-sidebar-0340` | ≤04:00 | 27m | $6.74 | 0 / 3 | | gap: agent label truncates instead of branch (research.html:177) | |
-| WP4 | Terminal panes | running | launched 03:10 · `wp4-terminal` | ≤04:40 | | | | | | |
+| WP3 | App shell, sidebar, status bar | merged | done (2 runs) | 03:41 | 31m | $7.38 | 0 / 3 | main: vitest 97→183 after WP4, lint/typecheck/build ✓; playwright 13/13 (worktree), 39/39 combined on main after e2e fix | match after fix (agent label whole, branch truncates); accepted deviations in report | 1128fd8 |
+| WP4 | Terminal panes | merged | done | 03:40 | 30m | $7.01 | 0 / 0 | full CI set on main green (vitest 16 files/183); playwright 39/39 combined on main | match (accepted: real xterm wraps long lines where the mock clips) | 73c8345 |
 | WP5 | Sheets, Settings, palette | running | launched 03:35 · `wp5-sheets` | ≤05:05 | | | | | | |
-| WP6 | Codex + OpenCode detection | pending | | | | | | | | |
-| WP7 | Git, notifications, native | pending | | | | | | | | |
+| WP6 | Codex + OpenCode detection | running | launched 03:46 · `wp6-codex-opencode` | ≤05:16 | | | | | | |
+| WP7 | Git, notifications, native | running | launched 03:46 · `wp7-git-notify` | ≤05:16 | | | | | | |
 | WP8 | Integration | pending | | | | | | | | |
 | WP9 | Hardening + Alpha build | pending | | | | | | | | |
 
@@ -23,18 +23,19 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Metric | Value | Notes |
 |---|---|---|
-| Session time (Alpha total) | 2h 10m | wall-clock of all runs; per WP in the table |
-| Merges into `main` | 2 | |
-| Failed changes | 0 | merge needed a fix or revert |
-| Change failure rate | 0 % | failed ÷ merges; target ≤ 15 % |
+| Session time (Alpha total) | 2h 44m | wall-clock of all runs; per WP in the table |
+| Merges into `main` | 4 | |
+| Failed changes | 1 | merge needed a fix or revert |
+| Change failure rate | 25 % | failed ÷ merges; target ≤ 15 % |
 | Escaped bugs | 0 | found after merge; see table below |
 | Handoffs / bounce-backs | 1 / 2 | |
-| Cost (Alpha total) | $16.06 | |
+| Cost (Alpha total) | $24.33 | |
 
 ## Escaped bugs
 
 | Found | By | Origin WP | Severity | Description | Fix commit |
 |---|---|---|---|---|---|
+| 03:44 | orchestrator (combined e2e on main) | WP3 | low (test-only) | `wp3-sidebar.spec.ts` used page-wide `getByText('billing-api')`; WP4 tabs also show project names → strict-mode failure (11/39). Scoped to `sidebar-region`. | see Log 03:45 |
 
 ## Handoffs and bounce-backs
 
@@ -42,7 +43,7 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 |---|---|---|---|---|---|
 | 02:04 | WP0 | bounce-back | reviewer → WP0 | harnex review CHANGES (5 must-fix) | 02:10 |
 | ~03:30 | WP3 | bounce-back | reviewer / UI-UX → WP3 | race tests; 3 UI must-fix | yes |
-| 03:40 | WP3 | bounce-back | orchestrator → WP3 | parity: agent name truncated ("Claud…") instead of branch | open |
+| 03:40 | WP3 | bounce-back | orchestrator → WP3 | parity: agent name truncated ("Claud…") instead of branch | yes, 03:41 |
 | ~03:25 | WP2 | bounce-back | reviewer → WP2 | CHANGES: stuck sub-agent, Stop overwrote fail, tool_response forwarded | yes |
 | 03:30 | WP2 | handoff | WP2 → WP1/WP8 | lotsed: LOTSE_SESSION_ID env, HookEvent → engine, Process-exit + Tick observations; installer wiring | open |
 
@@ -76,3 +77,8 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 03:32 · WP2 run done exit 0, $4.22, session a75dd747. Owns-paths respected (detect engine/claude + tests, lotse-hook, integrations/claude). Tests use env_clear + temp HOME + `--config-dir` (never real `~/.claude`). Committed `2a63918`, merged → `50acff6`, full CI set on main green, pushed, worktree + branch removed. WP2 touches Claude settings installer (security-relevant) → suggest `/code-review`.
 - 2026-11-02 03:35 · WP5 launched into freed slot: `lotse-wt/wp5-sheets` `feature/wp5-sheets` run `_orch/runs/wp5-sheets-0335` port 1424 (from main 50acff6). Running: WP1, WP3, WP4, WP5. Next: WP6, WP7 when slots free.
 - 2026-11-02 03:38 · WP3 run 1 done exit 0, $6.74, session cc3282b7. Owns respected (+ `app/e2e/` specs, `parity/wp3/`). Orchestrator parity check vs `mock-light-1440-default.png`: agent label truncates ("Claud…") while branch keeps width; mock keeps "Claude Code" whole, spec truncates only project/title/branch/sub-agent → resumed follow-up `_orch/runs/wp3-sidebar-0340` (session cc3282b7). Other accepted deviations per WP3 report (tokens `—`, `<1m`, all projects expanded by default, disabled "Soon" menu items). WP3 requests: `commands.ts` += `openProjectStyle`, `splitSession`, `openNewSession(projectId)`; Dock badge + Reveal in Finder + folder drop → WP7/WP8; `playwright.config.ts` channel choice. Contrast of mock tokens (orange 2.0:1, white on blue 4.0:1) → decision for Naim. WP6 waits for a free slot (4 running: WP1, WP3-fix, WP4, WP5).
+- 2026-11-02 03:41 · WP3 follow-up done exit 0 (cumulative $7.38). Orchestrator verified: screenshot now "Claude Code · fix-ro… ↑2 ±3" like the mock; lint/typecheck/vitest 97/build + playwright 13/13 on port 1421. Committed, merged → `1128fd8`, full CI set on main green, pushed, worktree + branch removed.
+- 2026-11-02 03:42 · WP4 run done exit 0, $7.01, session 12adda78. Owns respected (+ `app/e2e/`, `parity/wp4/`). Parity re-checked (split2 dark app vs mock). Committed, merged → `73c8345`, full CI set on main green (vitest 183).
+- 2026-11-02 03:44 · Combined Playwright on main (WP3+WP4, port 1421): 11/39 failed — WP3 spec locator collided with WP4 tab labels (test-only). Fixed by orchestrator (`test(sidebar): scope e2e project locator…`), rerun 39/39, pushed. Counted as 1 failed change. Note: Playwright is not in the CI set; orchestrator will run combined e2e on main after every UI merge.
+- 2026-11-02 03:45 · WP4 requests: WP3 cards need `data-session-id`, `text/lotse-session` drag payload (WP3 already sets it), "Open in Split Right" → `openInSplit(id)` from `app/src/panes` (WP3 shows it disabled; needs `commands.ts` `splitSession` — orchestrator follow-up after wave 2); link opening needs `@tauri-apps/plugin-opener` (new dep + capability) → WP8; WebGL at 2x Retina **Unverified**; `panes/useSessions.ts` duplicates `lib/state` → consolidate in WP8.
+- 2026-11-02 03:46 · WP6 + WP7 launched (`harnex quick`, $15/90 min): WP6 `lotse-wt/wp6-codex-opencode` `feature/wp6-codex-opencode` run `_orch/runs/wp6-codex-opencode-0346` port 1421 · WP7 `lotse-wt/wp7-git-notify` `feature/wp7-git-notify` run `_orch/runs/wp7-git-notify-0346` port 1422. Brief extras: `_orch/wave2-extra.md`. Running: WP1, WP5, WP6, WP7. Next after all wave-2 merges: shared-file follow-ups (commands.ts additions, proto comment), then WP8.
