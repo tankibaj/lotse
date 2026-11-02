@@ -956,8 +956,10 @@ mod tests {
 
     #[test]
     fn the_group_id_is_dropped_once_the_survivors_of_an_exited_session_are_gone() {
-        // the shell exits at once; a background `sleep` keeps the process group non-empty
-        let h = spawn_sh("sleep 1 & exit 0");
+        // the shell exits at once; a background `sleep` keeps the process group non-empty.
+        // It ignores SIGHUP: the leader's exit hangs up the terminal's foreground group,
+        // which on slower machines killed `sleep` before the first assertion.
+        let h = spawn_sh("trap '' HUP; sleep 2 & exit 0");
         wait_until("the leader's exit", || !h.is_alive());
         assert!(h.lock().pgid.is_some(), "survivors still hold the group");
         wait_until("the group id to be released", || {
