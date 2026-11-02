@@ -1,0 +1,460 @@
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { onUiCommand } from '../lib/ui/commands';
+import { getSelectedSessionId } from '../lib/ui/selection';
+import { StatusBar } from '../statusbar';
+import { Sidebar } from './Sidebar';
+import { mount } from './testUtils';
+
+const card = (id: string) => {
+  const el = document.querySelector<HTMLElement>(`[data-sid="${id}"]`);
+  if (!el) throw new Error(`no card ${id}`);
+  return el;
+};
+const row = (name: string | RegExp) => screen.getByRole('button', { name });
+const cardMain = (id: string) => {
+  const el = card(id).querySelector<HTMLElement>('[data-card-main]');
+  if (!el) throw new Error(`card ${id} has no main button`);
+  return el;
+};
+
+async function ready() {
+  const view = mount(<Sidebar />);
+  await screen.findByText('billing-api');
+  return view;
+}
+
+afterEach(() => vi.restoreAllMocks());
+
+describe('tree', () => {
+  it('shows the mock data: 5 projects, 7 sessions, first session selected', async () => {
+    await ready();
+    for (const p of ['billing-api', 'praxis-web', 'infra-terraform', 'dotfiles', 'notes']) {
+      expect(screen.getByText(p)).toBeInTheDocument();
+    }
+    expect(document.querySelectorAll('[data-sid]')).toHaveLength(7);
+    expect(card('a1')).toHaveAttribute('aria-current', 'true');
+    expect(card('a2')).not.toHaveAttribute('aria-current');
+  });
+
+  it('card line 2: agent, branch without lotse/ prefix, ahead and dirty; non-git shows the agent only', async () => {
+    await ready();
+    const a1 = within(card('a1'));
+    expect(a1.getByText('Claude Code')).toBeInTheDocument();
+    expect(a1.getByText('fix-rounding')).toHaveAttribute('title', 'lotse/fix-rounding');
+    expect(a1.getByText('↑2')).toBeInTheDocument();
+    expect(a1.getByText('±3')).toBeInTheDocument();
+    const a7 = within(card('a7'));
+    expect(a7.getByText('Terminal')).toBeInTheDocument();
+    expect(card('a7').querySelector('.font-mono')).toBeNull();
+    expect(screen.getAllByRole('img', { name: 'Not a git repository' })).toHaveLength(1);
+  });
+
+  it('uses coarse time: minutes and hours, never seconds', async () => {
+    await ready();
+    expect(within(card('a1')).getByText('2m')).toBeInTheDocument(); // running 161 s
+    expect(within(card('a2')).getByText('1h')).toBeInTheDocument(); // idle since 1 h
+    expect(card('a1').textContent).not.toMatch(/\d+s\b/);
+  });
+
+  it('collapses and expands a project and remembers it', async () => {
+    await ready();
+    await userEvent.click(row(/billing-api/));
+    expect(document.querySelector('[data-sid="a1"]')).toBeNull();
+    expect(row(/billing-api/)).toHaveAttribute('aria-expanded', 'false');
+    expect(JSON.parse(localStorage.getItem('lotse-collapsed') ?? '[]')).toEqual(['p1']);
+    await userEvent.click(row(/billing-api/));
+    expect(card('a1')).toBeInTheDocument();
+  });
+
+  it('shows "No sessions · New session" for an empty project', async () => {
+    const { client } = await ready();
+    const handler = vi.fn();
+    const off = onUiCommand('openNewSession', handler);
+    await act(() => client.addProject({ path: '/x/empty', name: 'empty', color: null, icon: null }));
+    expect(await screen.findByText(/No sessions/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'New session' }));
+    expect(handler).toHaveBeenCalledTimes(1);
+    off();
+  });
+});
+
+describe('roll-up (collapsed only)', () => {
+  it('shows nothing for an expanded project', async () => {
+    await ready();
+    expect(document.querySelector('[data-rollup]')).toBeNull();
+  });
+
+  it('collapsed: needs-you glyphs first (permission and failure), no digit for one', async () => {
+    await ready();
+    await userEvent.click(row(/praxis-web/));
+    const r = row(/praxis-web/);
+    expect(r.querySelector('[data-rollup="perm"]')?.textContent).toBe('Needs permission'); // glyph title only, no digit
+    expect(r.querySelector('[data-rollup="fail"]')).not.toBeNull();
+    expect(r.querySelector('[data-rollup="run"]')).toBeNull();
+  });
+
+  it('collapsed: counts above one, and the top state when nothing needs you', async () => {
+    const { client } = await ready();
+    await userEvent.click(row(/billing-api/));
+    expect(row(/billing-api/).querySelector('[data-rollup="run"]')).not.toBeNull();
+    act(() => client.setStatus('a2', 'perm', { tool: 'Bash', summary: 'ls' }));
+    act(() => client.setStatus('a1', 'perm', { tool: 'Bash', summary: 'ls' }));
+    expect(row(/billing-api/).querySelector('[data-rollup="perm"]')?.textContent).toBe('Needs permission2');
+    expect(row(/billing-api/).querySelector('[data-rollup="run"]')).toBeNull();
+
+    await userEvent.click(row(/dotfiles/));
+    expect(row(/dotfiles/).querySelector('[data-rollup="done"]')).not.toBeNull();
+    await userEvent.click(row(/notes/));
+    expect(row(/notes/).querySelector('[data-rollup]')).toBeNull(); // idle shows nothing
+  });
+});
+
+describe('session cards', () => {
+  it('perm card: Allow / Always / Deny are visible without hover and call the client', async () => {
+    const { client } = await ready();
+    const resolve = vi.spyOn(client, 'resolvePermission');
+    const group = within(card('a3')).getByRole('group', { name: /^Permission/ });
+    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Allow', 'Always', 'Deny']);
+    expect(group.className).not.toMatch(/hidden|group-hover/);
+    await userEvent.click(within(group).getByRole('button', { name: 'Always' }));
+    expect(resolve).toHaveBeenCalledWith('a3', 'always');
+    expect(getSelectedSessionId()).toBe('a3'); // Alpha: also focuses the terminal
+    await waitFor(() => expect(within(card('a3')).queryByRole('group', { name: /^Permission/ })).toBeNull());
+    expect(within(card('a1')).queryByRole('group', { name: /^Permission/ })).toBeNull();
+  });
+
+  it('keyboard focus returns to the card after Allow, Retry and rename (the control it was on goes away)', async () => {
+    await ready();
+    await userEvent.click(within(card('a3')).getByRole('button', { name: 'Allow' }));
+    await waitFor(() => expect(cardMain('a3')).toHaveFocus());
+    await userEvent.click(within(card('a4')).getByRole('button', { name: /Retry/ }));
+    await waitFor(() => expect(cardMain('a4')).toHaveFocus());
+
+    fireEvent.contextMenu(card('a2'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(cardMain('a2')).toHaveFocus());
+    fireEvent.contextMenu(row(/dotfiles/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
+    await userEvent.keyboard('{Enter}');
+    await waitFor(() => expect(row(/dotfiles/)).toHaveFocus());
+  });
+
+  it('perm buttons wrap instead of overflowing a narrow sidebar', async () => {
+    await ready();
+    expect(within(card('a3')).getByRole('group', { name: /^Permission/ }).className).toMatch(/\bflex-wrap\b/);
+  });
+
+  it('fail card: Retry swaps with the time in the same row and restarts the session', async () => {
+    const { client } = await ready();
+    const retry = vi.spyOn(client, 'retrySession');
+    const a4 = within(card('a4'));
+    const time = a4.getByText('14m');
+    expect(time.className).toMatch(/group-hover:hidden/);
+    const btn = a4.getByRole('button', { name: /Retry/ });
+    expect(btn.className).toMatch(/group-hover:inline-flex/);
+    expect(btn.parentElement).toBe(time.parentElement); // same row: no layout shift
+    await userEvent.click(btn);
+    expect(retry).toHaveBeenCalledWith('a4');
+    await waitFor(() => expect(within(card('a4')).queryByRole('button', { name: /Retry/ })).toBeNull());
+  });
+
+  it('folds sub-agents: listed for the selected session or one that needs you, else one line', async () => {
+    await ready();
+    expect(within(card('a1')).getByText('explore-repo')).toBeInTheDocument(); // selected
+    expect(within(card('a3')).getByText('e2e-runner')).toBeInTheDocument(); // needs you
+    await userEvent.click(cardMain('a2'));
+    expect(within(card('a1')).queryByText('explore-repo')).toBeNull();
+    expect(within(card('a1')).getByText('2 sub-agents · 1 running')).toBeInTheDocument();
+  });
+
+  it('unread dot only while the session is not selected; selecting reads it', async () => {
+    const { client } = await ready();
+    const read = vi.spyOn(client, 'markRead');
+    expect(within(card('a6')).getByRole('img', { name: 'Unread' })).toBeInTheDocument();
+    await userEvent.click(cardMain('a6'));
+    expect(within(card('a6')).queryByRole('img', { name: 'Unread' })).toBeNull();
+    expect(read).toHaveBeenCalledWith('a6');
+  });
+
+  it('time labels hold still under the pointer and catch up once it leaves', async () => {
+    await ready();
+    const now = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(now + 10 * 60_000); // ten minutes later
+    const nav = screen.getByRole('navigation', { name: 'Projects' });
+    await userEvent.hover(nav);
+    await new Promise((r) => setTimeout(r, 1300)); // one clock tick
+    expect(within(card('a1')).getByText('2m')).toBeInTheDocument();
+    await userEvent.unhover(nav);
+    await waitFor(() => expect(within(card('a1')).getByText('12m')).toBeInTheDocument(), { timeout: 2500 });
+  });
+
+  it('is draggable for split (carries the session id)', async () => {
+    await ready();
+    const data: Record<string, string> = {};
+    fireEvent.dragStart(card('a2'), { dataTransfer: { setData: (k: string, v: string) => (data[k] = v), effectAllowed: '' } });
+    expect(data['text/lotse-session']).toBe('a2');
+  });
+});
+
+describe('keyboard', () => {
+  it('↑/↓ moves the selection and focus between sessions, across projects, and stops at the ends', async () => {
+    await ready();
+    cardMain('a1').focus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(getSelectedSessionId()).toBe('a2');
+    expect(cardMain('a2')).toHaveFocus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(getSelectedSessionId()).toBe('a3'); // next project
+    await userEvent.keyboard('{ArrowUp}{ArrowUp}{ArrowUp}');
+    expect(getSelectedSessionId()).toBe('a1'); // clamped at the top
+    cardMain('a7').focus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(getSelectedSessionId()).toBe('a7'); // clamped at the bottom
+  });
+
+  it('skips sessions of collapsed projects', async () => {
+    await ready();
+    await userEvent.click(row(/praxis-web/));
+    cardMain('a2').focus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(getSelectedSessionId()).toBe('a5');
+  });
+
+  it('Enter opens the focused session', async () => {
+    await ready();
+    cardMain('a4').focus();
+    await userEvent.keyboard('{Enter}');
+    expect(getSelectedSessionId()).toBe('a4');
+  });
+
+  it('↑/↓ from a focused project row steps to the session after / before the row, not from the selection', async () => {
+    await ready();
+    row(/praxis-web/).focus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(getSelectedSessionId()).toBe('a3'); // first session under the row (selection was a1)
+    row(/infra-terraform/).focus();
+    await userEvent.keyboard('{ArrowUp}');
+    expect(getSelectedSessionId()).toBe('a4'); // last session above the row
+  });
+
+  it('→ / ← expand and collapse the focused project', async () => {
+    await ready();
+    row(/billing-api/).focus();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(row(/billing-api/)).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.keyboard('{ArrowRight}');
+    expect(row(/billing-api/)).toHaveAttribute('aria-expanded', 'true');
+  });
+});
+
+describe('need-you filter', () => {
+  async function withBar() {
+    const view = mount(
+      <>
+        <Sidebar />
+        <StatusBar />
+      </>,
+    );
+    await screen.findByText('billing-api');
+    return view;
+  }
+
+  it('shows only sessions that need you, jumps to the most urgent, and Show all restores', async () => {
+    await withBar();
+    await userEvent.click(screen.getByRole('button', { name: '▲ 2 need you' }));
+    expect(screen.getByText('Needs you (2)')).toBeInTheDocument();
+    expect([...document.querySelectorAll('[data-sid]')].map((e) => e.getAttribute('data-sid'))).toEqual(['a3', 'a4']);
+    expect(screen.queryByText('billing-api')).toBeNull();
+    expect(getSelectedSessionId()).toBe('a3'); // perm outranks fail
+    expect(screen.getByRole('button', { name: /Showing 2 that need you/ })).toHaveAttribute('aria-pressed', 'true');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    expect(document.querySelectorAll('[data-sid]')).toHaveLength(7);
+    expect(screen.getByRole('button', { name: '▲ 2 need you' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('turns itself off when nothing needs you any more', async () => {
+    const { client } = await withBar();
+    await userEvent.click(screen.getByRole('button', { name: '▲ 2 need you' }));
+    await act(() => client.resolvePermission('a3', 'allow'));
+    await act(() => client.retrySession('a4'));
+    await waitFor(() => expect(document.querySelectorAll('[data-sid]')).toHaveLength(7));
+    expect(screen.getByRole('button', { name: '▲ 0 need you' })).toBeDisabled();
+  });
+});
+
+describe('truncation', () => {
+  it('agent · branch line: only the branch truncates; the agent label and ↑/± counts never shrink', async () => {
+    await ready();
+    const line = card('a3').querySelector<HTMLElement>('[data-line="git"]');
+    const agent = line?.querySelector<HTMLElement>('[data-part="agent"]');
+    const branch = line?.querySelector<HTMLElement>('[data-part="branch"]');
+    expect(agent?.className).toMatch(/\bshrink-0\b/);
+    expect(agent?.className).not.toMatch(/truncate|shrink-\[/);
+    expect(branch?.className).toMatch(/\btruncate\b/);
+    expect(branch?.className).toMatch(/\bmin-w-0\b/);
+    expect(branch).toHaveAttribute('title', 'lotse/patients-signals');
+    for (const part of ['ahead', 'dirty']) {
+      expect(line?.querySelector(`[data-part="${part}"]`)?.className).toMatch(/\bshrink-0\b/);
+    }
+  });
+
+  const longName = 'a-very-long-project-name-that-would-push-the-sidebar-wider-than-its-limit';
+  const longTitle = 'An extremely long session title that must be cut with an ellipsis and never widen the sidebar';
+  const longBranch = 'lotse/an-extremely-long-branch-name-for-a-worktree-session-that-goes-on-and-on';
+
+  it('cuts long project, title, branch and sub-agent names with "…" and keeps the full value in the tooltip', async () => {
+    const { client } = await ready();
+    await act(async () => {
+      const p = await client.addProject({ path: `/x/${longName}`, name: longName, color: null, icon: null });
+      const s = await client.createSession({
+        project_id: p.id,
+        agent: 'claude_code',
+        command: null,
+        title: longTitle,
+        worktree: { branch: longBranch },
+        first_prompt: null,
+      });
+      client.setStatus(s.id, 'perm', { tool: 'Bash', summary: 'ls' });
+    });
+    const name = await screen.findByText(longName);
+    expect(name).toHaveAttribute('title', longName);
+    expect(name.className).toMatch(/\btruncate\b/);
+    expect(name.className).toMatch(/\bmin-w-0\b/);
+
+    const title = screen.getByText(longTitle);
+    expect(title).toHaveAttribute('title', longTitle);
+    expect(title.className).toMatch(/\btruncate\b/);
+    expect(title.className).toMatch(/\bmin-w-0\b/);
+
+    const branch = screen.getByText(longBranch.replace('lotse/', ''));
+    expect(branch).toHaveAttribute('title', longBranch);
+    expect(branch.className).toMatch(/\btruncate\b/);
+    expect(branch.className).toMatch(/\bmin-w-0\b/);
+
+    // the list never scrolls sideways and cards never exceed it
+    expect(screen.getByRole('navigation', { name: 'Projects' }).className).toMatch(/overflow-x-hidden/);
+    expect(screen.getByText('e2e-runner').className).toMatch(/\btruncate\b/);
+  });
+});
+
+describe('context menus', () => {
+  it('project menu: items, Notifications submenu toggles mute, Esc closes', async () => {
+    const { client } = await ready();
+    fireEvent.contextMenu(row(/billing-api/));
+    const menu = screen.getByRole('menu', { name: 'billing-api actions' });
+    const labels = within(menu).getAllByRole('menuitem').map((i) => i.textContent);
+    expect(labels).toEqual([
+      expect.stringContaining('New Session…'),
+      expect.stringContaining('Notifications'),
+      expect.stringContaining('Change Icon & Color…'),
+      expect.stringContaining('Reveal in Finder'),
+      expect.stringContaining('Copy Path'),
+      expect.stringContaining('Rename…'),
+      expect.stringContaining('Remove from Lotse…'),
+    ]);
+    await userEvent.hover(within(menu).getByRole('menuitem', { name: /Notifications/ }));
+    const sub = screen.getByRole('menu', { name: 'Notifications' });
+    expect(within(sub).getByRole('menuitemcheckbox', { name: /Use global defaults/ })).toHaveAttribute('aria-checked', 'true');
+    expect(within(sub).getByRole('menuitemcheckbox', { name: /Failed/ })).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(within(sub).getByRole('menuitemcheckbox', { name: /Mute this project/ }));
+    await waitFor(() => expect(client.listProjects().then((p) => p[0]?.notifications)).resolves.toEqual({ mode: 'mute' }));
+    expect(await screen.findByRole('img', { name: 'Notifications muted' })).toBeInTheDocument();
+    expect(within(screen.getByRole('menu', { name: 'Notifications' })).getByRole('menuitemcheckbox', { name: /Mute this project/ })).toHaveAttribute('aria-checked', 'true');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('custom notifications start from the global toggles and can be changed per event', async () => {
+    const { client } = await ready();
+    fireEvent.contextMenu(row(/billing-api/));
+    await userEvent.hover(screen.getByRole('menuitem', { name: /Notifications/ }));
+    await userEvent.click(screen.getByRole('menuitemcheckbox', { name: /Custom for this project/ }));
+    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Sub-agent done/ }));
+    const p = (await client.listProjects())[0];
+    expect(p?.notifications).toEqual({ mode: 'custom', perm: true, fail: true, done: true, sub_agent_done: true });
+    expect(await screen.findByRole('img', { name: 'Custom notifications' })).toBeInTheDocument();
+  });
+
+  it('choosing "Custom for this project" again keeps the per-event toggles', async () => {
+    const { client } = await ready();
+    await client.updateProject('p1', { notifications: { mode: 'custom', perm: false, fail: true, done: false, sub_agent_done: true } });
+    fireEvent.contextMenu(row(/billing-api/));
+    await userEvent.hover(screen.getByRole('menuitem', { name: /Notifications/ }));
+    await userEvent.click(await screen.findByRole('menuitemcheckbox', { name: /Custom for this project/ }));
+    expect((await client.listProjects())[0]?.notifications).toEqual({ mode: 'custom', perm: false, fail: true, done: false, sub_agent_done: true });
+  });
+
+  it('Copy Path writes the project path to the clipboard', async () => {
+    await ready();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    fireEvent.contextMenu(row(/praxis-web/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Copy Path/ }));
+    expect(writeText).toHaveBeenCalledWith('/Users/naim/Repos/praxis-web');
+  });
+
+  it('Rename edits the project name in place', async () => {
+    const { client } = await ready();
+    fireEvent.contextMenu(row(/dotfiles/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Rename/ }));
+    const input = screen.getByRole('textbox', { name: 'Project name' });
+    expect(input).toHaveFocus();
+    await userEvent.keyboard('{Control>}a{/Control}dots{Enter}');
+    await waitFor(() => expect(client.listProjects().then((p) => p[3]?.name)).resolves.toBe('dots'));
+    expect(await screen.findByText('dots')).toBeInTheDocument();
+  });
+
+  it('Remove asks first, then removes the project and its sessions', async () => {
+    const { client } = await ready();
+    fireEvent.contextMenu(row(/dotfiles/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Remove from Lotse/ }));
+    const dialog = screen.getByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByText('dotfiles')).toBeInTheDocument();
+    fireEvent.contextMenu(row(/dotfiles/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Remove from Lotse/ }));
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.queryByText('dotfiles')).toBeNull());
+    expect(await client.listProjects()).toHaveLength(4);
+    expect(document.querySelector('[data-sid="a6"]')).toBeNull();
+  });
+
+  it('session menu: Open, Beta items disabled, Stop closes an idle session at once', async () => {
+    const { client } = await ready();
+    fireEvent.contextMenu(card('a2'));
+    const menu = screen.getByRole('menu', { name: 'Flyway migration V42 actions' });
+    expect(within(menu).getByRole('menuitem', { name: /Show Transcript/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(within(menu).getByRole('menuitem', { name: /Show Changes/ })).toHaveAttribute('aria-disabled', 'true');
+    expect(within(menu).getByRole('menuitem', { name: /Split Right/ })).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /Open/ }));
+    expect(getSelectedSessionId()).toBe('a2');
+    fireEvent.contextMenu(card('a2'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Stop/ }));
+    await waitFor(() => expect(document.querySelector('[data-sid="a2"]')).toBeNull());
+    expect(await client.listSessions()).toHaveLength(6);
+  });
+
+  it('Stop on a working session asks first', async () => {
+    await ready();
+    fireEvent.contextMenu(card('a5'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Stop/ }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Stop RDS Postgres 17?');
+    await userEvent.keyboard('{Escape}');
+    expect(card('a5')).toBeInTheDocument();
+  });
+
+  it('menus are keyboard operable: ↓ moves, Enter activates', async () => {
+    await ready();
+    fireEvent.contextMenu(card('a2'));
+    expect(screen.getByRole('menuitem', { name: /Open/ })).toHaveFocus();
+    await userEvent.keyboard('{ArrowDown}'); // Split Right is disabled: skipped
+    expect(screen.getByRole('menuitem', { name: /Rename/ })).toHaveFocus();
+    await userEvent.keyboard('{Enter}');
+    expect(screen.getByRole('textbox', { name: 'Session title' })).toBeInTheDocument();
+  });
+});
