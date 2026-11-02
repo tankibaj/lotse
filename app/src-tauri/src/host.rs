@@ -1,6 +1,6 @@
 //! Host commands the frozen `DaemonClient` has no calls for: repository scan, clone, project folder
 //! creation (Add project sheet), opening links and Reveal in Finder, and the agent integrations
-//! (Claude hooks, OpenCode plugin) of Settings › Agents.
+//! (status and cleanup of old global Claude hooks / OpenCode plugin) of Settings › Agents.
 //!
 //! Every path and URL comes from the webview, so each command validates its input and passes user
 //! values to child processes as separate arguments (never through a shell), after `--` where the
@@ -210,7 +210,8 @@ fn check_integration(agent: &str, action: &str) -> Result<(), String> {
     if !matches!(agent, "claude" | "opencode") {
         return Err(format!("unknown integration {agent:?}"));
     }
-    if !matches!(action, "install" | "uninstall" | "status") {
+    // No "install": Lotse never writes global agent config; status hooks are injected per pane.
+    if !matches!(action, "uninstall" | "status") {
         return Err(format!("unknown action {action:?}"));
     }
     Ok(())
@@ -242,13 +243,6 @@ fn run_integration(agent: &str, action: &str) -> Result<String, String> {
 #[tauri::command]
 pub async fn integration_status(agent: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || run_integration(&agent, "status"))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[tauri::command]
-pub async fn integration_install(agent: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || run_integration(&agent, "install"))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -412,9 +406,10 @@ mod tests {
 
     #[test]
     fn integration_names_are_whitelisted() {
-        assert!(check_integration("claude", "install").is_ok());
+        assert!(check_integration("claude", "uninstall").is_ok());
         assert!(check_integration("opencode", "status").is_ok());
-        assert!(check_integration("claude; rm -rf /", "install").is_err());
+        assert!(check_integration("claude", "install").is_err(), "Lotse never installs global hooks");
+        assert!(check_integration("claude; rm -rf /", "uninstall").is_err());
         assert!(check_integration("claude", "../x").is_err());
     }
 }

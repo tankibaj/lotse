@@ -12,13 +12,14 @@ const dim = 'text-dim';
 const h2 = 'mb-4 text-[20px] font-semibold';
 const check = 'accent-blue';
 
-const INTEGRATIONS: Partial<Record<AgentKind, { id: IntegrationId; noun: string }>> = {
-  claude_code: { id: 'claude', noun: 'hooks' },
-  opencode: { id: 'opencode', noun: 'plugin' },
+/** Agents whose status hooks Lotse injects per pane; `where` is the config Lotse leaves alone. */
+const INTEGRATIONS: Partial<Record<AgentKind, { id: IntegrationId; where: string }>> = {
+  claude_code: { id: 'claude', where: 'Claude settings' },
+  opencode: { id: 'opencode', where: 'OpenCode config' },
 };
 
-/** "Install hooks" / "Remove hooks" next to an agent's version (app only; backup and marker are the installer's). */
-function IntegrationControl({ kind }: { kind: AgentKind }) {
+/** "Remove old global hooks", only while an earlier Lotse version's global install is still present (app only). */
+function CleanupControl({ kind, label }: { kind: AgentKind; label: string }) {
   const meta = INTEGRATIONS[kind];
   const bridge = integrationBridge();
   const [state, setState] = useState<IntegrationState | 'busy' | null>(null);
@@ -32,31 +33,28 @@ function IntegrationControl({ kind }: { kind: AgentKind }) {
       alive = false;
     };
   }, [bridge, id]);
-  if (!bridge || !meta || state === null) return null;
-  const act = async (run: () => Promise<void>) => {
+  if (!bridge || !meta || state === null || state === 'missing') return null;
+  const remove = async () => {
     setState('busy');
     setError(null);
     try {
-      await run();
+      await bridge.uninstall(meta.id);
       setState(await bridge.status(meta.id));
     } catch (e) {
       setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'failed');
       setState(await bridge.status(meta.id).catch(() => null));
     }
   };
-  const installed = state === 'installed';
   return (
     <>
-      <span className="text-[11px] text-dim" data-testid={`integration-${meta.id}`}>
-        {state === 'busy' ? '…' : installed ? `${meta.noun} installed` : state === 'outdated' ? `${meta.noun} outdated` : `${meta.noun} not installed`}
-      </span>
       <button
         type="button"
         className="text-[12px] text-blue disabled:opacity-50"
+        aria-label={`Remove old global hooks for ${label}`}
         disabled={state === 'busy'}
-        onClick={() => void act(() => (installed ? bridge.uninstall(meta.id) : bridge.install(meta.id)))}
+        onClick={() => void remove()}
       >
-        {installed ? `Remove ${meta.noun}` : `Install ${meta.noun}`}
+        Remove old global hooks
       </button>
       {error && <span role="alert" className="text-[11px] text-red">{error}</span>}
     </>
@@ -84,9 +82,14 @@ export function AgentsSection({ draft }: { draft: SettingsDraft }) {
               {info && (info.found
                 ? <span className="text-[11px] text-green">{[info.version, info.integration].filter(Boolean).join(' · ') || 'found'}</span>
                 : <span className="text-[11px] text-orange">not found on PATH</span>)}
-              {INTEGRATIONS[kind] && <IntegrationControl kind={kind} />}
+              {INTEGRATIONS[kind] && <CleanupControl kind={kind} label={label} />}
               <button type="button" className="ml-auto text-[12px] text-blue" aria-label={`Reset ${label} command`} onClick={() => set(def)}>Reset</button>
             </div>
+            {INTEGRATIONS[kind] && (
+              <p className={`pb-1.5 text-[11px] ${dim}`} data-testid={`live-status-${INTEGRATIONS[kind].id}`}>
+                Live status: automatic in Lotse panes (nothing is written to your {INTEGRATIONS[kind].where})
+              </p>
+            )}
             <input
               id={`cmd-${kind}`}
               className="w-full rounded-md bg-side px-2 py-1.5 font-mono text-[12px] ring-1 ring-line"

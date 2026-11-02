@@ -23,7 +23,6 @@ function bridge(initial: IntegrationState) {
   const box = { state: initial };
   return {
     status: vi.fn<IntegrationBridge['status']>(async () => box.state),
-    install: vi.fn<IntegrationBridge['install']>(async () => void (box.state = 'installed')),
     uninstall: vi.fn<IntegrationBridge['uninstall']>(async () => void (box.state = 'missing')),
   };
 }
@@ -38,42 +37,57 @@ describe('lotse-hook status text', () => {
 });
 
 describe('Settings › Agents integrations (app only)', () => {
-  it('installs and removes the Claude hooks and the OpenCode plugin', async () => {
-    const b = bridge('missing');
+  it('offers no install action and says status is automatic', async () => {
+    setIntegrationBridge(bridge('missing'));
+    mountWp5();
+    await open();
+    expect(await screen.findByTestId('live-status-claude')).toHaveTextContent(
+      'Live status: automatic in Lotse panes (nothing is written to your Claude settings)',
+    );
+    expect(screen.getByTestId('live-status-opencode')).toHaveTextContent('nothing is written to your OpenCode config');
+    expect(screen.queryByRole('button', { name: /install|plugin/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /remove old global hooks/i })).toBeNull(); // nothing installed: no cleanup
+  });
+
+  it('shows cleanup only while an old global install is present, and removes it', async () => {
+    const b = bridge('installed');
     setIntegrationBridge(b);
     mountWp5();
     await open();
-    const claude = await screen.findByTestId('integration-claude');
-    expect(claude).toHaveTextContent('hooks not installed');
-    await userEvent.click(screen.getByRole('button', { name: 'Install hooks' }));
-    await waitFor(() => expect(screen.getByTestId('integration-claude')).toHaveTextContent('hooks installed'));
-    expect(b.install).toHaveBeenCalledWith('claude');
-    await userEvent.click(screen.getByRole('button', { name: 'Remove hooks' }));
-    await waitFor(() => expect(screen.getByTestId('integration-claude')).toHaveTextContent('hooks not installed'));
-    expect(b.uninstall).toHaveBeenCalledWith('claude');
-    // OpenCode has its own row and noun
-    expect(screen.getByTestId('integration-opencode')).toHaveTextContent('plugin not installed');
-    await userEvent.click(screen.getByRole('button', { name: 'Install plugin' }));
-    expect(b.install).toHaveBeenCalledWith('opencode');
+    const remove = await screen.findByRole('button', { name: 'Remove old global hooks for Claude Code' });
+    expect(screen.getAllByRole('button', { name: /remove old global hooks/i })).toHaveLength(2); // Claude Code + OpenCode
+    expect(screen.queryByRole('button', { name: /install/i })).toBeNull();
+    await userEvent.click(remove);
+    await waitFor(() => expect(b.uninstall).toHaveBeenCalledWith('claude'));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove old global hooks for Claude Code' })).toBeNull());
+    expect(screen.getByRole('button', { name: 'Remove old global hooks for OpenCode' })).toBeInTheDocument(); // other agent untouched
   });
 
-  it('shows the installer\'s refusal (a foreign plugin file is never overwritten)', async () => {
-    const b = bridge('missing');
-    b.install.mockRejectedValue('lotse-status.js exists and is not the Lotse plugin; not overwriting it');
+  it('also offers cleanup for a partial or outdated old install', async () => {
+    setIntegrationBridge(bridge('outdated'));
+    mountWp5();
+    await open();
+    expect(await screen.findByRole('button', { name: 'Remove old global hooks for Claude Code' })).toBeEnabled();
+  });
+
+  it('shows the uninstaller\'s error', async () => {
+    const b = bridge('installed');
+    b.uninstall.mockRejectedValue('settings.json is not valid JSON');
     setIntegrationBridge(b);
     mountWp5();
     await open();
-    await userEvent.click(await screen.findByRole('button', { name: 'Install plugin' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('not overwriting it');
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove old global hooks for Claude Code' }));
+    expect(await screen.findAllByRole('alert')).not.toHaveLength(0);
+    expect(screen.getAllByRole('alert')[0]).toHaveTextContent('not valid JSON');
   });
 
-  it('shows nothing in the browser (no bridge)', async () => {
+  it('shows no cleanup in the browser (no bridge), only the live-status line', async () => {
     setIntegrationBridge(null);
     mountWp5();
     await open();
     await screen.findByLabelText('Claude Code launch command');
-    expect(screen.queryByTestId('integration-claude')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Install/ })).toBeNull();
+    expect(screen.getByTestId('live-status-claude')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install|remove old/i })).toBeNull();
   });
 });
 

@@ -51,7 +51,6 @@ pub fn run() {
             host::open_url,
             host::reveal_in_finder,
             host::integration_status,
-            host::integration_install,
             host::integration_uninstall,
         ])
         .run(tauri::generate_context!())
