@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { emitUiCommand } from '../lib/ui/commands';
@@ -150,6 +150,28 @@ describe('folder drops on the sidebar', () => {
     expect(side.style.outline).toContain('dashed');
     await act(async () => drop(['/Users/naim/Repos/dropped']));
     expect(add).toHaveBeenCalledWith({ path: '/Users/naim/Repos/dropped', name: null, color: null, icon: null });
+    side.remove();
+  });
+
+  it('opens New Session with the project after a single folder is dropped', async () => {
+    const { side, drop } = setup({});
+    const { client } = mountWp5();
+    await act(async () => drop(['/Users/naim/Repos/dropped']));
+    const project = (await client.listProjects()).find((p) => p.path === '/Users/naim/Repos/dropped');
+    expect(project).toBeDefined();
+    expect(getOverlay()).toEqual({ name: 'newSession', projectId: project?.id });
+    const dlg = await screen.findByRole('dialog', { name: 'New session' });
+    await waitFor(() => expect(within(dlg).getByLabelText('Project')).toHaveValue(project?.id));
+    side.remove();
+  });
+
+  it('adds several dropped folders without opening New Session', async () => {
+    const { side, drop } = setup({});
+    const { client } = mountWp5();
+    const add = vi.spyOn(client, 'addProject');
+    await act(async () => drop(['/Users/naim/Repos/x1', '/Users/naim/Repos/x2']));
+    expect(add).toHaveBeenCalledTimes(2);
+    expect(getOverlay()).toBeNull();
     side.remove();
   });
 

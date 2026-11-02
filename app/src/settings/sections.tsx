@@ -8,6 +8,7 @@ import type { ThemePref } from '../theme';
 import { AGENTS } from '../sheets/validation';
 import { INTERFACE_SIZE, SYSTEM_FONT, TERMINAL_SIZE, cssFamily, interfaceStack, terminalStack } from './appearance';
 import { useInstalledFonts } from './fonts';
+import { lanState } from './remote';
 import type { SettingsDraft } from './useSettings';
 
 const dim = 'text-dim';
@@ -255,12 +256,13 @@ export function AppearanceSection({ draft }: { draft: SettingsDraft }) {
 }
 
 export function RemoteSection() {
+  const lan = lanState();
   return (
     <section aria-labelledby="sec-remote">
       <h2 id="sec-remote" className={h2}>Remote</h2>
       <label className="flex items-center gap-2">
-        <input type="checkbox" className={check} checked={false} disabled readOnly />
-        Allow access from devices on my network <span className={dim}>(off)</span>
+        <input type="checkbox" className={check} checked={lan.on} disabled readOnly />
+        Allow access from devices on my network <span className={dim}>({lan.on ? 'on' : 'off'})</span>
       </label>
       <p className={`mt-2 text-[12px] ${dim}`}>Not available in Alpha: Lotse opens no network listener. Remote access arrives in a later release.</p>
     </section>

@@ -6,15 +6,21 @@ import { getOverlay, openProjectStylePicker } from './overlay';
 import { ICON_GROUPS, SWATCHES, filterIcons } from './symbols';
 
 describe('symbols', () => {
-  it('has 15 swatches and the mock\'s symbol groups', () => {
+  it('has 15 swatches and the symbol groups', () => {
     expect(Object.keys(SWATCHES)).toHaveLength(15);
-    expect(Object.keys(ICON_GROUPS)).toEqual(['Development', 'Objects', 'Symbols']);
+    expect(Object.keys(ICON_GROUPS)).toEqual(['Development', 'Objects', 'Nature', 'Symbols']);
   });
   it('filters by name or group and drops empty groups', () => {
     expect(filterIcons('rock')).toEqual([['Development', ['rocket']]]);
     expect(filterIcons('objects')[0]?.[0]).toBe('Objects');
-    expect(filterIcons('  STAR ')).toEqual([['Symbols', ['star']]]);
+    expect(filterIcons('  STAR ')).toContainEqual(['Symbols', expect.arrayContaining(['star'])]);
     expect(filterIcons('zzz')).toEqual([]);
+  });
+  it('also matches keywords, SF Symbol names and several words', () => {
+    expect(filterIcons('hosting')).toContainEqual(['Development', ['cloud']]);
+    expect(filterIcons('ladybug')).toEqual([['Development', ['bug']]]);
+    expect(filterIcons('arrow.triangle.branch')).toEqual([['Development', ['git-branch']]]);
+    expect(filterIcons('git merge')).toEqual([['Development', ['git-merge']]]);
   });
 });
 
@@ -58,6 +64,21 @@ describe('Project colour and icon picker', () => {
     await userEvent.clear(within(dlg).getByLabelText('Search symbols'));
     await userEvent.type(within(dlg).getByLabelText('Search symbols'), 'zzzz');
     expect(within(dlg).getByText('No symbols')).toBeInTheDocument();
+  });
+
+  it('the search matches keywords, not just names', async () => {
+    mountWp5();
+    const dlg = await open();
+    await userEvent.type(within(dlg).getByLabelText('Search symbols'), 'hosting');
+    expect(within(dlg).getByRole('button', { name: 'cloud' })).toBeInTheDocument();
+    expect(within(dlg).queryByRole('button', { name: 'rocket' })).toBeNull();
+  });
+
+  it('saves an icon picked from the new symbols under its catalogue id', async () => {
+    const { client } = mountWp5();
+    const dlg = await open();
+    await userEvent.click(within(dlg).getByRole('button', { name: 'tortoise' }));
+    expect((await client.listProjects()).find((p) => p.id === 'p1')?.icon).toBe('tortoise');
   });
 
   it('shows a save failure', async () => {

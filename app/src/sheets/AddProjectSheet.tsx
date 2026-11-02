@@ -4,7 +4,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { useClient } from '../lib/client';
 import { hostBridge } from './hostBridge';
 import type { RepoScan } from './hostBridge';
-import { closeOverlay, getOverlay, useOverlay } from './overlay';
+import { closeOverlay, getOverlay, openOverlay, useOverlay } from './overlay';
 import { Field, Modal, btnCls, inputCls, labelCls, linkCls, primaryCls, rowHover } from './ui';
 import { useSnapshot } from './useSnapshot';
 import { joinPath, repoNameFromUrl, validateCloneUrl, validateNewPath, validatePath, validateProjectName } from './validation';
@@ -89,10 +89,17 @@ export function AddProjectSheet() {
   const exists = (p: string) => projects.some((x) => x.path === p);
   const picked = scan ? scan.repos.filter((r) => !off.has(r) && !exists(r)) : [];
 
+  // After adding, the New Session sheet takes over with the first added project selected (spec: Alpha ›
+  // Add a project). The job can outlive the sheet (Esc during a clone): then leave whatever opened since.
   const add = async (paths: string[]) => {
-    for (const p of paths) await client.addProject({ path: p, name: null, color: null, icon: null });
-    // The job can outlive the sheet (Esc during a clone): do not close whatever opened since.
-    if (getOverlay()?.name === 'addProject') closeOverlay();
+    let first: string | undefined;
+    for (const p of paths) {
+      const added = await client.addProject({ path: p, name: null, color: null, icon: null });
+      first ??= added.id;
+    }
+    if (getOverlay()?.name !== 'addProject') return;
+    if (first) openOverlay({ name: 'newSession', projectId: first });
+    else closeOverlay();
   };
 
   // A folder: add it, or, when it holds several repositories (and is none itself), offer each.

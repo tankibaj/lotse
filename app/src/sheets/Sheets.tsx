@@ -63,7 +63,13 @@ export function Sheets() {
             return;
           }
         }
-        for (const path of paths) await client.addProject({ path, name: null, color: null, icon: null });
+        let first: string | undefined;
+        for (const path of paths) {
+          const added = await client.addProject({ path, name: null, color: null, icon: null });
+          first ??= added.id;
+        }
+        // one folder dropped: the New Session sheet opens with it selected, like after Browse
+        if (paths.length === 1 && first) openOverlay({ name: 'newSession', projectId: first });
       } catch {
         openOverlay({ name: 'addProject' }); // let the sheet explain what went wrong
       }
