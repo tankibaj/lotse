@@ -25,9 +25,9 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 |---|---|---|
 | Session time (Alpha total) | 5h 26m | wall-clock of all runs; per WP in the table |
 | Merges into `main` | 10 | |
-| Failed changes | 2 | merge needed a fix or revert |
-| Change failure rate | 20 % | failed ÷ merges; target ≤ 15 % |
-| Escaped bugs | 0 | found after merge; see table below |
+| Failed changes | 3 | merge needed a fix or revert |
+| Change failure rate | 30 % | failed ÷ merges; target ≤ 15 % |
+| Escaped bugs | 1 | found after merge; see table below |
 | Handoffs / bounce-backs | 1 / 2 | |
 | Cost (Alpha total) | $60.38 | |
 
@@ -35,6 +35,7 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Found | By | Origin WP | Severity | Description | Fix commit |
 |---|---|---|---|---|---|
+| 2026-11-02 09:50 | orchestrator (GitHub Actions) | WP8 | low (test-only; GitHub CI red on `main` since the WP8 merge, never checked: runbook verified CI locally only) | `lotsed` test `a_client_that_stops_reading_…` used a fixed 5 s sleep; on the slower macos-14 runner the 200 MB flood hadn't filled the 64 MiB queue → no disconnect. Now waits for a completion marker. | see log |
 | 03:44 | orchestrator (combined e2e on main) | WP3 | low (test-only) | `wp3-sidebar.spec.ts` used page-wide `getByText('billing-api')`; WP4 tabs also show project names → strict-mode failure (11/39). Scoped to `sidebar-region`. | see Log 03:45 |
 | 04:03 | orchestrator (combined e2e on main) | WP3/WP5 | low (dev-only) | both set `window.__lotse = {…}` and WP5 overwrote WP3's `client` → 30-project e2e failed. Merged handles. | `fix(app): merge dev-only window.__lotse handles…` |
 
@@ -95,3 +96,8 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 05:20 · WP9 done exit 0, $4.51, session 7aa665ec. Security fixes with tests: `lotse-hook` drops prompt/assistant text/file contents from Claude payloads (orchestrator checked: nothing in lotsed/detect reads them), capabilities `core:default` → 5 explicit permissions, CSP + `object-src/base-uri/form-action 'none'`. `cargo audit` 0 vulns (5 Linux-only warnings), `npm audit --omit=dev` 0, full audit 11 moderate dev-only (minimatch via eslint) justified. `THIRD_PARTY_NOTICES.md` + `LICENSE-herdr`; 5 MPL-2.0 crates flagged (accepted). README install/uninstall, `DOGFOOD.md`, issue templates. Orchestrator: `chmod +x scripts/build-app.sh`, restored regenerated parity PNGs, merged → `69e1adb`, full CI set + Playwright on main green, pushed, worktree + branch removed.
 - 2026-11-02 05:24 · **Alpha build on main:** `scripts/build-app.sh` → `target/release/bundle/macos/Lotse.app` (13.9 MiB, ad-hoc signed, `lotsed` + `lotse-hook` in `Contents/MacOS`), smoke test ok (bundled app started its daemon). Live check: `lsof -i` on app + lotsed empty; data dir 0700, sock/token/db/pid/log 0600.
 - 2026-11-02 05:25 · **WP0–WP9 merged. Checkpoint 4 for Naim:** install `target/release/bundle/macos/Lotse.app` and run `DOGFOOD.md`. Open decisions (DOGFOOD § 3): `PostToolUseFailure` → run vs fail; light-theme contrast tokens; notification banner flag (proto bump); `/usr/bin/open` vs `tauri-plugin-opener`. Known flakes: one vitest test (2×/~55 runs, unnamed); `lotsed/tests/sessions.rs::a_client_that_stops_reading_is_disconnected_instead_of_buffered_forever` under load (fixed 5 s sleep → poll). Unverified live: real Claude session run → perm → run → done, banner/sound/Dock badge, WebGL on Retina, OpenCode plugin load. `/code-review` suggested for WP1 (socket/token), WP2 (settings installer), WP8 (bridge/host commands/capabilities), WP0 CI.
+- 2026-11-02 06:35 · Fallback wake-up: alive file stale, nothing to do — WP0–WP9 merged, no open runs or worktrees, main == origin/main (db9ad93). Awaiting Naim at Checkpoint 4.
+- 2026-11-02 07:35 · Fallback wake-up: alive file stale, nothing to do — WP0–WP9 merged, no open runs or worktrees, main == origin/main (db9ad93). Awaiting Naim at Checkpoint 4.
+- 2026-11-02 08:35 · Fallback wake-up: alive file stale, nothing to do — WP0–WP9 merged, no open runs or worktrees, main == origin/main (db9ad93). Awaiting Naim at Checkpoint 4.
+- 2026-11-02 09:35 · Fallback wake-up: alive file stale, nothing to do — WP0–WP9 merged, no open runs or worktrees, main == origin/main (db9ad93). Awaiting Naim at Checkpoint 4.
+- 2026-11-02 09:50 · Main session back after the usage pause: the fallback task ran WP0–WP9 end to end. Found GitHub Actions red on `main` since the WP8 merge (local CI set was green); fixed the timing-dependent test; counted as failed change + escaped bug (CFR 30 %). Runbook gap: check `gh run list` after each push.

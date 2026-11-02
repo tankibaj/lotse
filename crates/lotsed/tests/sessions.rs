@@ -246,12 +246,23 @@ fn a_client_that_stops_reading_is_disconnected_instead_of_buffered_forever() {
         Some(Frame::Control(Message::Response(_)))
     ));
 
-    // 200 MB of output: far more than the daemon is willing to queue (64 MiB) for one client
+    // 200 MB of output: far more than the daemon is willing to queue (64 MiB) for one client.
+    // Wait for the flood to finish (marker file) rather than a fixed sleep: slow CI runners
+    // need longer, and reading early would drain the queue below the limit.
+    let marker = d.project_dir("proj").join("flood-done");
     a.send_pty(
         &session.id,
-        b"head -c 200000000 /dev/zero | tr '\\0' x; echo\n",
+        format!(
+            "head -c 200000000 /dev/zero | tr '\\0' x; echo; touch '{}'\n",
+            marker.display()
+        )
+        .as_bytes(),
     );
-    std::thread::sleep(Duration::from_secs(5));
+    let deadline = std::time::Instant::now() + Duration::from_secs(120);
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(marker.exists(), "the flood never finished");
 
     // (macOS refuses the option once the peer closed the socket, which is what we expect)
     let _ = slow.set_read_timeout(Some(Duration::from_secs(15)));
