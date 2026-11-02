@@ -10,6 +10,7 @@
 //! - [`detect_glue`]: hooks, OSC 7501, VT screen and process signals into the status engine (WP8)
 //! - [`git_glue`]: `lotse-git` wiring: git line, worktrees (WP8)
 //! - [`agent_env`]: agent-host variables dropped from panes, status plugins injected per pane
+//! - [`perm_answer`]: option list on a permission prompt → the keys that answer it
 //! - [`launch`]: launch commands, PATH lookup, version detection, login environment
 //! - [`db`]: SQLite schema and migrations
 
@@ -24,6 +25,7 @@ pub mod git_glue;
 pub mod hub;
 pub mod launch;
 pub mod lifecycle;
+pub mod perm_answer;
 pub mod ring;
 pub mod secure;
 pub mod server;

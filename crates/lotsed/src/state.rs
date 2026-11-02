@@ -70,7 +70,10 @@ fn session_err(e: SessionError) -> Response {
         | SessionError::ShuttingDown
         | SessionError::SlowClient
         | SessionError::InputBacklog => ErrorCode::Unavailable,
-        SessionError::Exited | SessionError::StillRunning => ErrorCode::Conflict,
+        SessionError::Exited
+        | SessionError::StillRunning
+        | SessionError::NotAtPrompt
+        | SessionError::NoSuchChoice => ErrorCode::Conflict,
         SessionError::BadSize => ErrorCode::InvalidRequest,
     };
     err(code, e.to_string())
@@ -245,10 +248,16 @@ impl State {
                     Response::Ok
                 }
             },
-            // Alpha only focuses the terminal; the hook-based decision flow is Beta.
-            Request::ResolvePermission { session_id, .. } => match self.session(&session_id) {
+            // Types the answer into the pane; Conflict when there is nothing to answer (the UI
+            // ignores it). The status moves on by the agent's hook or the screen, never here.
+            Request::ResolvePermission {
+                session_id,
+                decision,
+            } => match self.session(&session_id) {
                 None => not_found("session"),
-                Some(_) => Response::Ok,
+                Some(h) => h
+                    .resolve_permission(decision)
+                    .map_or_else(session_err, |()| Response::Ok),
             },
             Request::Attach {
                 session_id,

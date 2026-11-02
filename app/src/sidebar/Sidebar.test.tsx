@@ -217,9 +217,42 @@ describe('session cards', () => {
     expect(group.className).not.toMatch(/hidden|group-hover/);
     await userEvent.click(within(group).getByRole('button', { name: 'Always' }));
     expect(resolve).toHaveBeenCalledWith('a3', 'always');
-    expect(getSelectedSessionId()).toBe('a3'); // Alpha: also focuses the terminal
+    expect(getSelectedSessionId()).toBe('a3'); // the terminal gets focus too, so the user sees the answer land
     await waitFor(() => expect(within(card('a3')).queryByRole('group', { name: /^Permission/ })).toBeNull());
     expect(within(card('a1')).queryByRole('group', { name: /^Permission/ })).toBeNull();
+  });
+
+  it('each button sends its own decision for its own session', async () => {
+    const { client } = await ready();
+    const resolve = vi.spyOn(client, 'resolvePermission').mockResolvedValue();
+    await userEvent.click(within(card('a3')).getByRole('button', { name: 'Allow' }));
+    await userEvent.click(within(card('a3')).getByRole('button', { name: 'Deny' }));
+    expect(resolve.mock.calls).toEqual([
+      ['a3', 'allow'],
+      ['a3', 'deny'],
+    ]);
+  });
+
+  it('disables the three buttons while the daemon answers, then enables them again', async () => {
+    const { client } = await ready();
+    let finish: () => void = () => {};
+    const resolve = vi.spyOn(client, 'resolvePermission').mockReturnValue(new Promise<void>((r) => (finish = r)));
+    const buttons = () => within(card('a3')).getAllByRole('button', { name: /^(Allow|Always|Deny)$/ });
+    await userEvent.click(buttons()[0]!);
+    await waitFor(() => buttons().forEach((b) => expect(b).toBeDisabled()));
+    await waitFor(() => expect(cardMain('a3')).toHaveFocus()); // focus left the button that went disabled
+    await userEvent.click(buttons()[0]!); // a second click while in flight is ignored
+    expect(resolve).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() => buttons().forEach((b) => expect(b).toBeEnabled()));
+  });
+
+  it('says so when the daemon could not answer the prompt (e.g. Always with no such option)', async () => {
+    const { client } = await ready();
+    vi.spyOn(client, 'resolvePermission').mockRejectedValue(new Error('the permission prompt has no option for this decision'));
+    await userEvent.click(within(card('a3')).getByRole('button', { name: 'Always' }));
+    expect(await screen.findByRole('status')).toHaveTextContent('has no option for this decision');
+    await waitFor(() => expect(within(card('a3')).getByRole('button', { name: 'Always' })).toBeEnabled());
   });
 
   it('keyboard focus returns to the card after Allow, Retry and rename (the control it was on goes away)', async () => {

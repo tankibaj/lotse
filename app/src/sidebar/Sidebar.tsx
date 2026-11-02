@@ -41,6 +41,8 @@ export function Sidebar() {
   const [renaming, setRenaming] = useState<Target | null>(null);
   const [confirm, setConfirm] = useState<Target | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Sessions whose Allow / Always / Deny is on its way to the daemon: the buttons stay off meanwhile.
+  const [answering, setAnswering] = useState<ReadonlySet<SessionId>>(new Set());
 
   // Time labels are coarse and only change the sidebar when their text changes, never under the pointer or focus.
   const signature = useCallback((n: number) => timeSignature(sessions, n), [sessions]);
@@ -67,8 +69,20 @@ export function Sidebar() {
   }, []);
   const onResolve = useCallback(
     (id: SessionId, decision: PermDecision) => {
-      selectSession(id); // Alpha: the terminal gets focus; the daemon may or may not answer the prompt itself
-      client.resolvePermission(id, decision).catch(noop);
+      selectSession(id); // the terminal gets focus, so the answer is seen landing
+      setAnswering((s) => new Set(s).add(id));
+      // The daemon types the answer into the pane. It refuses (conflict) when no prompt is on screen
+      // or the prompt has no such option: say so instead of looking like a dead button.
+      client
+        .resolvePermission(id, decision)
+        .catch((e: unknown) => setNotice(e instanceof Error ? e.message : 'Could not answer the prompt'))
+        .finally(() =>
+          setAnswering((s) => {
+            const next = new Set(s);
+            next.delete(id);
+            return next;
+          }),
+        );
       refocus({ kind: 'session', id });
     },
     [client, refocus],
@@ -242,6 +256,7 @@ export function Sidebar() {
                     selected={s.id === selectedId}
                     now={now}
                     renaming={renaming?.kind === 'session' && renaming.id === s.id}
+                    answering={answering.has(s.id)}
                     onSelect={onSelect}
                     onMenu={onSessionMenu}
                     onResolve={onResolve}

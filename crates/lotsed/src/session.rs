@@ -7,13 +7,14 @@
 use crate::db::Db;
 use crate::detect_glue::{Detector, NotifyLimiter, Trigger, notification, process_name};
 use crate::hub::{Bytes, ClientTx, Hub};
+use crate::perm_answer::{AnswerError, answer_keys};
 use crate::ring::Ring;
 use crate::title::{LineTracker, derive_title};
 use lotse_detect::engine::StatusUpdate;
 use lotse_detect::osc7501::QUERY_REPLY;
 use lotse_proto::{
-    AgentKind, AttachInfo, DetectSource, Event, Frame, GitInfo, Session, SessionId, Settings,
-    Status, UnixMs,
+    AgentKind, AttachInfo, DetectSource, Event, Frame, GitInfo, PermDecision, Session, SessionId,
+    Settings, Status, UnixMs,
 };
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -70,6 +71,10 @@ pub enum SessionError {
     SlowClient,
     #[error("too much unread input is queued for the session")]
     InputBacklog,
+    #[error("the session is not waiting at a permission prompt that can be answered")]
+    NotAtPrompt,
+    #[error("the permission prompt has no option for this decision")]
+    NoSuchChoice,
 }
 
 struct Launched {
@@ -752,6 +757,26 @@ impl SessionHandle {
             self.persist_title(&title, false);
         }
         Ok(())
+    }
+
+    /// Answer the permission prompt on screen with the keys a user would type. Only while the
+    /// session is `perm` and its screen shows a prompt the agent's layout can be read from; the
+    /// status is not touched, the agent's hook or the next screen sample moves it on.
+    pub fn resolve_permission(&self, decision: PermDecision) -> Result<(), SessionError> {
+        let mut g = self.lock();
+        if g.meta.status != Status::Perm {
+            return Err(SessionError::NotAtPrompt);
+        }
+        let agent = match g.detector.agent() {
+            AgentKind::Terminal => g.meta.agent,
+            followed => followed,
+        };
+        let rows = g.detector.screen_rows();
+        let keys = answer_keys(agent, &rows, decision).map_err(|e| match e {
+            AnswerError::NoPrompt => SessionError::NotAtPrompt,
+            AnswerError::NoChoice => SessionError::NoSuchChoice,
+        })?;
+        queue_input(g.live.as_ref(), keys.as_bytes())
     }
 
     /// Programmatic text (first prompt): written like input but never used as a title source.

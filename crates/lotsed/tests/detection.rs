@@ -6,8 +6,8 @@ mod common;
 
 use common::{Client, Daemon, WAIT};
 use lotse_proto::{
-    AgentKind, ErrorCode, Event, NewSession, NotificationKind, Request, Response, Session, Status,
-    SubAgent, WorktreeSpec,
+    AgentKind, ErrorCode, Event, NewSession, NotificationKind, PermDecision, Request, Response,
+    Session, Status, SubAgent, WorktreeSpec,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -506,4 +506,105 @@ fn locate(name: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let p = exe.parent()?.parent()?.join(name);
     p.is_file().then_some(p)
+}
+
+// ResolvePermission types into the pane. The "agent" is a script that paints a prompt, then reports
+// the hex of the first byte it reads, so the assertion is on the exact bytes that reached the PTY.
+
+const CLAUDE_PROMPT: &str = " Do you want to proceed?\\n ❯ 1. Yes\\n   2. Yes, allow reading from patients/ from this project\\n   3. Yes, and switch to auto mode (shift+tab)\\n   4. No\\n";
+const YES_NO_PROMPT: &str = " Do you want to proceed?\\n ❯ 1. Yes\\n   2. No\\n";
+
+/// A session whose pane shows `prompt` and then waits for one raw byte. The directory holds the
+/// script: keep it alive with the session.
+fn prompt_pane(
+    d: &Daemon,
+    c: &mut Client,
+    prompt: &str,
+    ready: &str,
+) -> (Session, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("agent.sh");
+    common::script(
+        dir.path(),
+        "agent.sh",
+        &format!(
+            "stty -icanon -echo min 1\nprintf '{prompt}'\n\
+             printf 'BYTES:%s\\n' \"$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \\n')\"\nsleep 5"
+        ),
+    );
+    let project = c.add_project(&d.project_dir("praxis-web"));
+    let s = match c.request(Request::CreateSession(NewSession {
+        project_id: project.id.clone(),
+        agent: AgentKind::ClaudeCode,
+        command: Some(path.to_string_lossy().into_owned()),
+        title: None,
+        worktree: None,
+        first_prompt: None,
+    })) {
+        Response::Session(s) => s,
+        other => panic!("create_session: {other:?}"),
+    };
+    c.attach(&s.id, 80, 24);
+    assert!(c.wait_output(&s.id, ready));
+    (s, dir)
+}
+
+fn ask_permission(c: &mut Client, s: &Session) {
+    hook(
+        c,
+        s,
+        json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "ls"}}),
+    );
+    c.wait_event(status_is(Status::Perm));
+}
+
+fn resolve(c: &mut Client, s: &Session, decision: PermDecision) -> Response {
+    c.request(Request::ResolvePermission {
+        session_id: s.id.clone(),
+        decision,
+    })
+}
+
+#[test]
+fn resolve_permission_types_the_option_digit_the_screen_shows() {
+    for (decision, bytes) in [
+        (PermDecision::Allow, "BYTES:31"),
+        (PermDecision::Always, "BYTES:32"),
+        (PermDecision::Deny, "BYTES:34"),
+    ] {
+        let d = Daemon::start();
+        let mut c = d.client();
+        let (s, _dir) = prompt_pane(&d, &mut c, CLAUDE_PROMPT, "4. No");
+        ask_permission(&mut c, &s);
+        assert!(matches!(resolve(&mut c, &s, decision), Response::Ok));
+        assert!(c.wait_output(&s.id, bytes), "{decision:?}: wanted {bytes}");
+    }
+}
+
+#[test]
+fn resolve_permission_types_nothing_unless_a_prompt_is_answerable() {
+    let (d, d2) = (Daemon::start(), Daemon::start());
+    let (mut c, mut c2) = (d.client(), d2.client());
+
+    // nothing on screen: not in perm, and (after the hook says perm) no prompt to read
+    let (plain, _dir) = prompt_pane(&d, &mut c, "just output\\n", "just output");
+    let conflict =
+        |r: Response| matches!(r, Response::Error(ref e) if e.code == ErrorCode::Conflict);
+    assert!(conflict(resolve(&mut c, &plain, PermDecision::Allow)));
+    ask_permission(&mut c, &plain);
+    assert!(conflict(resolve(&mut c, &plain, PermDecision::Deny)));
+
+    // a prompt without "don't ask again": Always is a no-op
+    let (yes_no, _dir2) = prompt_pane(&d2, &mut c2, YES_NO_PROMPT, "2. No");
+    ask_permission(&mut c2, &yes_no);
+    assert!(conflict(resolve(&mut c2, &yes_no, PermDecision::Always)));
+
+    // the first byte each pane reads is the one typed now: nothing was typed before
+    for (client, s) in [(&mut c, &plain), (&mut c2, &yes_no)] {
+        client.expect_ok(Request::SendInput {
+            session_id: s.id.clone(),
+            text: "z".into(),
+        });
+        assert!(client.wait_output(&s.id, "BYTES:7a"));
+    }
 }

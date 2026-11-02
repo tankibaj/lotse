@@ -104,7 +104,8 @@ pub enum Request {
     MarkRead {
         session_id: SessionId,
     },
-    /// Allow / Always / Deny on a permission card.
+    /// Allow / Always / Deny on a permission card: the daemon types the matching option into the pane.
+    /// `conflict` when the session is not at a prompt it can read, or the prompt has no such option.
     ResolvePermission {
         session_id: SessionId,
         decision: PermDecision,

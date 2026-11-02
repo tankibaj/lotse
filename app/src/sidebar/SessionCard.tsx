@@ -17,6 +17,8 @@ export interface SessionCardProps {
   /** Coarse clock (changes only when a visible label changes). */
   now: number;
   renaming: boolean;
+  /** An Allow / Always / Deny is on its way to the daemon. */
+  answering: boolean;
   onSelect: (id: SessionId) => void;
   onMenu: (id: SessionId, x: number, y: number) => void;
   onResolve: (id: SessionId, decision: PermDecision) => void;
@@ -33,7 +35,7 @@ const mmss = (ms: number) => {
   return t >= 60 ? `${Math.floor(t / 60)}m ${String(t % 60).padStart(2, '0')}s` : `${t}s`;
 };
 
-function SessionCardImpl({ session: s, project, selected, now, renaming, onSelect, onMenu, onResolve, onRetry, onRename, onCancelRename }: SessionCardProps) {
+function SessionCardImpl({ session: s, project, selected, now, renaming, answering, onSelect, onMenu, onResolve, onRetry, onRename, onCancelRename }: SessionCardProps) {
   const title = s.title || AGENT_LABEL[s.agent];
   const agent = AGENT_LABEL[s.agent];
   const age = sessionAge(s, now);
@@ -167,19 +169,31 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, onSelec
           className="mt-1.5 flex flex-wrap gap-1 pl-[22px]"
           role="group"
           aria-label={`Permission: ${title}`}
+          aria-busy={answering}
           title={s.perm ? `${s.perm.tool}: ${s.perm.summary}` : undefined}
         >
           <button
             type="button"
-            className="h-[22px] rounded-md bg-blue px-2.5 text-[11px] font-medium text-white transition-colors hover:brightness-110"
+            className="h-[22px] rounded-md bg-blue px-2.5 text-[11px] font-medium text-white transition-colors hover:brightness-110 disabled:opacity-60 disabled:hover:brightness-100"
+            disabled={answering}
             onClick={decide('allow')}
           >
             Allow
           </button>
-          <button type="button" className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors ${ghost}`} onClick={decide('always')}>
+          <button
+            type="button"
+            className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors disabled:opacity-60 ${ghost}`}
+            disabled={answering}
+            onClick={decide('always')}
+          >
             Always
           </button>
-          <button type="button" className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors ${ghost}`} onClick={decide('deny')}>
+          <button
+            type="button"
+            className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors disabled:opacity-60 ${ghost}`}
+            disabled={answering}
+            onClick={decide('deny')}
+          >
             Deny
           </button>
         </div>
