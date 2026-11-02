@@ -103,6 +103,20 @@ button.bg-blue:active:not(:disabled) {
   backdrop-filter: saturate(180%) blur(24px);
 }
 
+/* Real vibrancy (Tauri only, `html[data-vibrancy]`): the window is transparent over NSVisualEffectView's sidebar
+   material. Only the sidebar and status bar stay see-through; everything else paints the mock's solid --win. */
+html[data-vibrancy],
+html[data-vibrancy] body,
+html[data-vibrancy] [data-testid='shell'] {
+  background: transparent;
+}
+html[data-vibrancy] main {
+  background: var(--win);
+}
+html[data-vibrancy] .lotse-glass {
+  background-color: color-mix(in srgb, var(--side) 62%, transparent);
+}
+
 /* Overlays arrive, they do not pop. Menus fade only: their position is measured on open. */
 @keyframes lotse-fade {
   from {

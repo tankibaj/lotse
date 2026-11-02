@@ -113,6 +113,12 @@ describe('TerminalView', () => {
     await waitFor(() => expect(FakeTerminal.last.text).toContain('attach failed: no session nope'));
   });
 
+  it("starts with the mock's metrics: 13 px, Medium weight where the family has one, 1.3 line height", () => {
+    mount(<TerminalView sessionId="a1" />);
+    const o = FakeTerminal.last.options;
+    expect([o.fontSize, o.fontWeight, o.fontWeightBold, o.lineHeight]).toEqual([13, '500', '700', 1.3]);
+  });
+
   it('applies font settings to the live terminal', () => {
     const { rerender } = mount(<TerminalView sessionId="a1" fontSize={13} />);
     expect(FakeTerminal.last.options.fontSize).toBe(13);

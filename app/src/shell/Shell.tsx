@@ -43,6 +43,39 @@ function WindowControls() {
 const iconButton =
   'grid h-[26px] w-7 place-items-center rounded-md text-dim hover:bg-sel';
 
+// The mock's panel toolbar (right end of the tab row). The panels are Beta, so the buttons are inert until they
+// land: `aria-disabled` (not `disabled`, so the "Coming soon" tooltip still shows in WebKit), no hover, no click.
+const PANELS: { name: string; keys: string; paths: string; rect?: boolean }[] = [
+  { name: 'Session', keys: '⇧⌘I', paths: 'M5 6h6M5 8.5h6M5 11h4', rect: true },
+  { name: 'Changes', keys: '⇧⌘D', paths: 'M8 4.5v4M6 6.5h4M6 11h4', rect: true },
+  { name: 'Files', keys: '⇧⌘F', paths: 'M2 4.5a1.5 1.5 0 0 1 1.5-1.5H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z' },
+  { name: 'Transcript', keys: '⇧⌘T', paths: 'M3 3.5h10M3 6.5h7M3 9.5h10M3 12.5h5' },
+  { name: 'Usage & time', keys: '⇧⌘U', paths: 'M3 13V8M6.5 13V4M10 13V9M13.5 13V6' },
+];
+
+function PanelToolbar() {
+  return (
+    <div className="mb-2 ml-auto flex shrink-0 items-center gap-0.5" role="toolbar" aria-label="Panels">
+      {PANELS.map((p) => (
+        <button
+          key={p.name}
+          type="button"
+          aria-disabled="true"
+          aria-label={p.name === 'Usage & time' ? 'Usage and time' : p.name}
+          title={`${p.name} ${p.keys} · Coming soon`}
+          className="grid h-[26px] w-7 place-items-center rounded-md text-dim"
+          onClick={(e) => e.preventDefault()}
+        >
+          <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
+            {p.rect && <rect x="2" y="2" width="12" height="12" rx="2.5" />}
+            <path d={p.paths} />
+          </svg>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function Shell() {
   const [width, setWidth] = useState(loadWidth);
   const [hidden, setHidden] = useState(false);
@@ -50,6 +83,13 @@ export function Shell() {
   const toggleSidebar = useCallback(() => setHidden((h) => !h), []);
 
   useEffect(() => onUiCommand('toggleSidebar', toggleSidebar), [toggleSidebar]);
+  // The Tauri window is transparent with the macOS sidebar material behind it (tauri.conf.json); polish.css lets it
+  // show through the sidebar and status bar. In a browser there is no material, so the solid mock colours stay.
+  useEffect(() => {
+    if (!inTauri()) return;
+    document.documentElement.dataset.vibrancy = '';
+    return () => document.documentElement.removeAttribute('data-vibrancy');
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && e.ctrlKey && e.code === 'KeyS') {
@@ -147,6 +187,7 @@ export function Shell() {
             <div data-slot="tabs" className="flex min-w-0 flex-1 items-end gap-1">
               <TabStrip />
             </div>
+            <PanelToolbar />
           </div>
           <div className="flex min-h-0 flex-1">
             <div data-slot="panes" className="relative flex min-w-0 flex-1">

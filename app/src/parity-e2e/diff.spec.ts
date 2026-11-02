@@ -15,17 +15,23 @@ const REGIONS: Record<string, [number, number, number, number]> = {
   'side-head': [0, 0, 260, 90],
   'tab-row': [260, 0, 1000, 44],
   'status-bar': [0, 872, 700, 28],
+  terminal: [270, 55, 620, 520],
 };
 
-for (const w of [1440, 1280]) {
+const ALL = ['', '-settings', '-palette', '-new', '-add'];
+for (const { tag, cssWidth, surfaces } of [
+  { tag: '1440', cssWidth: 1440, surfaces: ALL },
+  { tag: '1280', cssWidth: 1280, surfaces: ALL },
+  { tag: '1440@2x', cssWidth: 1440, surfaces: [''] },
+]) {
   for (const scheme of ['light', 'dark']) {
-    for (const surface of ['', '-settings', '-palette', '-new', '-add']) {
-      const name = `${w}-${scheme}${surface}`;
+    for (const surface of surfaces) {
+      const name = `${tag}-${scheme}${surface}`;
       test(`diff ${name}`, async ({ page }) => {
         test.skip(!existsSync(`${DIR}/mock-${name}.png`) || !existsSync(`${DIR}/app-${name}.png`), 'no shots');
         await page.setContent('<canvas id="c"></canvas>');
         const res = await page.evaluate(
-          async ({ a, b, regions, out }) => {
+          async ({ a, b, regions: cssRegions, out, cssWidth }) => {
             const load = (src: string) =>
               new Promise<HTMLImageElement>((ok) => {
                 const i = new Image();
@@ -33,6 +39,8 @@ for (const w of [1440, 1280]) {
                 i.src = src;
               });
             const [ia, ib] = await Promise.all([load(a), load(b)]);
+            const scale = ia.width / cssWidth; // 2 for the Retina shots; the regions are in css px
+            const regions = Object.fromEntries(Object.entries(cssRegions).map(([k, r]) => [k, r.map((n) => n * scale)]));
             const W = Math.min(ia.width, ib.width);
             const H = Math.min(ia.height, ib.height);
             const c = document.getElementById('c') as HTMLCanvasElement;
@@ -68,7 +76,7 @@ for (const w of [1440, 1280]) {
             const stats = Object.fromEntries(Object.entries(regions).map(([k, [, , rw = 1, rh = 1]]) => [k, +(((bad[k] ?? 0) / (rw * rh)) * 100).toFixed(2)]));
             return { stats, url: out ? c.toDataURL('image/png') : '' };
           },
-          { a: png(`mock-${name}.png`), b: png(`app-${name}.png`), regions: REGIONS, out: true },
+          { a: png(`mock-${name}.png`), b: png(`app-${name}.png`), regions: REGIONS, out: true, cssWidth },
         );
         writeFileSync(`${DIR}/diff-${name}.png`, Buffer.from(res.url.split(',')[1] ?? '', 'base64'));
         console.log(name, JSON.stringify(res.stats));
