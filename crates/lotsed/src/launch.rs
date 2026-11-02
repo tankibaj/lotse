@@ -235,9 +235,14 @@ pub struct LaunchEnv {
 impl LaunchEnv {
     /// The daemon's own environment, no shell involved (tests, fallback).
     pub fn from_process() -> Self {
-        Self {
-            vars: std::env::vars().collect(),
-        }
+        Self::from_vars(std::env::vars().collect())
+    }
+
+    /// `vars` without the markers of an agent Lotse may have been started from (see
+    /// [`crate::agent_env`]).
+    pub fn from_vars(mut vars: HashMap<String, String>) -> Self {
+        crate::agent_env::scrub_host_markers(&mut vars);
+        Self { vars }
     }
 
     /// Daemon environment overlaid with what `$SHELL -l -i` exports. Blocking, at most ~3 s.
@@ -245,7 +250,11 @@ impl LaunchEnv {
         let mut env = Self::from_process();
         let shell = env.shell();
         match capture_login_env(Path::new(&shell)) {
-            Some(captured) => env.vars.extend(captured),
+            Some(captured) => {
+                env.vars.extend(captured);
+                // the shell was started with the daemon's environment: its copies are back
+                crate::agent_env::scrub_host_markers(&mut env.vars);
+            }
             None => tracing::warn!("login shell environment not captured, using the daemon's own"),
         }
         env

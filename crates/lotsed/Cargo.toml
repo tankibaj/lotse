@@ -10,6 +10,7 @@ publish.workspace = true
 lotse-proto = { workspace = true }
 lotse-detect = { workspace = true }
 lotse-git = { workspace = true }
+lotse-hook = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

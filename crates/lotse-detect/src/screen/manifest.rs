@@ -422,6 +422,10 @@ fn region_text(region: Region, rows: &[String], marker: Option<usize>) -> String
 
 const BUNDLED: &[(&str, &str)] = &[
     (
+        "claude.toml",
+        include_str!("../../../../integrations/manifests/claude.toml"),
+    ),
+    (
         "codex.toml",
         include_str!("../../../../integrations/manifests/codex.toml"),
     ),

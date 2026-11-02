@@ -22,6 +22,7 @@ publish = false
 lotse-proto = { path = "crates/lotse-proto" }
 lotse-detect = { path = "crates/lotse-detect" }
 lotse-git = { path = "crates/lotse-git" }
+lotse-hook = { path = "crates/lotse-hook" }
 
 # Exact versions (`=`); Cargo.lock is committed. Bump deliberately, in an orchestrator-approved change.
 # async, errors, logging

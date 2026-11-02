@@ -2170,6 +2170,7 @@ dependencies = [
  "dirs",
  "lotse-detect",
  "lotse-git",
+ "lotse-hook",
  "lotse-proto",
  "nix 0.31.3",
  "portable-pty",

@@ -1,7 +1,7 @@
 //! `lotse-hook`: agents' hooks call this; it forwards the hook JSON to the `lotsed` socket.
 //!
 //! ```text
-//! lotse-hook [claude|codex|opencode]                 hook mode: stdin JSON -> lotsed (default claude)
+//! lotse-hook [claude|codex|opencode] [--injected]    hook mode: stdin JSON -> lotsed (default claude)
 //! lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]
 //! ```
 //! Hook mode reads `LOTSE_SESSION_ID`, `LOTSE_SOCKET` and `LOTSE_TOKEN_FILE` (set by the daemon on
@@ -18,7 +18,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: lotse-hook [claude|codex|opencode]\n       lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]";
+const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -37,14 +37,17 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         other => {
-            hook(other.unwrap_or("claude"));
+            hook(
+                other.unwrap_or("claude"),
+                args.iter().any(|a| a == "--injected"),
+            );
             // Never fail the agent, whatever happened.
             ExitCode::SUCCESS
         }
     }
 }
 
-fn hook(agent_arg: &str) {
+fn hook(agent_arg: &str, injected: bool) {
     let debug = std::env::var_os("LOTSE_HOOK_DEBUG").is_some();
     let agent = match agent_arg {
         "claude" => AgentKind::ClaudeCode,
@@ -52,9 +55,10 @@ fn hook(agent_arg: &str) {
         "opencode" => AgentKind::OpenCode,
         _ => return,
     };
-    let Some(cfg) = Config::from_env(agent, |name| std::env::var_os(name)) else {
+    let Some(mut cfg) = Config::from_env(agent, |name| std::env::var_os(name)) else {
         return;
     };
+    cfg.injected = injected;
     if let Err(e) = forward::run(&cfg, std::io::stdin().lock())
         && debug
     {

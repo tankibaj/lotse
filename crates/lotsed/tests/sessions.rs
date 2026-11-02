@@ -729,3 +729,43 @@ fn projects_crud_and_session_cleanup() {
         other => panic!("{other:?}"),
     }
 }
+
+#[test]
+fn a_pane_started_from_inside_an_agent_does_not_inherit_its_host_markers() {
+    let d = Daemon::start_with_env(&[
+        ("CLAUDECODE", "1"),
+        ("CLAUDE_CODE_CHILD_SESSION", "1"),
+        ("CLAUDE_CODE_SESSION_ID", "parent"),
+        ("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/parent.sock"),
+        ("CODEX_THREAD_ID", "t"),
+        ("OPENCODE", "1"),
+        ("CLAUDE_CODE_PLUGIN_DIRS", "/user/plugin"),
+        ("CLAUDE_CONFIG_DIR", "/user/claude"),
+        ("ANTHROPIC_BASE_URL", "https://example.test"),
+    ]);
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("proj-hygiene"));
+    let session = c.create_session(&project, Some("/bin/sh"));
+    c.attach(&session.id, 120, 30);
+    c.send_pty(
+        &session.id,
+        b"echo [a=${CLAUDECODE-unset} b=${CLAUDE_CODE_CHILD_SESSION-unset} c=${CLAUDE_CODE_SESSION_ID-unset} \
+          d=${CLAUDE_CODE_MESSAGING_SOCKET-unset} e=${CODEX_THREAD_ID-unset} f=${OPENCODE-unset} \
+          g=$CLAUDE_CONFIG_DIR h=$ANTHROPIC_BASE_URL i=$CLAUDE_CODE_PLUGIN_DIRS]\n",
+    );
+    assert!(
+        c.wait_output(&session.id, "i=/user/plugin:"),
+        "{:?}",
+        c.output_text(&session.id)
+    );
+    let text = c.output_text(&session.id);
+    let plugin = d.data_dir.join("integrations/claude/lotse-status");
+    for want in [
+        "[a=unset b=unset c=unset d=unset e=unset f=unset",
+        "g=/user/claude h=https://example.test",
+        &format!("i=/user/plugin:{}]", plugin.display()),
+    ] {
+        assert!(text.contains(want), "{want:?} not in {text:?}");
+    }
+    assert!(plugin.join("hooks/hooks.json").is_file());
+}

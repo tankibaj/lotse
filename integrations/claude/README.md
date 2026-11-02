@@ -13,7 +13,19 @@ Event names and payload fields: <https://code.claude.com/docs/en/hooks>. **Unver
 page** (no web access when written); checked against Orca's and herdr's Claude integrations instead. The
 status table is in `crates/lotse-detect/src/claude.rs`.
 
-## Install, status, uninstall
+## Nothing to install: the injected plugin
+
+On start, `lotsed` writes a Claude Code plugin to `<data dir>/integrations/claude/lotse-status/`
+(`.claude-plugin/plugin.json` and `hooks/hooks.json`, same events as `hooks.json` here) and appends that
+directory to `CLAUDE_CODE_PLUGIN_DIRS` in every pane it spawns, keeping the entries already there. Claude
+Code loads it for that process only, so status, permission prompts and sub-agents work without touching
+`~/.claude`. Each hook runs `"${LOTSE_HOOK_BIN:-lotse-hook}" claude --injected`.
+
+With the global hooks below installed as well, Claude runs both; the `--injected` copy is tagged
+(`lotse_source`) and the daemon drops whichever copy of an event arrives second (same payload from the
+other source within 1.5 s). `claude plugin validate <dir>` accepts the generated plugin.
+
+## Install, status, uninstall (optional)
 
 ```sh
 lotse-hook integration claude install     # adds one command hook per event to ~/.claude/settings.json

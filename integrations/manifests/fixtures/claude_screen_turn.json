@@ -1,0 +1,86 @@
+{
+  "description": "Claude Code without hooks (screen fallback): idle at the prompt, a turn with a spinner row, a permission prompt, approval, the end of the turn, then three background agents keeping the session running.",
+  "provenance": "Authored, not recorded: no Claude Code transcript was available offline. The screen text follows herdr's claude manifest (research/herdr, Apache-2.0); 'Do you want to proceed?', '... esc to interrupt' and \"Yes, and don't ask again for\" were also found in the installed Claude Code 2.1.309 binary. Unverified against a live screen; re-record before relying on it.",
+  "agent": "claude_code",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    {
+      "at": 0,
+      "out": "\u001b[2J\u001b[1;1H╭─── Claude Code v2.1.309 ───╮\u001b[2;1H│ ~/repo\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K  ? for shortcuts",
+      "expect": "idle",
+      "source": "screen"
+    },
+    {
+      "at": 2000,
+      "out": "\u001b[15;1H> fix the failing test\u001b[17;1H\u001b[K✻ Pondering… (1s · ↑ 1.2k tokens · esc to interrupt)\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K    esc to interrupt",
+      "expect": "run",
+      "source": "screen"
+    },
+    {
+      "at": 3000,
+      "out": "\u001b[17;1H\u001b[K✻ Pondering… (3s · ↑ 1.2k tokens · esc to interrupt)",
+      "expect": "run"
+    },
+    {
+      "at": 5000,
+      "out": "\u001b[12;1H\u001b[K\u001b[13;1H\u001b[K\u001b[14;1H\u001b[K\u001b[15;1H\u001b[K\u001b[16;1H\u001b[K\u001b[17;1H\u001b[K\u001b[18;1H\u001b[K\u001b[11;1H● Bash(npm test)\u001b[12;1H Bash command\u001b[14;1H   npm test\u001b[15;1H   Run the unit tests\u001b[17;1H Do you want to proceed?\u001b[18;1H ❯ 1. Yes\u001b[19;1H   2. Yes, and don't ask again for npm test commands in /repo\u001b[20;1H   3. No, and tell Claude what to do differently (esc)\u001b[21;1H\u001b[K\u001b[22;1H\u001b[K\u001b[23;1H\u001b[K",
+      "expect": "perm",
+      "perm": {
+        "tool": "approval",
+        "summary": "Waiting for your input"
+      }
+    },
+    {
+      "at": 8000,
+      "out": "\u001b[11;1H\u001b[K\u001b[12;1H\u001b[K\u001b[13;1H\u001b[K\u001b[14;1H\u001b[K\u001b[15;1H\u001b[K\u001b[16;1H\u001b[K\u001b[17;1H\u001b[K\u001b[18;1H\u001b[K\u001b[19;1H\u001b[K\u001b[20;1H\u001b[K\u001b[17;1H\u001b[K✻ Pondering… (9s · ↑ 1.2k tokens · esc to interrupt)\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K  ? for shortcuts",
+      "expect": "run"
+    },
+    {
+      "at": 12000,
+      "out": "\u001b[15;1H\u001b[K\u001b[16;1H\u001b[K\u001b[17;1H\u001b[K\u001b[18;1H\u001b[K\u001b[15;1H⏺ The assertion now compares ids; npm test passes.\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K  ? for shortcuts",
+      "expect": "run",
+      "note": "no working row, but the rest has not lasted hold_ms yet"
+    },
+    {
+      "at": 13500,
+      "tick": true,
+      "expect": "done",
+      "source": "screen"
+    },
+    {
+      "at": 14000,
+      "out": "\u001b[17;1H✻ Waiting for 3 background agents to finish\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K  ? for shortcuts",
+      "expect": "run",
+      "note": "the lead is done but three background agents run"
+    },
+    {
+      "at": 20000,
+      "out": "\u001b[17;1H\u001b[K\u001b[15;1H⏺ All three agents reported back.",
+      "expect": "run"
+    },
+    {
+      "at": 21600,
+      "tick": true,
+      "expect": "done"
+    },
+    {
+      "at": 29000,
+      "process": {
+        "fg": "/opt/homebrew/bin/claude",
+        "code": null
+      },
+      "expect": "done"
+    },
+    {
+      "at": 30000,
+      "process": {
+        "fg": "-zsh",
+        "code": null
+      },
+      "expect": "idle",
+      "source": "process",
+      "note": "a shell took the foreground: the agent quit"
+    }
+  ]
+}

@@ -86,7 +86,17 @@ function post(payload) {
     });
 }
 
-export const LotseStatusPlugin = async (_ctx) => {
+// The plugin can be loaded twice in one OpenCode process: from the global config directory (the
+// installer) and from the per-pane directory Lotse injects through OPENCODE_CONFIG_DIR. The first copy
+// to start for a project directory owns it; a copy loaded from another file stays inert there, so
+// every event is reported once. Keyed by directory, so a second project in the same process is covered.
+const owners = (globalThis.__lotseStatusOwners ||= new Map());
+
+export const LotseStatusPlugin = async (ctx) => {
+  const directory = (ctx && ctx.directory) || "";
+  if (owners.get(directory) !== undefined && owners.get(directory) !== import.meta.url) return {};
+  owners.set(directory, import.meta.url);
+
   // sessionID -> parentID for child sessions (the task tool's sub-agents).
   const parents = new Map();
   // sessionID -> last status type sent, so repeated "busy" events are not forwarded.

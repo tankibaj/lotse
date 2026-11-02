@@ -2,8 +2,9 @@
 //!
 //! # Where the events come from
 //!
-//! `lotse-hook` (installed into `~/.claude/settings.json` by `integrations/claude`) forwards each
-//! hook payload verbatim as `Request::HookEvent`; the daemon wraps it in a [`HookObservation`].
+//! `lotse-hook` (run by the plugin `lotsed` injects into every pane through `CLAUDE_CODE_PLUGIN_DIRS`, or
+//! by the hooks the optional global install puts into `~/.claude/settings.json`; see `integrations/claude`)
+//! forwards each hook payload verbatim as `Request::HookEvent`; the daemon wraps it in a [`HookObservation`].
 //!
 //! Event names and payload fields follow the Claude Code hooks reference:
 //! <https://code.claude.com/docs/en/hooks> (older location:

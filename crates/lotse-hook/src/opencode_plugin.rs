@@ -114,6 +114,75 @@ pub fn status(config_dir: &Path) -> Result<InstallStatus> {
     })
 }
 
+/// A per-pane `OPENCODE_CONFIG_DIR` that carries the plugin, so nothing is written to the user's
+/// own config. OpenCode adds `$OPENCODE_CONFIG_DIR` to its config directories (its global one stays)
+/// and loads `plugins/*.js` from each; verified in the installed OpenCode 1.19.4 binary, and Orca
+/// does the same with an overlay (`src/main/opencode/hook-service.ts`).
+///
+/// `source` is a config directory the user already points `OPENCODE_CONFIG_DIR` at: setting the
+/// variable replaces it, so the overlay symlinks each of its entries (and each entry of its
+/// `plugins/`), and follows it on every call. Real files in the overlay (OpenCode's own `node_modules`)
+/// are never touched. Returns the overlay's path, `<root>/default` or `<root>/<hash of source>`.
+pub fn overlay(root: &Path, source: Option<&Path>) -> Result<PathBuf> {
+    let name = source.map_or_else(
+        || "default".to_owned(),
+        |s| format!("{:016x}", fnv1a(s.as_os_str().as_encoded_bytes())),
+    );
+    let dir = root.join(name);
+    let plugins = dir.join("plugins");
+    std::fs::create_dir_all(&plugins).with_context(|| format!("creating {}", plugins.display()))?;
+    let target = plugins.join(FILE_NAME);
+    if read_existing(&target)?.as_deref() != Some(PLUGIN_SOURCE) {
+        write_private(&target, PLUGIN_SOURCE)?;
+    }
+    if let Some(source) = source {
+        mirror(source, &dir, None)?;
+        mirror(&source.join("plugins"), &plugins, Some(FILE_NAME))?;
+    }
+    Ok(dir)
+}
+
+/// Make `into` hold a symlink for every entry of `from` (except `skip` and, at the top level, the
+/// `plugins` directory, which is mirrored separately); drop symlinks whose entry is gone.
+fn mirror(from: &Path, into: &Path, skip: Option<&str>) -> Result<()> {
+    let wanted: Vec<std::ffi::OsString> = match std::fs::read_dir(from) {
+        Ok(entries) => entries
+            .filter_map(|e| e.ok().map(|e| e.file_name()))
+            .filter(|n| Some(n.to_string_lossy().as_ref()) != skip)
+            .filter(|n| skip.is_some() || n != "plugins")
+            .collect(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", from.display())),
+    };
+    for entry in std::fs::read_dir(into)?.filter_map(Result::ok) {
+        let link = entry.path();
+        if entry.file_type().is_ok_and(|t| t.is_symlink()) && !wanted.contains(&entry.file_name()) {
+            std::fs::remove_file(&link).ok();
+        }
+    }
+    for name in wanted {
+        let link = into.join(&name);
+        let to = from.join(&name);
+        match std::fs::read_link(&link) {
+            Ok(old) if old == to => continue,
+            Ok(_) => std::fs::remove_file(&link)?,
+            // a real file or directory of OpenCode's own: leave it
+            Err(_) if link.symlink_metadata().is_ok() => continue,
+            Err(_) => {}
+        }
+        std::os::unix::fs::symlink(&to, &link)
+            .with_context(|| format!("linking {}", link.display()))?;
+    }
+    Ok(())
+}
+
+/// Stable across builds (unlike `DefaultHasher`): names the overlay directory of a source.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +279,63 @@ mod tests {
             std::fs::read_to_string(plugin_path(dir)).unwrap(),
             "export default {}"
         );
+    }
+
+    #[test]
+    fn overlay_without_a_user_dir_holds_only_the_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = overlay(tmp.path(), None).unwrap();
+        assert_eq!(dir, overlay(tmp.path(), None).unwrap(), "stable path");
+        assert_eq!(
+            std::fs::read_to_string(plugin_path(&dir)).unwrap(),
+            PLUGIN_SOURCE
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn overlay_mirrors_the_users_config_dir_without_touching_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let user = tmp.path().join("user");
+        std::fs::create_dir_all(user.join("plugins")).unwrap();
+        std::fs::write(user.join("opencode.json"), "{}").unwrap();
+        std::fs::write(user.join("plugins/mine.js"), "export default {}").unwrap();
+        // a foreign file with our name must not shadow ours in the overlay
+        std::fs::write(user.join("plugins").join(FILE_NAME), "// theirs").unwrap();
+        let root = tmp.path().join("overlays");
+
+        let dir = overlay(&root, Some(&user)).unwrap();
+        assert_ne!(dir, overlay(&root, None).unwrap(), "one overlay per source");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("opencode.json")).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("plugins/mine.js")).unwrap(),
+            "export default {}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(plugin_path(&dir)).unwrap(),
+            PLUGIN_SOURCE
+        );
+        assert_eq!(
+            std::fs::read_to_string(user.join("plugins").join(FILE_NAME)).unwrap(),
+            "// theirs",
+            "the user's directory is never written"
+        );
+
+        // the user removes a file and adds another: the next overlay call follows
+        std::fs::remove_file(user.join("opencode.json")).unwrap();
+        std::fs::write(user.join("AGENTS.md"), "x").unwrap();
+        assert_eq!(overlay(&root, Some(&user)).unwrap(), dir);
+        assert!(!dir.join("opencode.json").exists());
+        assert!(dir.join("AGENTS.md").exists());
+    }
+
+    #[test]
+    fn a_missing_user_dir_is_just_the_plugin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = overlay(tmp.path(), Some(&tmp.path().join("nope"))).unwrap();
+        assert!(plugin_path(&dir).is_file());
     }
 }

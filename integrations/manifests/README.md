@@ -7,6 +7,7 @@ into the daemon; **nothing is ever fetched**.
 
 | File | What |
 |---|---|
+| `claude.toml` | Claude Code, as the fallback when no hook arrives: the spinner row (`esc to interrupt`), the `Do you want to proceed?` menu, background agents, the composer. Hook events always win. |
 | `codex.toml` | Codex CLI. Working row (`• Working (11s • esc to interrupt)`), footer spinner, command approval and other dialogs, trust and update screens, transcript viewer. |
 | `opencode.toml` | OpenCode, as the fallback when the Lotse plugin (`../opencode`) is not installed. |
 | `fixtures/*.json` | Authored PTY sessions with the status the engine must report after each step. |
@@ -28,6 +29,7 @@ the bundled manifest stays in use. The format is documented at the top of
   was checked against Orca's recorded Codex 0.155.1 / 0.157.1 / 0.158.0 transcripts. The same engine
   replays all of them. **Unverified:** other Codex versions. When a Codex release changes its screen,
   edit a copy of this file (or record a new transcript and extend `fixtures/`).
+- `claude.toml` has **no recorded transcript** either: it follows herdr's claude manifest, reduced to the visible rows, and is covered by authored fixtures (`claude_*.json`) only.
 - `opencode.toml` has **no recorded transcript**: its phrases come from herdr and Orca. The OpenCode plugin
   is the primary path; treat this manifest as a best-effort fallback until a real OpenCode screen is recorded.
 - Recorded fixtures: `cargo test -p lotse-detect --test transcript_fixtures export_orca_recordings -- --ignored`

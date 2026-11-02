@@ -26,10 +26,12 @@ use lotse_detect::adapter::{
 use lotse_detect::engine::{Engine, StatusUpdate};
 use lotse_detect::osc7501::{Osc7501Scanner, is_query};
 use lotse_detect::screen::{identify_agent, is_shell};
+use lotse_hook::forward::{SOURCE_FIELD, SOURCE_INJECTED};
 use lotse_proto::{
     AgentKind, DetectSource, Event, NotificationKind, NotificationMode, NotificationSettings,
     PermRequest, Session, SessionId, Status, UnixMs,
 };
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 /// Output must be quiet this long before the screen is sampled.
@@ -68,8 +70,23 @@ pub struct Fed {
     pub reply: bool,
 }
 
+/// How long an injected hook and its global twin (the same event delivered by both installs) may
+/// be apart. Both are spawned by the agent at the same moment and finish within the hook deadline.
+const HOOK_TWIN_WINDOW_MS: UnixMs = 1500;
+/// Most hook events remembered for twin matching.
+const MAX_TWIN_CANDIDATES: usize = 32;
+
+/// A hook event waiting for its twin from the other install.
+struct TwinCandidate {
+    payload: serde_json::Value,
+    injected: bool,
+    at: UnixMs,
+}
+
 pub struct Detector {
     id: SessionId,
+    /// Recent hook events not yet matched with a twin (see [`Self::is_twin`]).
+    twins: VecDeque<TwinCandidate>,
     /// The agent the session was launched as; a shell session goes back to it when an agent exits.
     base_agent: AgentKind,
     engine: Engine,
@@ -99,6 +116,7 @@ impl Detector {
             ..TermConfig::default()
         };
         Self {
+            twins: VecDeque::new(),
             engine: Engine::with_default_adapters(id.clone(), agent),
             id,
             base_agent: agent,
@@ -193,12 +211,48 @@ impl Detector {
         }
     }
 
+    /// `true` when `payload` is the second copy of an event already seen from the other install.
+    ///
+    /// With the global hooks installed *and* the plugin Lotse injects, an agent runs both for every
+    /// event. `lotse-hook --injected` tags its copy (`lotse_source`). An event equal to a waiting
+    /// one from the *other* source, seen within [`HOOK_TWIN_WINDOW_MS`], is that event's copy and is
+    /// dropped. Events from one source never match each other, so a legitimate repeat (two
+    /// identical `Stop`s in a row) is kept. The tag is removed from `payload` either way.
+    fn is_twin(&mut self, payload: &mut serde_json::Value, at: UnixMs) -> bool {
+        let injected = payload
+            .as_object_mut()
+            .and_then(|o| o.remove(SOURCE_FIELD))
+            .is_some_and(|v| v == SOURCE_INJECTED);
+        self.twins
+            .retain(|t| at.saturating_sub(t.at) <= HOOK_TWIN_WINDOW_MS);
+        if let Some(i) = self
+            .twins
+            .iter()
+            .position(|t| t.injected != injected && t.payload == *payload)
+        {
+            self.twins.remove(i);
+            return true;
+        }
+        if self.twins.len() == MAX_TWIN_CANDIDATES {
+            self.twins.pop_front();
+        }
+        self.twins.push_back(TwinCandidate {
+            payload: payload.clone(),
+            injected,
+            at,
+        });
+        false
+    }
+
     pub fn on_hook(
         &mut self,
         agent: AgentKind,
-        payload: serde_json::Value,
+        mut payload: serde_json::Value,
         at: UnixMs,
     ) -> Option<StatusUpdate> {
+        if self.is_twin(&mut payload, at) {
+            return None;
+        }
         if !self.exited {
             self.set_agent(agent);
         }
@@ -593,6 +647,60 @@ mod tests {
             .expect("claude starts running");
         assert_eq!(up.status, Status::Run);
         assert_eq!(d.agent(), AgentKind::ClaudeCode);
+    }
+
+    fn hook(d: &mut Detector, name: &str, source: Option<&str>, at: UnixMs) -> Option<Status> {
+        let mut payload = serde_json::json!({"hook_event_name": name});
+        if let Some(source) = source {
+            payload["lotse_source"] = source.into();
+        }
+        d.on_hook(AgentKind::ClaudeCode, payload, at)
+            .map(|u| u.status)
+    }
+
+    #[test]
+    fn the_twin_of_an_injected_hook_from_the_global_install_is_dropped() {
+        let mut d = detector(AgentKind::ClaudeCode);
+        assert_eq!(
+            hook(&mut d, "UserPromptSubmit", Some("injected"), 100),
+            Some(Status::Run)
+        );
+        assert_eq!(
+            hook(&mut d, "Stop", Some("injected"), 200),
+            Some(Status::Done)
+        );
+        // the global hook's copy of the prompt event arrives late: it must not restart the turn
+        assert_eq!(hook(&mut d, "UserPromptSubmit", None, 250), None);
+        assert_eq!(d.engine.status(), Status::Done);
+        // its copy of Stop is the twin of the second event and is dropped as well
+        assert_eq!(hook(&mut d, "Stop", None, 300), None);
+    }
+
+    #[test]
+    fn repeats_from_one_source_and_old_twins_are_real_events() {
+        let mut d = detector(AgentKind::ClaudeCode);
+        assert_eq!(
+            hook(&mut d, "UserPromptSubmit", Some("injected"), 100),
+            Some(Status::Run)
+        );
+        assert_eq!(
+            hook(&mut d, "Stop", Some("injected"), 200),
+            Some(Status::Done)
+        );
+        assert_eq!(
+            hook(&mut d, "UserPromptSubmit", Some("injected"), 300),
+            Some(Status::Run)
+        );
+        // same payload from the other source, but long after the first: a new turn, not a twin
+        assert_eq!(
+            hook(&mut d, "Stop", None, 300 + HOOK_TWIN_WINDOW_MS + 1),
+            Some(Status::Done)
+        );
+        // an unmatched old event is forgotten
+        assert_eq!(
+            hook(&mut d, "UserPromptSubmit", None, 10_000),
+            Some(Status::Run)
+        );
     }
 
     #[test]

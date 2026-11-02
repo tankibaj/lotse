@@ -578,25 +578,35 @@ impl SessionHandle {
                 }
             }
             if let Some(subs) = update.sub_agents.filter(|s| *s != g.meta.sub_agents) {
-                for sub in &subs {
-                    let before = g.meta.sub_agents.iter().find(|s| s.id == sub.id);
-                    if before.map(|s| s.status) != Some(sub.status) {
-                        self.ctx.hub.broadcast(Event::SubAgentStatus {
-                            session_id: self.id.clone(),
-                            sub_agent_id: sub.id.clone(),
-                            status: sub.status,
-                        });
-                        if notify && sub.status == Status::Done {
-                            triggers
-                                .push((g.meta.clone(), Trigger::SubAgentDone(sub.name.clone())));
-                        }
-                    }
-                }
+                // The list goes out first: a client only knows a sub-agent from
+                // `sub_agents_changed`, and ignores a `sub_agent_status` for an id it never saw.
+                let changed: Vec<_> = subs
+                    .iter()
+                    .filter(|sub| {
+                        g.meta
+                            .sub_agents
+                            .iter()
+                            .find(|s| s.id == sub.id)
+                            .map(|s| s.status)
+                            != Some(sub.status)
+                    })
+                    .cloned()
+                    .collect();
                 g.meta.sub_agents.clone_from(&subs);
                 self.ctx.hub.broadcast(Event::SubAgentsChanged {
                     session_id: self.id.clone(),
                     sub_agents: subs,
                 });
+                for sub in changed {
+                    self.ctx.hub.broadcast(Event::SubAgentStatus {
+                        session_id: self.id.clone(),
+                        sub_agent_id: sub.id.clone(),
+                        status: sub.status,
+                    });
+                    if notify && sub.status == Status::Done {
+                        triggers.push((g.meta.clone(), Trigger::SubAgentDone(sub.name.clone())));
+                    }
+                }
             }
         }
         triggers

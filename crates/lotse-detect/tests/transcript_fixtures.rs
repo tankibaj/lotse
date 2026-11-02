@@ -189,7 +189,7 @@ fn fixtures_cover_codex_opencode_and_osc7501_and_every_status_but_unknown() {
         }
     }
     assert!(
-        agents.contains("codex") && agents.contains("opencode"),
+        agents.contains("codex") && agents.contains("opencode") && agents.contains("claude_code"),
         "{agents:?}"
     );
     assert!(osc, "an OSC 7501 transcript");

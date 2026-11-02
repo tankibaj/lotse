@@ -27,6 +27,8 @@ pub struct Daemon {
     path_env: String,
     /// `SHELL` of the daemon; `Some` also switches the login-shell environment capture on.
     login_shell: Option<PathBuf>,
+    /// Extra environment of the daemon (a parent agent's markers, user config).
+    extra_env: Vec<(String, String)>,
 }
 
 impl Daemon {
@@ -39,12 +41,30 @@ impl Daemon {
         Self::start_full(extra_path, None)
     }
 
+    /// The daemon starts with `env` on top of its minimal environment, like a daemon launched from
+    /// inside an agent session.
+    pub fn start_with_env(env: &[(&str, &str)]) -> Self {
+        let env = env
+            .iter()
+            .map(|(k, v)| ((*k).into(), (*v).into()))
+            .collect();
+        Self::start_inner(None, None, env)
+    }
+
     /// Capture the environment from `shell -l -i -c …` like production does (use a fake shell script).
     pub fn start_with_login_shell(shell: &Path) -> Self {
         Self::start_full(None, Some(shell.to_owned()))
     }
 
     fn start_full(extra_path: Option<&Path>, login_shell: Option<PathBuf>) -> Self {
+        Self::start_inner(extra_path, login_shell, Vec::new())
+    }
+
+    fn start_inner(
+        extra_path: Option<&Path>,
+        login_shell: Option<PathBuf>,
+        extra_env: Vec<(String, String)>,
+    ) -> Self {
         let tmp = tempfile::Builder::new().prefix("lt").tempdir().unwrap();
         let data_dir = tmp.path().join("data");
         let home = tmp.path().join("home");
@@ -53,7 +73,13 @@ impl Daemon {
             Some(p) => format!("{}:/usr/bin:/bin", p.display()),
             None => "/usr/bin:/bin".to_owned(),
         };
-        let child = spawn_child(&data_dir, &home, &path_env, login_shell.as_deref());
+        let child = spawn_child(
+            &data_dir,
+            &home,
+            &path_env,
+            login_shell.as_deref(),
+            &extra_env,
+        );
         let d = Self {
             child,
             tmp,
@@ -61,6 +87,7 @@ impl Daemon {
             home,
             path_env,
             login_shell,
+            extra_env,
         };
         d.wait_ready();
         d
@@ -75,6 +102,7 @@ impl Daemon {
             &self.home,
             &self.path_env,
             self.login_shell.as_deref(),
+            &self.extra_env,
         );
         self.wait_ready();
         self
@@ -135,7 +163,13 @@ impl Daemon {
     }
 }
 
-fn spawn_child(data_dir: &Path, home: &Path, path_env: &str, login_shell: Option<&Path>) -> Child {
+fn spawn_child(
+    data_dir: &Path,
+    home: &Path,
+    path_env: &str,
+    login_shell: Option<&Path>,
+    extra_env: &[(String, String)],
+) -> Child {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_lotsed"));
     cmd.arg("--data-dir").arg(data_dir);
     if login_shell.is_none() {
@@ -146,6 +180,7 @@ fn spawn_child(data_dir: &Path, home: &Path, path_env: &str, login_shell: Option
         .env("HOME", home)
         .env("SHELL", login_shell.unwrap_or(Path::new("/bin/sh")))
         .env("RUST_LOG", "warn")
+        .envs(extra_env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

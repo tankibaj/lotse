@@ -1,5 +1,6 @@
 //! The registry: projects, sessions, settings, and the request dispatcher.
 
+use crate::agent_env::Injection;
 use crate::config::Config;
 use crate::db::{DEFAULT_WORKSPACE, Db, DbError, SessionRow};
 use crate::git;
@@ -86,6 +87,8 @@ pub struct State {
     /// Set (under the `sessions` write lock) when the daemon starts killing sessions.
     closing: AtomicBool,
     env: OnceCell<Arc<LaunchEnv>>,
+    /// Plugins of the agents' status hooks, written once at start and injected into every pane.
+    inject: Injection,
 }
 
 impl State {
@@ -95,6 +98,7 @@ impl State {
             tracing::info!("dropped {pruned} session(s) of the previous daemon run");
         }
         let settings = db.load_settings()?;
+        let data_dir = cfg.data_dir.clone();
         Ok(Arc::new(Self {
             cfg,
             hub: Arc::new(Hub::default()),
@@ -105,6 +109,7 @@ impl State {
             shutdown: Notify::new(),
             closing: AtomicBool::new(false),
             env: OnceCell::new(),
+            inject: Injection::prepare(&data_dir),
         }))
     }
 
@@ -593,6 +598,7 @@ impl State {
         if let Some(hook) = hook_bin() {
             vars.insert("LOTSE_HOOK_BIN".into(), hook.to_string_lossy().into_owned());
         }
+        self.inject.apply(&mut vars);
         vars.into_iter().collect()
     }
 

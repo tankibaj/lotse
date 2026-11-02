@@ -1,0 +1,27 @@
+{
+  "description": "Claude screens that look like work or a request but are not: a quoted spinner row, a prose question, the transcript viewer.",
+  "provenance": "Authored, not recorded. The quoted-row and prose-question shapes are the false positives herdr's claude manifest guards against (its rules are anchored to a line start and require the numbered Yes/No options).",
+  "agent": "claude_code",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    {
+      "at": 0,
+      "out": "\u001b[2J\u001b[2;1H> how do I tell it is running?\u001b[4;1H⏺ The status line reads like this while it works:\u001b[6;1H    ✻ Pondering… (3s · esc to interrupt)\u001b[8;1H  and it disappears once the turn is over. Press esc to interrupt a run.\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K  ? for shortcuts",
+      "expect": "idle",
+      "note": "an indented status row and a sentence quoted in an answer are not a running turn"
+    },
+    {
+      "at": 1000,
+      "out": "\u001b[2J\u001b[2;1H> any plan?\u001b[4;1H⏺ Do you want to proceed with the migration? Tell me and I will start.\u001b[20;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[21;1H\u001b[K❯ \u001b[22;1H\u001b[K────────────────────────────────────────────────────────────────────────────────────────────────\u001b[23;1H\u001b[K  ? for shortcuts",
+      "expect": "idle",
+      "note": "a question in prose, without the numbered options"
+    },
+    {
+      "at": 2000,
+      "out": "\u001b[2J\u001b[2;1HShowing detailed transcript · ctrl+o to toggle · ctrl+e to show all\u001b[5;1H✻ Pondering… (3s · esc to interrupt)\u001b[7;1H Do you want to proceed?\u001b[8;1H ❯ 1. Yes",
+      "expect": "idle",
+      "note": "the transcript viewer shows old turns: nothing in it changes the status"
+    }
+  ]
+}

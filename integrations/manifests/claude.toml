@@ -1,0 +1,81 @@
+# Claude Code screen manifest (see crates/lotse-detect/src/screen/manifest.rs for the format).
+#
+# The fallback when no Claude Code hook reaches Lotse (neither the plugin Lotse injects into its panes
+# nor the global hooks): events with source `hook` always win over this. Derived from herdr's claude
+# manifest (/Users/naim/Repos/research/herdr/src/detect/manifests/claude.toml, Apache-2.0), reduced to
+# the three screens that matter: working ("esc to interrupt"), a permission prompt, at the prompt.
+# Lotse reads the visible rows only, so herdr's OSC-title rules are dropped, and the regions it
+# builds on (after the last horizontal rule, the prompt box) are replaced by `bottom(N)`.
+# No `prompt_markers`: the permission menu marks its selected option with the same "❯" as the composer.
+# Unverified: no recorded Claude Code transcript; the phrases are herdr's, and "Do you want to
+# proceed?" / "esc to interrupt" were also found in the Claude Code 2.1.309 binary.
+#
+# Reading it: a blocked dialog beats a working row, which beats everything else. A screen that matches
+# no rule counts as "at rest" (the adapter turns working -> rest into Done after `hold_ms`).
+schema = 1
+id = "claude"
+agent = "claude_code"
+version = "2026.11.02.1"
+hold_ms = 1500
+
+# Ctrl+O shows old turns, including quoted spinner rows and permission prompts: change nothing.
+[[rules]]
+id = "transcript_viewer"
+state = "keep"
+priority = 1000
+region = "bottom(4)"
+contains = ["showing detailed transcript"]
+
+# "Do you want to proceed?" / "...make this edit to X?" / "...create X?" with the numbered
+# "1. Yes" option (the selected one is prefixed "❯"). A question in prose has no such option, so it
+# does not match; the question must be a whole line.
+[[rules]]
+id = "permission_prompt"
+state = "blocked"
+priority = 900
+region = "bottom(16)"
+tool = "approval"
+regex = [
+  '(?mi)^\s*do you want to [^\r\n]*\?\s*$',
+  '(?mi)^\s*[❯>]?\s*1\.\s*yes\b',
+]
+
+# Questions and pickers: "Enter to select · ↑/↓ to navigate · Esc to cancel", "Enter to confirm · Esc to cancel".
+[[rules]]
+id = "choice_form"
+state = "blocked"
+priority = 850
+region = "bottom(16)"
+tool = "question"
+contains = ["esc to cancel"]
+any = [
+  { contains = ["enter to confirm"] },
+  { contains = ["enter to select"] },
+]
+
+# The spinner row of a running turn: "✻ Pondering… (12s · ↑ 1.2k tokens · esc to interrupt)", and the
+# mode footer "⏵⏵ accept edits on · esc to interrupt". The row starts with a spinner glyph (or ⏵/⏸)
+# at the line start (at most two spaces of indent: quoted text in an answer is indented further, and a
+# sentence that merely mentions "esc to interrupt" does not start with a glyph).
+[[rules]]
+id = "interrupt_row_working"
+state = "working"
+priority = 500
+region = "bottom(8)"
+regex = ['(?mi)^ {0,2}(?:[⏸⏵]|[*·✢✳✶✻✽][ \t]+\S)[^\r\n]*esc to interrupt']
+
+# The lead has finished but background agents still run: "✻ Waiting for 3 background agents to finish".
+[[rules]]
+id = "background_agents_working"
+state = "working"
+priority = 490
+region = "bottom(8)"
+regex = ['(?m)^ {0,2}[*·✢✳✶✻✽][ \t]+Waiting for [1-9][0-9]* background agents? to finish\s*$']
+
+# The composer: "❯ " between two horizontal rules (older versions: a boxed "> ").
+[[rules]]
+id = "prompt_idle"
+state = "idle"
+priority = 100
+region = "bottom(6)"
+regex = ['(?m)^\s*[│|]?\s*[❯>](?:\s|$)']

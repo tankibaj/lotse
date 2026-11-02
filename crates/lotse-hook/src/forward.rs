@@ -46,7 +46,16 @@ pub struct Config {
     pub session_id: Option<String>,
     pub agent: AgentKind,
     pub deadline: Duration,
+    /// The hook comes from the plugin Lotse injects into the pane (`--injected`), not from the
+    /// user's global settings: the payload is tagged [`SOURCE_FIELD`] so the daemon can drop the
+    /// twin event when both are installed.
+    pub injected: bool,
 }
+
+/// Payload field the daemon reads (and removes) to tell injected hooks from global ones.
+pub const SOURCE_FIELD: &str = "lotse_source";
+/// Value of [`SOURCE_FIELD`] for an injected hook.
+pub const SOURCE_INJECTED: &str = "injected";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -83,6 +92,7 @@ impl Config {
                 session_id: None,
                 agent,
                 deadline: DEFAULT_DEADLINE,
+                injected: false,
             },
             _ => Config::in_data_dir(&data_dir(get(DATA_DIR_ENV).as_deref())?, agent, None),
         };
@@ -98,6 +108,7 @@ impl Config {
             session_id,
             agent,
             deadline: DEFAULT_DEADLINE,
+            injected: false,
         }
     }
 }
@@ -125,6 +136,9 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
         fields.remove("tool_response");
         if cfg.agent == AgentKind::ClaudeCode {
             minimize_claude(fields);
+        }
+        if cfg.injected {
+            fields.insert(SOURCE_FIELD.into(), SOURCE_INJECTED.into());
         }
     }
     let request = Request::HookEvent {
@@ -363,6 +377,23 @@ mod tests {
                 "tool_use_id": "tu1",
                 "tool_input": {"file_path": "/a/b.rs"},
             })
+        );
+        d.handle.join().unwrap();
+    }
+
+    #[test]
+    fn an_injected_hook_tags_the_payload_so_the_daemon_can_drop_a_twin() {
+        let d = fake_daemon(Mode::Accept, "t");
+        let mut cfg = cfg(&d, Some("a1"));
+        cfg.injected = true;
+        run(&cfg, &br#"{"hook_event_name":"Stop"}"#[..]).unwrap();
+        let (_, req) = d.received.recv().unwrap();
+        let Request::HookEvent { payload, .. } = req.request else {
+            panic!("expected a hook event");
+        };
+        assert_eq!(
+            payload,
+            serde_json::json!({"hook_event_name": "Stop", "lotse_source": "injected"})
         );
         d.handle.join().unwrap();
     }

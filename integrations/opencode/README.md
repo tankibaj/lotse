@@ -39,3 +39,15 @@ reference): the `permission.asked` fields that feed the card's tool and summary 
 `session.error` shape (`error.name`, `error.data.message`), and whether the plugin must be listed in
 `opencode.json` instead of being picked up from the `plugins/` directory. A missing field only blanks
 the card's summary; it never changes the status.
+
+## Injected per pane (no install)
+
+`lotsed` writes this plugin to `<data dir>/integrations/opencode/default/plugins/lotse-status.js` and sets
+`OPENCODE_CONFIG_DIR` to that directory in every pane. OpenCode adds `$OPENCODE_CONFIG_DIR` to its config
+directories (its global one stays), so nothing in `~/.config/opencode` changes. If the pane already has an
+`OPENCODE_CONFIG_DIR`, the daemon builds `<data dir>/integrations/opencode/<hash>/` that symlinks every
+entry of that directory (and of its `plugins/`) next to the plugin, and points the pane there.
+
+With the plugin installed globally too, the copy that loads second in the same OpenCode process stays inert
+for that project directory, so events are reported once. Child sessions (`session.created` with `parentID`)
+arrive as `parent_id` and become sub-agents.

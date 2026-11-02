@@ -210,3 +210,33 @@ fn opencode_plugin_install_and_uninstall_leave_foreign_files_alone() {
         foreign
     );
 }
+
+#[test]
+fn the_injected_flag_tags_the_event_for_the_daemon() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    std::fs::write(data.path().join("token"), "tok\n").unwrap();
+    let listener = UnixListener::bind(data.path().join("lotsed.sock")).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().unwrap();
+        let _hello = read_frame(&mut conn).unwrap();
+        let Some(Frame::Control(Message::Request(req))) = read_frame(&mut conn).unwrap() else {
+            panic!("request expected");
+        };
+        let reply = Message::Response(ResponseEnvelope {
+            req_id: req.req_id,
+            response: Response::Ok,
+        });
+        write_frame(&mut conn, &Frame::Control(reply)).unwrap();
+        req
+    });
+    let mut cmd = hook(home.path(), data.path());
+    cmd.env("LOTSE_SESSION_ID", "a3")
+        .args(["claude", "--injected"]);
+    let out = run_with_stdin(cmd, br#"{"hook_event_name":"Stop"}"#);
+    assert!(out.status.success() && out.stdout.is_empty());
+    let Request::HookEvent { payload, .. } = daemon.join().unwrap().request else {
+        panic!("hook event expected");
+    };
+    assert_eq!(payload["lotse_source"], "injected");
+}

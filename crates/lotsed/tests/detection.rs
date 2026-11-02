@@ -208,6 +208,135 @@ fn sub_agents_flow_through_events_and_a_muted_project_stays_quiet() {
     let _: Vec<SubAgent> = sub_agents;
 }
 
+/// Every `integrations/claude/fixtures/subagents.json` step, sent through the real daemon socket:
+/// each change of the sub-agent list arrives as `sub_agents_changed` with the full list.
+#[test]
+fn claude_subagent_fixture_flows_through_the_daemon_as_full_lists() {
+    let fixture: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../integrations/claude/fixtures/subagents.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("fixture"));
+    let s = agent_session(&mut c, &project, AgentKind::ClaudeCode);
+    let mut known = json!([]);
+    for step in fixture["steps"].as_array().unwrap() {
+        hook(&mut c, &s, step["payload"].clone());
+        let expected = &step["sub_agents"];
+        if expected != &known {
+            let want = expected.clone();
+            let Event::SubAgentsChanged { sub_agents, .. } = c.wait_event(
+                |e| matches!(e, Event::SubAgentsChanged { sub_agents, .. } if json!(sub_agents) == want),
+            ) else {
+                unreachable!()
+            };
+            assert_eq!(json!(sub_agents), *expected);
+            known = expected.clone();
+        }
+    }
+}
+
+/// A session that meets its first hook in the middle of a turn (Lotse started late, three
+/// background sub-agents already running): the UI only learns of a sub-agent from
+/// `sub_agents_changed`, so that event comes before any `sub_agent_status` of the same id, and the
+/// status leaves `unknown` through a hook-sourced `status_changed`.
+#[test]
+fn first_hooks_announce_sub_agents_before_their_status_and_set_a_hook_status() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("late"));
+    let s = agent_session(&mut c, &project, AgentKind::ClaudeCode);
+    for (id, name) in [("a1", "explore"), ("a2", "review"), ("a3", "tests")] {
+        hook(
+            &mut c,
+            &s,
+            json!({"hook_event_name": "SubagentStart", "agent_id": id, "agent_type": name}),
+        );
+    }
+    hook(
+        &mut c,
+        &s,
+        json!({"hook_event_name": "SubagentStop", "agent_id": "a2", "agent_type": "review"}),
+    );
+    c.drain(Duration::from_millis(300));
+
+    let mut announced: Vec<String> = Vec::new();
+    let mut statuses = 0;
+    let mut hook_status = false;
+    for e in &c.events {
+        match e {
+            Event::SubAgentsChanged { sub_agents, .. } => {
+                announced = sub_agents.iter().map(|s| s.id.to_string()).collect();
+            }
+            Event::SubAgentStatus { sub_agent_id, .. } => {
+                statuses += 1;
+                assert!(
+                    announced.contains(&sub_agent_id.to_string()),
+                    "sub_agent_status for {sub_agent_id} before it was announced: {:?}",
+                    c.events
+                );
+            }
+            Event::StatusChanged { source, .. } => {
+                hook_status |= *source == lotse_proto::DetectSource::Hook;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(announced.len(), 3, "the last list holds all three");
+    assert!(statuses >= 4, "{statuses}");
+    assert!(hook_status, "{:?}", c.events);
+}
+
+/// The OpenCode plugin's payloads for a child session (`integrations/opencode/fixtures`), sent
+/// through the real daemon socket: the child shows up as a sub-agent with the full list.
+#[test]
+fn opencode_child_sessions_flow_through_the_daemon_as_sub_agents() {
+    let fixture: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../integrations/opencode/fixtures/subagent_session.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("opencode"));
+    let s = agent_session(&mut c, &project, AgentKind::OpenCode);
+    let mut known = json!([]);
+    for step in fixture["payloads"].as_array().unwrap() {
+        c.expect_ok(Request::HookEvent {
+            agent: AgentKind::OpenCode,
+            session_id: Some(s.id.clone()),
+            payload: step["payload"].clone(),
+        });
+        let expected = &step["sub_agents"];
+        if expected != &known {
+            let want = expected.clone();
+            c.wait_event(
+                |e| matches!(e, Event::SubAgentsChanged { sub_agents, .. } if json!(sub_agents) == want),
+            );
+            known = expected.clone();
+        }
+    }
+    assert!(
+        c.events.iter().any(|e| matches!(
+            e,
+            Event::StatusChanged {
+                source: lotse_proto::DetectSource::Hook,
+                ..
+            }
+        )),
+        "{:?}",
+        c.events
+    );
+}
+
 #[test]
 fn osc_7501_queries_are_answered_on_the_pty() {
     let d = Daemon::start();
