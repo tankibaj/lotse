@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import type { ProjectId } from '../lib/client/types';
+import type { ProjectId, SessionId } from '../lib/client/types';
 
 // The one open overlay (the mock's `closeAll()` then show): opening any of them closes the others.
 // Sheets, Settings and Palette read it; their UI-command and key bindings write it.
@@ -12,7 +12,9 @@ export type Overlay =
   | { name: 'shortcuts' }
   | { name: 'palette' }
   | { name: 'settings'; section: SettingsSection }
-  | { name: 'projectStyle'; projectId: ProjectId; x: number; y: number };
+  | { name: 'projectStyle'; projectId: ProjectId; x: number; y: number }
+  | { name: 'changes'; sessionId: SessionId }
+  | { name: 'transcript'; sessionId: SessionId };
 
 let current: Overlay | null = null;
 const listeners = new Set<() => void>();

@@ -179,6 +179,80 @@ describe('MockClient behaviour', () => {
   });
 });
 
+describe('MockClient workspaces, diff, transcript and usage (proto 3)', () => {
+  it('starts with one default workspace holding every project, and the mock usage', async () => {
+    const snap = await make().getSnapshot();
+    expect(snap.workspaces).toEqual([{ id: 'w1', name: 'Default' }]);
+    expect(snap.projects.every((p) => p.workspace_id === 'w1')).toBe(true);
+    expect(snap.usage).toMatchObject({ cost_micros: 4_180_000 });
+    expect(snap.usage.input_tokens + snap.usage.output_tokens + snap.usage.cache_read_tokens + snap.usage.cache_write_tokens).toBe(412_000);
+  });
+
+  it('creates, renames, moves into and deletes workspaces, emitting the daemon events', async () => {
+    const c = make();
+    const events = collect(c);
+    const ws = await c.createWorkspace('  Client work ');
+    expect(ws.name).toBe('Client work');
+    await expect(c.createWorkspace('client WORK')).rejects.toMatchObject({ code: 'conflict' });
+    await expect(c.createWorkspace('  ')).rejects.toMatchObject({ code: 'invalid_request' });
+    expect(await c.renameWorkspace(ws.id, 'Clients')).toEqual({ id: ws.id, name: 'Clients' });
+    await expect(c.renameWorkspace('nope', 'x')).rejects.toBeInstanceOf(DaemonError);
+
+    const moved = await c.moveProject('p2', ws.id);
+    expect(moved.workspace_id).toBe(ws.id);
+    await expect(c.moveProject('p2', 'nope')).rejects.toMatchObject({ code: 'not_found' });
+
+    // not while it has projects, unless they move to the default workspace
+    await expect(c.deleteWorkspace(ws.id, false)).rejects.toMatchObject({ code: 'conflict' });
+    await c.deleteWorkspace(ws.id, true);
+    const snap = await c.getSnapshot();
+    expect(snap.workspaces).toEqual([{ id: 'w1', name: 'Default' }]);
+    expect(snap.projects.find((p) => p.id === 'p2')?.workspace_id).toBe('w1');
+    await expect(c.deleteWorkspace('w1', true)).rejects.toMatchObject({ code: 'conflict' });
+    expect(events.map((e) => e.event)).toEqual([
+      'workspace_added',
+      'workspace_updated',
+      'project_updated',
+      'project_updated',
+      'workspace_removed',
+    ]);
+  });
+
+  it('answers Show Changes: files for a dirty git session, none for a clean one, no git for notes', async () => {
+    const c = make();
+    const dirty = await c.getDiff('a1');
+    expect(dirty.is_git).toBe(true);
+    expect(dirty.files.map((f) => f.status)).toEqual(['modified', 'added', 'modified', 'untracked']);
+    expect(dirty.files.some((f) => f.binary)).toBe(true);
+    const a7 = (await c.listSessions()).find((s) => s.id === 'a7')!;
+    expect(a7.git.is_git).toBe(false);
+    expect((await c.getDiff('a7')).is_git).toBe(false);
+    await expect(c.getDiff('nope')).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('answers Show Transcript for Claude Code and Codex, and refuses OpenCode and Terminal', async () => {
+    const c = make();
+    const snap = await c.getSnapshot();
+    const of = (agent: string) => snap.sessions.find((s) => s.agent === agent)!.id;
+    const t = await c.getTranscript(of('claude_code'));
+    expect(t.available).toBe(true);
+    expect(t.turns.map((x) => x.role)).toContain('tool');
+    expect((await c.getTranscript(of('claude_code'), 2)).turns).toHaveLength(2);
+    expect((await c.getTranscript(of('codex'))).available).toBe(true);
+    await expect(c.getTranscript(of('opencode'))).rejects.toMatchObject({ code: 'unavailable', message: 'Not available for OpenCode' });
+    await expect(c.getTranscript(of('terminal'))).rejects.toMatchObject({ code: 'unavailable' });
+  });
+
+  it('pushes usage_changed when the usage moves', async () => {
+    const c = make();
+    const events = collect(c);
+    const usage = { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, cost_micros: null };
+    c.setUsage(usage);
+    expect(events).toEqual([{ event: 'usage_changed', data: usage }]);
+    expect((await c.getSnapshot()).usage).toEqual(usage);
+  });
+});
+
 describe('DaemonClient mirrors the proto', () => {
   // request method (wire name) -> DaemonClient method
   const CLIENT_METHOD: Record<string, string> = {
@@ -188,6 +262,10 @@ describe('DaemonClient mirrors the proto', () => {
     add_project: 'addProject',
     update_project: 'updateProject',
     remove_project: 'removeProject',
+    move_project: 'moveProject',
+    create_workspace: 'createWorkspace',
+    rename_workspace: 'renameWorkspace',
+    delete_workspace: 'deleteWorkspace',
     list_sessions: 'listSessions',
     create_session: 'createSession',
     rename_session: 'renameSession',
@@ -203,6 +281,8 @@ describe('DaemonClient mirrors the proto', () => {
     update_settings: 'updateSettings',
     detect_launch_commands: 'detectLaunchCommands',
     get_git_info: 'getGitInfo',
+    get_diff: 'getDiff',
+    get_transcript: 'getTranscript',
     hook_event: 'hookEvent',
     shutdown: 'shutdown',
   };

@@ -44,5 +44,18 @@
   ] } } },
   { "type": "response", "body": { "req_id": 25, "response": { "kind": "git_info", "data": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding" } } } },
   { "type": "response", "body": { "req_id": 26, "response": { "kind": "git_info", "data": { "is_git": false, "branch": "", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null } } } },
-  { "type": "response", "body": { "req_id": 11, "response": { "kind": "error", "data": { "code": "not_found", "message": "no session a99" } } } }
+  { "type": "response", "body": { "req_id": 11, "response": { "kind": "error", "data": { "code": "not_found", "message": "no session a99" } } } },
+  { "type": "response", "body": { "req_id": 29, "response": { "kind": "workspace", "data": { "id": "w2", "name": "Client work" } } } },
+  { "type": "response", "body": { "req_id": 33, "response": { "kind": "diff", "data": { "is_git": true, "truncated": false, "files": [
+    { "path": "src/invoice.rs", "old_path": null, "status": "modified", "binary": false, "truncated": false,
+      "diff": "diff --git a/src/invoice.rs b/src/invoice.rs\nindex 1a2b3c4..5d6e7f8 100644\n--- a/src/invoice.rs\n+++ b/src/invoice.rs\n@@ -10,3 +10,3 @@ fn total() {\n-    round(x)\n+    round_half_even(x)\n }\n" },
+    { "path": "assets/logo.png", "old_path": null, "status": "added", "binary": true, "truncated": false, "diff": "" },
+    { "path": "notes.md", "old_path": null, "status": "untracked", "binary": false, "truncated": false, "diff": "" }
+  ] } } } },
+  { "type": "response", "body": { "req_id": 34, "response": { "kind": "transcript", "data": { "available": true, "truncated": false, "turns": [
+    { "role": "user", "text": "Fix the invoice rounding", "tool": null, "at": 1793610000000 },
+    { "role": "assistant", "text": "I'll look at the rounding code first.", "tool": null, "at": 1793610005000 },
+    { "role": "tool", "text": "", "tool": { "name": "Bash", "summary": "cargo test invoice" }, "at": 1793610010000 }
+  ] } } } },
+  { "type": "response", "body": { "req_id": 35, "response": { "kind": "transcript", "data": { "available": false, "truncated": false, "turns": [] } } } }
 ]

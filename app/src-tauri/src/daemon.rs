@@ -578,4 +578,60 @@ mod tests {
         assert_eq!(v["event"], "session_closed");
         assert_eq!(v["data"]["session_id"], "s-1");
     }
+
+    /// Proto 3: what the webview sends through `daemon_request` parses, and what the daemon pushes
+    /// reaches `lotse://event` in the shape `types.ts` declares.
+    #[test]
+    fn proto_3_requests_parse_and_events_serialize_like_the_typescript_mirror() {
+        let parse = |v: Value| serde_json::from_value::<Request>(v).unwrap();
+        assert!(matches!(
+            parse(serde_json::json!({"method": "create_workspace", "params": {"name": "Home"}})),
+            Request::CreateWorkspace { .. }
+        ));
+        assert!(matches!(
+            parse(
+                serde_json::json!({"method": "delete_workspace", "params": {"workspace_id": "w2", "move_projects": true}})
+            ),
+            Request::DeleteWorkspace {
+                move_projects: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parse(
+                serde_json::json!({"method": "move_project", "params": {"project_id": "p1", "workspace_id": "w2"}})
+            ),
+            Request::MoveProject { .. }
+        ));
+        assert!(matches!(
+            parse(serde_json::json!({"method": "get_diff", "params": {"session_id": "s-1"}})),
+            Request::GetDiff { .. }
+        ));
+        assert!(matches!(
+            parse(
+                serde_json::json!({"method": "get_transcript", "params": {"session_id": "s-1", "limit": null}})
+            ),
+            Request::GetTranscript { limit: None, .. }
+        ));
+
+        let v = serde_json::to_value(Event::UsageChanged(lotse_proto::UsageToday {
+            input_tokens: 1,
+            output_tokens: 2,
+            cache_read_tokens: 3,
+            cache_write_tokens: 4,
+            cost_micros: Some(5),
+        }))
+        .unwrap();
+        assert_eq!(v["event"], "usage_changed");
+        assert_eq!(v["data"]["cost_micros"], 5);
+        let v = serde_json::to_value(Event::WorkspaceRemoved {
+            workspace_id: lotse_proto::WorkspaceId::new("w2"),
+        })
+        .unwrap();
+        assert_eq!(
+            (v["event"].as_str(), v["data"]["workspace_id"].as_str()),
+            (Some("workspace_removed"), Some("w2"))
+        );
+        assert_eq!(PROTO_VERSION, 3);
+    }
 }

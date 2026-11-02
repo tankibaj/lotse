@@ -6,9 +6,13 @@
 //   openProjectStyle (project id)                -> WP5: colour and icon popover next to the project row
 //   splitSession (session id)                    -> WP4: open the session in the right pane
 //   splitSessionDown (session id)                -> WP4: open the session in a pane below the focused one
+//   showChanges (session id)                     -> WP5: read-only `git diff` sheet of the session's folder
+//   showTranscript (session id)                  -> WP5: read-only transcript sheet
 //   toggleSidebar                                -> shell
 
 export type UiCommand =
+  | 'showChanges'
+  | 'showTranscript'
   | 'openSettings'
   | 'openPalette'
   | 'openNewSession'

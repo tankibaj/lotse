@@ -38,5 +38,12 @@
   { "type": "request", "body": { "req_id": 25, "request": { "method": "get_git_info", "params": { "project_id": "p1", "session_id": "a1" } } } },
   { "type": "request", "body": { "req_id": 26, "request": { "method": "get_git_info", "params": { "project_id": "p5", "session_id": null } } } },
   { "type": "request", "body": { "req_id": 27, "request": { "method": "hook_event", "params": { "agent": "claude_code", "session_id": "a3", "payload": { "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "cwd": "/Users/naim/Repos/praxis-web" } } } } },
-  { "type": "request", "body": { "req_id": 28, "request": { "method": "shutdown" } } }
+  { "type": "request", "body": { "req_id": 28, "request": { "method": "shutdown" } } },
+  { "type": "request", "body": { "req_id": 29, "request": { "method": "create_workspace", "params": { "name": "Client work" } } } },
+  { "type": "request", "body": { "req_id": 30, "request": { "method": "rename_workspace", "params": { "workspace_id": "w2", "name": "Clients" } } } },
+  { "type": "request", "body": { "req_id": 31, "request": { "method": "delete_workspace", "params": { "workspace_id": "w2", "move_projects": true } } } },
+  { "type": "request", "body": { "req_id": 32, "request": { "method": "move_project", "params": { "project_id": "p2", "workspace_id": "w2" } } } },
+  { "type": "request", "body": { "req_id": 33, "request": { "method": "get_diff", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 34, "request": { "method": "get_transcript", "params": { "session_id": "a1", "limit": 50 } } } },
+  { "type": "request", "body": { "req_id": 35, "request": { "method": "get_transcript", "params": { "session_id": "a3", "limit": null } } } }
 ]

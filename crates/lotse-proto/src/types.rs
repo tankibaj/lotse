@@ -73,6 +73,13 @@ pub enum NotificationMode {
     },
 }
 
+/// Groups projects in the sidebar (Workspace › Project › Agent › Sub-agent). Since proto 3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub id: WorkspaceId,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
     pub id: ProjectId,
@@ -348,13 +355,111 @@ pub struct DaemonInfo {
     pub started_at: UnixMs,
 }
 
+/// How a file differs from `HEAD` in `GetDiff` (staged and unstaged together).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffStatus {
+    Modified,
+    Added,
+    Deleted,
+    Renamed,
+    /// Not tracked: listed by name, no diff text.
+    Untracked,
+}
+
+/// One file of a session's `git diff`. Since proto 3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiffFile {
+    pub path: String,
+    /// Previous path of a rename.
+    pub old_path: Option<String>,
+    pub status: DiffStatus,
+    /// Git reports "Binary files … differ": noted, no diff text.
+    pub binary: bool,
+    /// The text below was cut at the per-file or total size cap.
+    pub truncated: bool,
+    /// Unified diff of this file (headers and hunks); empty for untracked and binary files.
+    pub diff: String,
+}
+
+/// Answer to `get_diff`: the session folder's changes against `HEAD` plus untracked names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitDiff {
+    /// `false`: the folder is not in a git repository ("No git").
+    pub is_git: bool,
+    pub files: Vec<DiffFile>,
+    /// The total size cap was hit: files after the last one are left out.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptRole {
+    User,
+    Assistant,
+    /// A tool call the agent made (`tool` is set, `text` is empty).
+    Tool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptTool {
+    /// `Bash`, `Edit`, …
+    pub name: String,
+    /// Short, e.g. the command or file path.
+    pub summary: String,
+}
+
+/// One turn of the agent's conversation. Since proto 3.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptTurn {
+    pub role: TranscriptRole,
+    pub text: String,
+    pub tool: Option<TranscriptTool>,
+    pub at: Option<UnixMs>,
+}
+
+/// Answer to `get_transcript`: the last turns of the agent's own transcript file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Transcript {
+    /// `false`: the agent has not reported a transcript file yet (no hook has fired).
+    pub available: bool,
+    pub turns: Vec<TranscriptTurn>,
+    /// Older turns were left out (count or size cap).
+    pub truncated: bool,
+}
+
+/// Tokens and cost of today (local time), summed over the Claude Code transcripts the daemon knows.
+/// Since proto 3.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageToday {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    /// Millionths of a US dollar; `None` when a model without a known price took part ("tokens only").
+    pub cost_micros: Option<u64>,
+}
+
+impl UsageToday {
+    /// All four kinds of tokens: the number the status bar shows.
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_write_tokens)
+    }
+}
+
 /// Everything a client needs to draw the first frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub daemon: DaemonInfo,
+    /// In creation order; the first is the default workspace.
+    pub workspaces: Vec<Workspace>,
     pub projects: Vec<Project>,
     pub sessions: Vec<Session>,
     pub settings: Settings,
+    pub usage: UsageToday,
 }
 
 /// Answer to `attach`. PTY frames follow: first the replay of `replay_len` bytes, then live output.

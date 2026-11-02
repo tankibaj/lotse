@@ -95,6 +95,44 @@ describe('RealClient', () => {
     ]);
   });
 
+  it('maps the proto 3 methods: workspaces, move_project, get_diff, get_transcript', async () => {
+    const seen: Request[] = [];
+    const ws = { id: 'w2', name: 'Client work' };
+    const h = fakeHost((r) => {
+      seen.push(r);
+      switch (r.method) {
+        case 'create_workspace':
+        case 'rename_workspace':
+          return { kind: 'workspace', data: ws };
+        case 'move_project':
+          return { kind: 'project', data: snapshot.projects[0]! };
+        case 'get_diff':
+          return { kind: 'diff', data: { is_git: true, files: [], truncated: false } };
+        case 'get_transcript':
+          return { kind: 'transcript', data: { available: false, turns: [], truncated: false } };
+        default:
+          return { kind: 'ok' };
+      }
+    });
+    const c = new RealClient({ transport: h.transport });
+    expect(await c.createWorkspace('Client work')).toEqual(ws);
+    expect(await c.renameWorkspace('w2', 'Clients')).toEqual(ws);
+    await c.deleteWorkspace('w2', true);
+    expect((await c.moveProject('p1', 'w2')).id).toBe('p1');
+    expect((await c.getDiff('s1')).is_git).toBe(true);
+    expect((await c.getTranscript('s1')).available).toBe(false);
+    await c.getTranscript('s1', 20);
+    expect(seen).toEqual([
+      { method: 'create_workspace', params: { name: 'Client work' } },
+      { method: 'rename_workspace', params: { workspace_id: 'w2', name: 'Clients' } },
+      { method: 'delete_workspace', params: { workspace_id: 'w2', move_projects: true } },
+      { method: 'move_project', params: { project_id: 'p1', workspace_id: 'w2' } },
+      { method: 'get_diff', params: { session_id: 's1' } },
+      { method: 'get_transcript', params: { session_id: 's1', limit: null } },
+      { method: 'get_transcript', params: { session_id: 's1', limit: 20 } },
+    ]);
+  });
+
   it('turns a proto error into a DaemonError with its code', async () => {
     const h = fakeHost(() => ({ kind: 'error', data: { code: 'conflict', message: 'the process is still running; Retry re-runs a command that has exited' } }));
     const c = new RealClient({ transport: h.transport });

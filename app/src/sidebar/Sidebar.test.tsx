@@ -2,6 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockClient, SUB_AGENT_SCRIPT } from '../lib/client/MockClient';
+import { toggleNeedFilter } from '../lib/state';
 import { onUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { hostBridge, setHostBridge } from '../sheets/hostBridge';
@@ -513,6 +514,7 @@ describe('context menus', () => {
       expect.stringContaining('New Session…'),
       expect.stringContaining('Notifications'),
       expect.stringContaining('Change Icon & Color…'),
+      expect.stringContaining('Move to Workspace'),
       expect.stringContaining('Reveal in Finder'),
       expect.stringContaining('Copy Path'),
       expect.stringContaining('Rename…'),
@@ -630,12 +632,48 @@ describe('context menus', () => {
     expect(document.querySelector('[data-sid="a6"]')).toBeNull();
   });
 
-  it('session menu: Open, Beta items disabled, Stop closes an idle session at once', async () => {
+  it('Show Transcript and Show Changes: on for a Codex session in a git folder, and they raise their UI commands', async () => {
+    await ready();
+    const transcript = vi.fn();
+    const changes = vi.fn();
+    const offs = [onUiCommand('showTranscript', transcript), onUiCommand('showChanges', changes)];
+    fireEvent.contextMenu(card('a2'));
+    let menu = screen.getByRole('menu', { name: 'Flyway migration V42 actions' });
+    expect(within(menu).getByRole('menuitem', { name: /Show Transcript/ })).not.toHaveAttribute('aria-disabled', 'true');
+    expect(within(menu).getByRole('menuitem', { name: /Show Changes/ })).not.toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /Show Transcript/ }));
+    expect(transcript).toHaveBeenCalledWith('a2');
+    fireEvent.contextMenu(card('a2'));
+    menu = screen.getByRole('menu', { name: 'Flyway migration V42 actions' });
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /Show Changes/ }));
+    expect(changes).toHaveBeenCalledWith('a2');
+    offs.forEach((off) => off());
+  });
+
+  it('Show Transcript is off with a reason for OpenCode and Terminal; Show Changes is off without git', async () => {
+    await ready();
+    // a6 is OpenCode in a git folder
+    fireEvent.contextMenu(card('a6'));
+    let menu = screen.getByRole('menu', { name: /actions$/ });
+    const t = within(menu).getByRole('menuitem', { name: /Show Transcript/ });
+    expect(t).toHaveAttribute('aria-disabled', 'true');
+    expect(t).toHaveAttribute('title', 'Not available for OpenCode');
+    expect(within(menu).getByRole('menuitem', { name: /Show Changes/ })).not.toHaveAttribute('aria-disabled', 'true');
+    await userEvent.keyboard('{Escape}');
+    // a7 is a Terminal in the notes folder: no transcript, no git
+    fireEvent.contextMenu(card('a7'));
+    menu = screen.getByRole('menu', { name: /actions$/ });
+    expect(within(menu).getByRole('menuitem', { name: /Show Transcript/ })).toHaveAttribute('title', 'Not available for Terminal');
+    const c = within(menu).getByRole('menuitem', { name: /Show Changes/ });
+    expect(c).toHaveAttribute('aria-disabled', 'true');
+    expect(c).toHaveAttribute('title', expect.stringMatching(/^No git/));
+    expect(c).toHaveTextContent('No git');
+  });
+
+  it('session menu: Open, Stop closes an idle session at once', async () => {
     const { client } = await ready();
     fireEvent.contextMenu(card('a2'));
     const menu = screen.getByRole('menu', { name: 'Flyway migration V42 actions' });
-    expect(within(menu).getByRole('menuitem', { name: /Show Transcript/ })).toHaveAttribute('aria-disabled', 'true');
-    expect(within(menu).getByRole('menuitem', { name: /Show Changes/ })).toHaveAttribute('aria-disabled', 'true');
     expect(within(menu).getByRole('menuitem', { name: /Split Right/ })).not.toHaveAttribute('aria-disabled', 'true');
     await userEvent.click(within(menu).getByRole('menuitem', { name: /^Open(?! in)/ }));
     expect(getSelectedSessionId()).toBe('a2');
@@ -680,5 +718,152 @@ describe('context menus', () => {
     expect(screen.getByRole('menuitem', { name: /Rename/ })).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     expect(screen.getByRole('textbox', { name: 'Session title' })).toBeInTheDocument();
+  });
+});
+
+describe('workspaces', () => {
+  const wsRow = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}`) });
+  const inWorkspace = (id: string) => within(document.querySelector<HTMLElement>(`[data-workspace="${id}"]`)!);
+
+  /** Two workspaces: praxis-web (a perm and a failed session) moves into "Client work". */
+  async function withClientWork() {
+    const view = await ready();
+    const ws = await view.client.createWorkspace('Client work');
+    await view.client.moveProject('p2', ws.id);
+    await screen.findByRole('button', { name: /^Client work/ });
+    return { ...view, ws };
+  }
+
+  it('with one workspace there are no headers: the tree is the mock\'s', async () => {
+    await ready();
+    expect(document.querySelector('[data-wid]')).toBeNull();
+    expect(document.querySelector('[data-workspace]')).toBeNull();
+    expect(screen.queryByText('Default')).toBeNull();
+  });
+
+  it('with several, headers group the projects, in daemon order, and an empty one says so', async () => {
+    const { client, ws } = await withClientWork();
+    await client.createWorkspace('Home');
+    await screen.findByRole('button', { name: /^Home/ });
+    expect([...document.querySelectorAll('[data-wid]')].map((h) => h.textContent)).toEqual(['Default', 'Client work', 'Home']);
+    expect(inWorkspace('w1').getByText('billing-api')).toBeInTheDocument();
+    expect(inWorkspace('w1').queryByText('praxis-web')).toBeNull();
+    expect(inWorkspace(ws.id).getByText('praxis-web')).toBeInTheDocument();
+    expect(document.querySelector(`[data-workspace="${ws.id}"] [data-sid="a3"]`)).not.toBeNull();
+    expect(screen.getByText('No projects')).toBeInTheDocument();
+  });
+
+  it('collapsing a workspace hides its projects, rolls the most urgent state up, and is remembered', async () => {
+    const { ws } = await withClientWork();
+    await userEvent.click(wsRow('Client work'));
+    expect(wsRow('Client work')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('praxis-web')).toBeNull();
+    expect(document.querySelector('[data-sid="a3"]')).toBeNull();
+    // praxis-web has a permission request (a3) and a failure (a4): ▲ and ✕ with their colours
+    const header = within(wsRow('Client work'));
+    expect(header.getByText('', { selector: '[data-rollup="perm"]' })).toBeInTheDocument();
+    expect(wsRow('Client work').querySelector('[data-rollup="fail"]')).not.toBeNull();
+    expect(JSON.parse(localStorage.getItem('lotse-collapsed') ?? '[]')).toEqual([ws.id]);
+    await userEvent.click(wsRow('Client work'));
+    expect(screen.getByText('praxis-web')).toBeInTheDocument();
+    expect(wsRow('Client work').querySelector('[data-rollup]')).toBeNull();
+  });
+
+  it('the roll-up of a collapsed workspace is the top state: run beats done', async () => {
+    const { client } = await ready();
+    const ws = await client.createWorkspace('Tools');
+    await client.moveProject('p4', ws.id); // dotfiles: done
+    await client.moveProject('p3', ws.id); // infra-terraform: run
+    await screen.findByRole('button', { name: /^Tools/ });
+    await userEvent.click(wsRow('Tools'));
+    expect(wsRow('Tools').querySelector('[data-rollup="run"]')).not.toBeNull();
+  });
+
+  it('arrow keys walk the visible sessions and skip a collapsed workspace', async () => {
+    await withClientWork();
+    await userEvent.click(wsRow('Client work')); // collapse
+    cardMain('a1').focus();
+    selectSession('a1');
+    const last = ['a1', 'a2', 'a5', 'a6', 'a7'];
+    // a1 a2 (billing-api), a5 (infra), a6 (dotfiles), a7 (notes); a3 a4 are hidden
+    for (const id of last.slice(1)) {
+      await userEvent.keyboard('{ArrowDown}');
+      expect(getSelectedSessionId()).toBe(id);
+    }
+    // ← on a workspace header collapses, → expands
+    wsRow('Default').focus();
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(wsRow('Default')).toHaveAttribute('aria-expanded', 'false');
+    await userEvent.keyboard('{ArrowRight}');
+    expect(wsRow('Default')).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('project menu: Move to Workspace lists the workspaces (current one checked) and moves the project', async () => {
+    const { client, ws } = await withClientWork();
+    fireEvent.contextMenu(row(/billing-api/));
+    await userEvent.hover(screen.getByRole('menuitem', { name: /Move to Workspace/ }));
+    const sub = screen.getByRole('menu', { name: 'Move to Workspace' });
+    expect(within(sub).getByRole('menuitemcheckbox', { name: 'Default' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(sub).getByRole('menuitemcheckbox', { name: 'Client work' })).toHaveAttribute('aria-checked', 'false');
+    expect(within(sub).getByRole('menuitem', { name: /New Workspace…/ })).toBeInTheDocument();
+    await userEvent.click(within(sub).getByRole('menuitemcheckbox', { name: 'Client work' }));
+    await waitFor(() => expect(inWorkspace(ws.id).queryByText('billing-api')).not.toBeNull());
+    expect((await client.listProjects()).find((p) => p.id === 'p1')?.workspace_id).toBe(ws.id);
+  });
+
+  it('"New Workspace…" in the project menu asks for a name, creates the workspace and moves the project there', async () => {
+    const { client } = await ready();
+    fireEvent.contextMenu(row(/notes/));
+    await userEvent.hover(screen.getByRole('menuitem', { name: /Move to Workspace/ }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /New Workspace…/ }));
+    const dialog = screen.getByRole('dialog', { name: 'New Workspace' });
+    // a name that is taken keeps the dialog open with the daemon's reason
+    await userEvent.type(within(dialog).getByRole('textbox', { name: 'Workspace name' }), 'default{Enter}');
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('a workspace with that name exists');
+    const input = within(dialog).getByRole('textbox', { name: 'Workspace name' });
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Private{Enter}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'New Workspace' })).toBeNull());
+    const ws = (await client.getSnapshot()).workspaces.find((w) => w.name === 'Private')!;
+    await waitFor(() => expect(inWorkspace(ws.id).queryByText('notes')).not.toBeNull());
+  });
+
+  it('workspace menu: rename in place; Delete moves the projects to the default workspace after asking', async () => {
+    const { client, ws } = await withClientWork();
+    fireEvent.contextMenu(wsRow('Client work'));
+    const menu = screen.getByRole('menu', { name: 'Client work actions' });
+    expect(within(menu).getAllByRole('menuitem').map((i) => i.textContent)).toEqual(['New Workspace…', 'Rename…', 'Delete Workspace…']);
+    await userEvent.click(within(menu).getByRole('menuitem', { name: 'Rename…' }));
+    const input = screen.getByRole('textbox', { name: 'Workspace name' });
+    await userEvent.clear(input);
+    await userEvent.type(input, 'Clients{Enter}');
+    await screen.findByRole('button', { name: /^Clients/ });
+    expect((await client.getSnapshot()).workspaces.map((w) => w.name)).toEqual(['Default', 'Clients']);
+
+    fireEvent.contextMenu(wsRow('Clients'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Delete Workspace/ }));
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('Its 1 project move to Default');
+    await userEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(document.querySelector('[data-wid]')).toBeNull()); // one workspace left: no headers
+    expect(screen.getByText('praxis-web')).toBeInTheDocument();
+    expect((await client.listProjects()).find((p) => p.id === 'p2')?.workspace_id).toBe('w1');
+    expect(ws.id).not.toBe('w1');
+  });
+
+  it('the default workspace cannot be deleted from its menu', async () => {
+    await withClientWork();
+    fireEvent.contextMenu(wsRow('Default'));
+    const item = screen.getByRole('menuitem', { name: /Delete Workspace/ });
+    expect(item).toHaveAttribute('aria-disabled', 'true');
+    expect(item).toHaveAttribute('title', 'The default workspace cannot be deleted');
+  });
+
+  it('the need-you filter keeps only the workspaces with something that needs you', async () => {
+    const { client } = await withClientWork();
+    const sessions = await client.listSessions();
+    act(() => toggleNeedFilter(sessions));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /^Default/ })).toBeNull());
+    expect(wsRow('Client work')).toBeInTheDocument();
+    expect(document.querySelector('[data-workspace] [data-sid="a3"]')).not.toBeNull();
   });
 });

@@ -223,6 +223,58 @@ fn snapshot_mock_reproduces_the_mock_states() {
 
     // Settings defaults equal the mock's Settings screens.
     assert_eq!(s.settings, Settings::default());
+
+    // One default workspace holds every project (the single-workspace sidebar of the mock).
+    assert_eq!(s.workspaces.len(), 1);
+    assert!(
+        s.projects
+            .iter()
+            .all(|p| p.workspace_id == s.workspaces[0].id)
+    );
+
+    // Status bar: "Today 412k tokens · $4.18".
+    assert_eq!(s.usage.total_tokens(), 412_000);
+    assert_eq!(s.usage.cost_micros, Some(4_180_000));
+}
+
+#[test]
+fn proto_version_is_3() {
+    assert_eq!(PROTO_VERSION, 3);
+}
+
+/// The TypeScript mirror and the Tauri bridge rely on these exact shapes.
+#[test]
+fn v3_messages_have_the_documented_wire_shape() {
+    use serde_json::json;
+    let req = Request::DeleteWorkspace {
+        workspace_id: WorkspaceId::new("w2"),
+        move_projects: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        json!({"method": "delete_workspace", "params": {"workspace_id": "w2", "move_projects": true}})
+    );
+    let resp = Response::Workspace(Workspace {
+        id: WorkspaceId::new("w2"),
+        name: "Client work".into(),
+    });
+    assert_eq!(
+        serde_json::to_value(&resp).unwrap(),
+        json!({"kind": "workspace", "data": {"id": "w2", "name": "Client work"}})
+    );
+    let ev = Event::UsageChanged(UsageToday {
+        input_tokens: 1,
+        output_tokens: 2,
+        cache_read_tokens: 3,
+        cache_write_tokens: 4,
+        cost_micros: None,
+    });
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({"event": "usage_changed", "data": {"input_tokens": 1, "output_tokens": 2,
+            "cache_read_tokens": 3, "cache_write_tokens": 4, "cost_micros": null}})
+    );
+    assert_eq!(UsageToday::default().total_tokens(), 0);
 }
 
 #[test]

@@ -15,6 +15,9 @@ pub struct Config {
     /// Ask `$SHELL -l -i` for the user's real environment (PATH from `.zshrc`, nvm, brew, …).
     /// Tests switch it off so they never source the real dotfiles.
     pub login_env: bool,
+    /// The user's home folder: agent transcripts are only read from below it. Tests point it at
+    /// a temp dir so they never touch the real `~/.claude`.
+    pub home: Option<PathBuf>,
 }
 
 impl Config {
@@ -22,6 +25,7 @@ impl Config {
         Self {
             data_dir,
             login_env,
+            home: dirs::home_dir(),
         }
     }
 

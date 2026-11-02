@@ -9,10 +9,12 @@ use crate::hub::{ClientTx, Hub};
 use crate::launch::{self, LaunchEnv};
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
+use crate::transcript;
+use crate::usage::{DayBounds, UsageTracker};
 use lotse_proto::{
     AgentKind, DaemonInfo, DetectSource, ErrorCode, Event, Frame, Message, NewProject, NewSession,
     PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
-    ResponseEnvelope, Session, SessionId, Settings, Snapshot, WorkspaceId,
+    ResponseEnvelope, Session, SessionId, Settings, Snapshot, Transcript, Workspace, WorkspaceId,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -37,6 +39,11 @@ const DEFAULT_ROWS: u16 = 24;
 const DETECT_TICK: Duration = Duration::from_millis(100);
 /// How often each session's git line is re-read.
 const GIT_REFRESH: Duration = Duration::from_secs(5);
+/// How often today's token usage is re-read (changed transcripts only) and pushed if it moved.
+const USAGE_REFRESH: Duration = Duration::from_secs(5);
+/// Transcripts last announced longer ago than this are not followed after a restart.
+const TRANSCRIPT_MEMORY_MS: u64 = 3 * 24 * 3_600_000;
+const MAX_WORKSPACE_NAME: usize = 100;
 
 fn err(code: ErrorCode, message: impl Into<String>) -> Response {
     Response::Error(ProtoError {
@@ -92,6 +99,8 @@ pub struct State {
     env: OnceCell<Arc<LaunchEnv>>,
     /// Plugins of the agents' status hooks, written once at start and injected into every pane.
     inject: Injection,
+    /// Today's tokens and cost, from the Claude Code transcripts hooks announce.
+    usage: Arc<UsageTracker>,
 }
 
 impl State {
@@ -102,6 +111,16 @@ impl State {
         }
         let settings = db.load_settings()?;
         let data_dir = cfg.data_dir.clone();
+        // follow the transcripts of the previous run too: today's total survives a restart
+        let usage = Arc::new(UsageTracker::new());
+        if let Some(home) = cfg.home.as_deref() {
+            let since = now_ms().saturating_sub(TRANSCRIPT_MEMORY_MS);
+            for raw in db.recent_transcripts(since)? {
+                if let Some(path) = transcript::validate_path(&raw, home) {
+                    usage.add(path);
+                }
+            }
+        }
         Ok(Arc::new(Self {
             cfg,
             hub: Arc::new(Hub::default()),
@@ -113,6 +132,7 @@ impl State {
             closing: AtomicBool::new(false),
             env: OnceCell::new(),
             inject: Injection::prepare(&data_dir),
+            usage,
         }))
     }
 
@@ -146,6 +166,8 @@ impl State {
             hub: self.hub.clone(),
             db: self.db.clone(),
             settings: self.settings.clone(),
+            usage: self.usage.clone(),
+            home: self.cfg.home.clone(),
         }
     }
 
@@ -230,6 +252,18 @@ impl State {
             Request::AddProject(np) => self.add_project(np),
             Request::UpdateProject { project_id, patch } => self.update_project(&project_id, patch),
             Request::RemoveProject { project_id } => self.remove_project(&project_id),
+            Request::MoveProject {
+                project_id,
+                workspace_id,
+            } => self.move_project(&project_id, &workspace_id),
+            Request::CreateWorkspace { name } => self.create_workspace(&name),
+            Request::RenameWorkspace { workspace_id, name } => {
+                self.rename_workspace(&workspace_id, &name)
+            }
+            Request::DeleteWorkspace {
+                workspace_id,
+                move_projects,
+            } => self.delete_workspace(&workspace_id, move_projects),
             Request::ListSessions { project_id } => {
                 Response::Sessions(self.session_list(project_id.as_ref()))
             }
@@ -317,6 +351,10 @@ impl State {
                 project_id,
                 session_id,
             } => self.git_info(&project_id, session_id.as_ref()).await,
+            Request::GetDiff { session_id } => self.get_diff(&session_id).await,
+            Request::GetTranscript { session_id, limit } => {
+                self.get_transcript(&session_id, limit).await
+            }
             Request::HookEvent {
                 agent,
                 session_id,
@@ -343,6 +381,10 @@ impl State {
             Ok(p) => p,
             Err(e) => return db_err(e),
         };
+        let workspaces = match self.db.list_workspaces() {
+            Ok(w) => w,
+            Err(e) => return db_err(e),
+        };
         Response::Snapshot(Snapshot {
             daemon: DaemonInfo {
                 version: env!("CARGO_PKG_VERSION").into(),
@@ -350,10 +392,172 @@ impl State {
                 pid: std::process::id(),
                 started_at: self.started_at,
             },
+            workspaces,
             projects,
             sessions: self.session_list(None),
             settings: self.settings(),
+            usage: self.usage.current(),
         })
+    }
+
+    // workspaces
+
+    fn create_workspace(&self, name: &str) -> Response {
+        let name = match check_workspace_name(name) {
+            Ok(n) => n,
+            Err(m) => return err(ErrorCode::InvalidRequest, m),
+        };
+        let ws = Workspace {
+            id: WorkspaceId::new(format!("w-{}", short_id())),
+            name,
+        };
+        match self.db.insert_workspace(&ws, now_ms()) {
+            Ok(()) => {}
+            Err(DbError::NameTaken) => return name_taken(),
+            Err(e) => return db_err(e),
+        }
+        self.hub.broadcast(Event::WorkspaceAdded(ws.clone()));
+        Response::Workspace(ws)
+    }
+
+    fn rename_workspace(&self, id: &WorkspaceId, name: &str) -> Response {
+        let name = match check_workspace_name(name) {
+            Ok(n) => n,
+            Err(m) => return err(ErrorCode::InvalidRequest, m),
+        };
+        match self.db.rename_workspace(id, &name) {
+            Ok(true) => {}
+            Ok(false) => return not_found("workspace"),
+            Err(DbError::NameTaken) => return name_taken(),
+            Err(e) => return db_err(e),
+        }
+        let ws = Workspace {
+            id: id.clone(),
+            name,
+        };
+        self.hub.broadcast(Event::WorkspaceUpdated(ws.clone()));
+        Response::Workspace(ws)
+    }
+
+    /// The default workspace stays. Projects of the deleted one go to it (`move_projects`) or the
+    /// request is refused: deleting a workspace never deletes projects.
+    fn delete_workspace(&self, id: &WorkspaceId, move_projects: bool) -> Response {
+        if id.as_str() == DEFAULT_WORKSPACE {
+            return err(
+                ErrorCode::Conflict,
+                "the default workspace cannot be deleted",
+            );
+        }
+        match self.db.get_workspace(id) {
+            Ok(Some(_)) => {}
+            Ok(None) => return not_found("workspace"),
+            Err(e) => return db_err(e),
+        }
+        let default = WorkspaceId::new(DEFAULT_WORKSPACE);
+        let moved: Vec<Project> = match self.db.list_projects() {
+            Ok(all) => all.into_iter().filter(|p| &p.workspace_id == id).collect(),
+            Err(e) => return db_err(e),
+        };
+        if !moved.is_empty() && !move_projects {
+            return err(
+                ErrorCode::Conflict,
+                format!("the workspace still has {} project(s)", moved.len()),
+            );
+        }
+        match self
+            .db
+            .delete_workspace(id, move_projects.then_some(&default))
+        {
+            Ok(_) => {}
+            Err(DbError::NotEmpty) => {
+                return err(ErrorCode::Conflict, "the workspace still has projects");
+            }
+            Err(e) => return db_err(e),
+        }
+        for mut p in moved {
+            p.workspace_id = default.clone();
+            self.hub.broadcast(Event::ProjectUpdated(p));
+        }
+        self.hub.broadcast(Event::WorkspaceRemoved {
+            workspace_id: id.clone(),
+        });
+        Response::Ok
+    }
+
+    fn move_project(&self, id: &ProjectId, workspace: &WorkspaceId) -> Response {
+        let mut p = match self.db.get_project(id) {
+            Ok(Some(p)) => p,
+            Ok(None) => return not_found("project"),
+            Err(e) => return db_err(e),
+        };
+        match self.db.get_workspace(workspace) {
+            Ok(Some(_)) => {}
+            Ok(None) => return not_found("workspace"),
+            Err(e) => return db_err(e),
+        }
+        if &p.workspace_id == workspace {
+            return Response::Project(p);
+        }
+        if let Err(e) = self.db.set_project_workspace(id, workspace) {
+            return db_err(e);
+        }
+        p.workspace_id = workspace.clone();
+        self.hub.broadcast(Event::ProjectUpdated(p.clone()));
+        Response::Project(p)
+    }
+
+    // Show Changes, Show Transcript
+
+    async fn get_diff(&self, id: &SessionId) -> Response {
+        let Some(h) = self.session(id) else {
+            return not_found("session");
+        };
+        let dir = h.cwd();
+        match tokio::task::spawn_blocking(move || lotse_git::diff(&dir)).await {
+            Ok(Ok(d)) => Response::Diff(d),
+            Ok(Err(e)) => git_err(&e),
+            Err(e) => internal(e),
+        }
+    }
+
+    async fn get_transcript(&self, id: &SessionId, limit: Option<u32>) -> Response {
+        let Some(h) = self.session(id) else {
+            return not_found("session");
+        };
+        let Some((agent, path)) = h.transcript() else {
+            // no hook has named a transcript: nothing to show (yet), or the agent has none at all
+            return match h.snapshot().agent {
+                a @ (AgentKind::Terminal | AgentKind::OpenCode) => err(
+                    ErrorCode::Unavailable,
+                    format!("Not available for {}", a.label()),
+                ),
+                AgentKind::ClaudeCode | AgentKind::Codex => Response::Transcript(Transcript {
+                    available: false,
+                    turns: Vec::new(),
+                    truncated: false,
+                }),
+            };
+        };
+        let Some(home) = self.cfg.home.clone() else {
+            return err(ErrorCode::Unavailable, "no home folder");
+        };
+        let limit = limit.map_or(transcript::DEFAULT_TURNS, |l| l as usize);
+        match tokio::task::spawn_blocking(move || {
+            transcript::read_turns(&path, agent, limit, &home)
+        })
+        .await
+        {
+            Ok(Ok(t)) => Response::Transcript(t),
+            Ok(Err(e)) => err(ErrorCode::Unavailable, format!("transcript: {e}")),
+            Err(e) => internal(e),
+        }
+    }
+
+    /// Read what changed in the followed transcripts; push the total when it moved.
+    fn refresh_usage(&self) {
+        if let Some(usage) = self.usage.refresh(DayBounds::local(now_ms())) {
+            self.hub.broadcast(Event::UsageChanged(usage));
+        }
     }
 
     // projects
@@ -732,6 +936,19 @@ impl State {
                 tracing::error!("cannot start thread {name}: {e}");
             }
         };
+        spawn("lotse-usage", USAGE_REFRESH, State::refresh_usage);
+        // the first total should not wait for a period
+        let first = Arc::downgrade(self);
+        let built = std::thread::Builder::new()
+            .name("lotse-usage-first".into())
+            .spawn(move || {
+                if let Some(state) = first.upgrade() {
+                    state.refresh_usage();
+                }
+            });
+        if let Err(e) = built {
+            tracing::error!("cannot start the first usage read: {e}");
+        }
         spawn("lotse-detect-tick", DETECT_TICK, |s| {
             for h in s.handles() {
                 h.tick();
@@ -781,6 +998,23 @@ fn hook_bin() -> Option<PathBuf> {
 
 fn not_found(what: &str) -> Response {
     err(ErrorCode::NotFound, format!("{what} not found"))
+}
+
+fn name_taken() -> Response {
+    err(ErrorCode::Conflict, "a workspace with that name exists")
+}
+
+fn check_workspace_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.chars().count() > MAX_WORKSPACE_NAME
+        || name.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "workspace name must be 1-{MAX_WORKSPACE_NAME} characters"
+        ));
+    }
+    Ok(name.to_owned())
 }
 
 fn short_id() -> String {

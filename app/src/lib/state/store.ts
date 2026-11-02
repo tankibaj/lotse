@@ -1,7 +1,17 @@
 import { useSyncExternalStore } from 'react';
 import type { DaemonClient, Unsubscribe } from '../client/DaemonClient';
 import { useClient } from '../client/context';
-import type { DaemonEvent, DaemonInfo, Project, ProjectId, Session, SessionId, Settings } from '../client/types';
+import type {
+  DaemonEvent,
+  DaemonInfo,
+  Project,
+  ProjectId,
+  Session,
+  SessionId,
+  Settings,
+  UsageToday,
+  Workspace,
+} from '../client/types';
 import { getSelectedSessionId, selectSession, subscribeSelection } from '../ui/selection';
 import { groupSessions, mostUrgent, needYouCount } from './selectors';
 
@@ -16,18 +26,24 @@ export interface WorkspaceState {
   loaded: boolean;
   connection: 'connected' | 'disconnected';
   daemon: DaemonInfo | null;
+  /** Sidebar groups, default first. The sidebar shows them only when there is more than one. */
+  workspaces: Workspace[];
   projects: Project[];
   sessions: Session[];
   settings: Settings | null;
+  /** Today's tokens and cost (status bar). */
+  usage: UsageToday | null;
 }
 
 export const INITIAL_STATE: WorkspaceState = {
   loaded: false,
   connection: 'connected',
   daemon: null,
+  workspaces: [],
   projects: [],
   sessions: [],
   settings: null,
+  usage: null,
 };
 
 const patchSession = (state: WorkspaceState, id: SessionId, patch: (s: Session) => Session): WorkspaceState => {
@@ -48,6 +64,14 @@ export function reduceEvent(state: WorkspaceState, e: DaemonEvent): WorkspaceSta
         projects: state.projects.filter((p) => p.id !== e.data.project_id),
         sessions: state.sessions.filter((s) => s.project_id !== e.data.project_id),
       };
+    case 'workspace_added':
+      return state.workspaces.some((w) => w.id === e.data.id) ? state : { ...state, workspaces: [...state.workspaces, e.data] };
+    case 'workspace_updated':
+      return { ...state, workspaces: state.workspaces.map((w) => (w.id === e.data.id ? e.data : w)) };
+    case 'workspace_removed':
+      return { ...state, workspaces: state.workspaces.filter((w) => w.id !== e.data.workspace_id) };
+    case 'usage_changed':
+      return { ...state, usage: e.data };
     case 'session_created':
       return state.sessions.some((s) => s.id === e.data.id) ? state : { ...state, sessions: [...state.sessions, e.data] };
     case 'session_updated':
@@ -141,9 +165,11 @@ export class WorkspaceStore {
         loaded: true,
         connection: 'connected',
         daemon: snap.daemon,
+        workspaces: snap.workspaces,
         projects: snap.projects,
         sessions: snap.sessions,
         settings: snap.settings,
+        usage: snap.usage,
       };
       for (const e of this.queue ?? []) next = reduceEvent(next, e);
       this.queue = null;

@@ -1,5 +1,7 @@
 import type { DaemonClient } from '../lib/client/DaemonClient';
-import type { NotificationMode, Project, Session, Settings } from '../lib/client/types';
+import type { AgentKind, NotificationMode, Project, Session, Settings, Workspace, WorkspaceId } from '../lib/client/types';
+import { AGENT_LABEL } from '../lib/state/selectors';
+import { emitUiCommand } from '../lib/ui/commands';
 import type { MenuEntry } from './ContextMenu';
 
 type CustomMode = Extract<NotificationMode, { mode: 'custom' }>;
@@ -24,6 +26,11 @@ const fromGlobal = (s: Settings | null): CustomMode => ({
 export interface ProjectMenuActions {
   newSession: () => void;
   changeStyle: () => void;
+  workspaces: readonly Workspace[];
+  /** Move the project into a workspace. */
+  moveTo: (workspaceId: WorkspaceId) => void;
+  /** "New Workspace…": ask for a name, create it and move the project there. */
+  newWorkspace: () => void;
   /** Native only: `undefined` (browser) shows the item disabled. */
   reveal?: () => void;
   rename: () => void;
@@ -73,6 +80,22 @@ export function projectMenu(
       ],
     },
     { kind: 'item', label: 'Change Icon & Color…', onSelect: actions.changeStyle },
+    {
+      kind: 'item',
+      label: 'Move to Workspace',
+      submenu: [
+        ...actions.workspaces.map(
+          (w): MenuEntry => ({
+            kind: 'item',
+            label: w.name,
+            checked: w.id === project.workspace_id,
+            onSelect: w.id === project.workspace_id ? undefined : () => actions.moveTo(w.id),
+          }),
+        ),
+        { kind: 'separator' },
+        { kind: 'item', label: 'New Workspace…', onSelect: actions.newWorkspace },
+      ],
+    },
     { kind: 'separator' },
     actions.reveal
       ? { kind: 'item', label: 'Reveal in Finder', onSelect: actions.reveal }
@@ -96,8 +119,46 @@ export interface SessionMenuActions {
   stop: () => void;
 }
 
-/** Session context menu: Open, Split right, Split down, Rename, Show transcript / changes (Beta), Stop. */
+export interface WorkspaceMenuActions {
+  newWorkspace: () => void;
+  rename: () => void;
+  /** `undefined` for the default workspace, which stays. */
+  remove?: () => void;
+}
+
+/** Workspace header context menu: New Workspace, Rename, Delete (not the default one). */
+export function workspaceMenu(workspace: Workspace, actions: WorkspaceMenuActions): MenuEntry[] {
+  return [
+    { kind: 'header', label: workspace.name },
+    { kind: 'item', label: 'New Workspace…', onSelect: actions.newWorkspace },
+    { kind: 'item', label: 'Rename…', onSelect: actions.rename },
+    { kind: 'separator' },
+    actions.remove
+      ? { kind: 'item', label: 'Delete Workspace…', danger: true, onSelect: actions.remove }
+      : { kind: 'item', label: 'Delete Workspace…', disabled: true, hint: 'Default', title: 'The default workspace cannot be deleted' },
+  ];
+}
+
+/** Agents whose transcript the daemon can read (their hooks name the file). OpenCode's plugin does not. */
+const HAS_TRANSCRIPT: readonly AgentKind[] = ['claude_code', 'codex'];
+
+/**
+ * Session context menu: Open, Split right, Split down, Rename, Show Transcript, Show Changes, Stop.
+ * Show Transcript needs an agent with a transcript file; Show Changes needs a git folder.
+ */
 export function sessionMenu(session: Session, actions: SessionMenuActions): MenuEntry[] {
+  const transcript: MenuEntry = HAS_TRANSCRIPT.includes(session.agent)
+    ? { kind: 'item', label: 'Show Transcript', onSelect: () => emitUiCommand('showTranscript', session.id) }
+    : {
+        kind: 'item',
+        label: 'Show Transcript',
+        disabled: true,
+        hint: 'Unavailable',
+        title: `Not available for ${AGENT_LABEL[session.agent]}`,
+      };
+  const changes: MenuEntry = session.git.is_git
+    ? { kind: 'item', label: 'Show Changes', onSelect: () => emitUiCommand('showChanges', session.id) }
+    : { kind: 'item', label: 'Show Changes', disabled: true, hint: 'No git', title: 'No git: this folder is not a git repository' };
   return [
     { kind: 'header', label: session.title },
     { kind: 'item', label: 'Open', hint: '⏎', onSelect: actions.open },
@@ -105,8 +166,8 @@ export function sessionMenu(session: Session, actions: SessionMenuActions): Menu
     { kind: 'item', label: 'Open in Split Down', hint: '⌥⇧-click', onSelect: actions.splitDown },
     { kind: 'separator' },
     { kind: 'item', label: 'Rename…', onSelect: actions.rename },
-    { kind: 'item', label: 'Show Transcript', disabled: true, hint: 'Beta' },
-    { kind: 'item', label: 'Show Changes', disabled: true, hint: 'Beta' },
+    transcript,
+    changes,
     { kind: 'separator' },
     { kind: 'item', label: 'Stop Session', danger: true, onSelect: actions.stop },
   ];

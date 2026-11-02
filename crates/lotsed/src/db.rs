@@ -4,9 +4,10 @@
 //! A database written by a newer daemon is refused, never downgraded.
 
 use lotse_proto::{
-    AgentKind, NotificationMode, Project, ProjectId, SessionId, Settings, UnixMs, WorkspaceId,
+    AgentKind, NotificationMode, Project, ProjectId, SessionId, Settings, UnixMs, Workspace,
+    WorkspaceId,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard};
 
@@ -44,6 +45,13 @@ const MIGRATIONS: &[&str] = &[
          key TEXT PRIMARY KEY,
          value TEXT NOT NULL
      );",
+    // v2: workspaces become user-visible (names unique), transcripts the daemon has seen
+    // (today's token usage survives a daemon restart)
+    "CREATE UNIQUE INDEX workspaces_name ON workspaces(name COLLATE NOCASE);
+     CREATE TABLE transcripts (
+         path TEXT PRIMARY KEY,
+         seen_at INTEGER NOT NULL
+     );",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +62,10 @@ pub enum DbError {
     TooNew { found: u32, supported: u32 },
     #[error("bad stored value: {0}")]
     Corrupt(String),
+    #[error("a workspace with that name exists")]
+    NameTaken,
+    #[error("the workspace still has projects")]
+    NotEmpty,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -104,6 +116,107 @@ impl Db {
         Ok(self
             .conn()
             .pragma_query_value(None, "user_version", |r| r.get(0))?)
+    }
+
+    // workspaces
+
+    /// In creation order: the default workspace first.
+    pub fn list_workspaces(&self) -> DbResult<Vec<Workspace>> {
+        let conn = self.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, name FROM workspaces ORDER BY created_at, rowid")?;
+        let rows = stmt.query_map([], workspace_from_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn get_workspace(&self, id: &WorkspaceId) -> DbResult<Option<Workspace>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT id, name FROM workspaces WHERE id = ?1",
+                [id.as_str()],
+                workspace_from_row,
+            )
+            .optional()?)
+    }
+
+    /// `NameTaken` when another workspace has the name (case-insensitive).
+    pub fn insert_workspace(&self, w: &Workspace, created_at: UnixMs) -> DbResult<()> {
+        self.conn()
+            .execute(
+                "INSERT INTO workspaces (id, name, created_at) VALUES (?1, ?2, ?3)",
+                params![w.id.as_str(), w.name, created_at as i64],
+            )
+            .map_err(name_taken)?;
+        Ok(())
+    }
+
+    pub fn rename_workspace(&self, id: &WorkspaceId, name: &str) -> DbResult<bool> {
+        let n = self
+            .conn()
+            .execute(
+                "UPDATE workspaces SET name = ?2 WHERE id = ?1",
+                params![id.as_str(), name],
+            )
+            .map_err(name_taken)?;
+        Ok(n > 0)
+    }
+
+    /// Delete a workspace. Its projects go to `move_to` first (one transaction); without
+    /// `move_to`, a workspace that still has projects is refused (`NotEmpty`): the foreign key
+    /// would otherwise delete them with it.
+    pub fn delete_workspace(
+        &self,
+        id: &WorkspaceId,
+        move_to: Option<&WorkspaceId>,
+    ) -> DbResult<bool> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let projects: i64 = tx.query_row(
+            "SELECT count(*) FROM projects WHERE workspace_id = ?1",
+            [id.as_str()],
+            |r| r.get(0),
+        )?;
+        if projects > 0 {
+            let Some(target) = move_to else {
+                return Err(DbError::NotEmpty);
+            };
+            tx.execute(
+                "UPDATE projects SET workspace_id = ?2 WHERE workspace_id = ?1",
+                params![id.as_str(), target.as_str()],
+            )?;
+        }
+        let n = tx.execute("DELETE FROM workspaces WHERE id = ?1", [id.as_str()])?;
+        tx.commit()?;
+        Ok(n > 0)
+    }
+
+    pub fn set_project_workspace(&self, project: &ProjectId, ws: &WorkspaceId) -> DbResult<bool> {
+        let n = self.conn().execute(
+            "UPDATE projects SET workspace_id = ?2 WHERE id = ?1",
+            params![project.as_str(), ws.as_str()],
+        )?;
+        Ok(n > 0)
+    }
+
+    // transcripts the daemon has seen (usage)
+
+    pub fn remember_transcript(&self, path: &str, seen_at: UnixMs) -> DbResult<()> {
+        self.conn().execute(
+            "INSERT INTO transcripts (path, seen_at) VALUES (?1, ?2)
+             ON CONFLICT(path) DO UPDATE SET seen_at = excluded.seen_at",
+            params![path, seen_at as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Paths seen at or after `since`; older rows are dropped.
+    pub fn recent_transcripts(&self, since: UnixMs) -> DbResult<Vec<String>> {
+        let conn = self.conn();
+        conn.execute("DELETE FROM transcripts WHERE seen_at < ?1", [since as i64])?;
+        let mut stmt = conn.prepare("SELECT path FROM transcripts ORDER BY seen_at, path")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     // projects
@@ -311,6 +424,23 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     Ok(())
 }
 
+fn workspace_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
+    Ok(Workspace {
+        id: WorkspaceId::new(r.get::<_, String>(0)?),
+        name: r.get(1)?,
+    })
+}
+
+/// A unique-index violation of the workspace name.
+fn name_taken(e: rusqlite::Error) -> DbError {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::ConstraintViolation => {
+            DbError::NameTaken
+        }
+        other => DbError::Sqlite(other),
+    }
+}
+
 fn project_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DbResult<Project>> {
     let id: String = r.get(0)?;
     let workspace_id: String = r.get(1)?;
@@ -461,6 +591,138 @@ mod tests {
         s.scrollback_bytes = 1 << 20;
         db.save_settings(&s).unwrap();
         assert_eq!(db.load_settings().unwrap(), s);
+    }
+
+    fn ws(id: &str, name: &str) -> Workspace {
+        Workspace {
+            id: WorkspaceId::new(id),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn v2_migration_keeps_v1_rows_and_adds_unique_names_and_transcripts() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", true).unwrap();
+        conn.execute_batch(MIGRATIONS[0]).unwrap();
+        conn.pragma_update(None, "user_version", 1u32).unwrap();
+        conn.execute("INSERT INTO workspaces VALUES ('w1', 'Default', 0)", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO projects VALUES ('p1','w1','n','/a','teal','folder',0,'{\"mode\":\"global\"}',1)",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let version: u32 = conn
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let projects: i64 = conn
+            .query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(projects, 1, "v1 rows survive");
+        assert!(
+            conn.execute("INSERT INTO workspaces VALUES ('w2', 'default', 5)", [])
+                .is_err(),
+            "names are unique, case-insensitive"
+        );
+        conn.execute("INSERT INTO transcripts VALUES ('/x.jsonl', 1)", [])
+            .unwrap();
+    }
+
+    #[test]
+    fn workspaces_persist_rename_and_keep_creation_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("lotse.db");
+        let db = Db::open(&path).unwrap();
+        assert_eq!(db.list_workspaces().unwrap(), vec![ws("w1", "Default")]);
+        db.insert_workspace(&ws("w2", "Client work"), 10).unwrap();
+        db.insert_workspace(&ws("w3", "Home"), 20).unwrap();
+        assert!(matches!(
+            db.insert_workspace(&ws("w4", "client WORK"), 30),
+            Err(DbError::NameTaken)
+        ));
+        assert!(
+            db.rename_workspace(&WorkspaceId::new("w3"), "Private")
+                .unwrap()
+        );
+        assert!(matches!(
+            db.rename_workspace(&WorkspaceId::new("w3"), "Default"),
+            Err(DbError::NameTaken)
+        ));
+        assert!(!db.rename_workspace(&WorkspaceId::new("nope"), "X").unwrap());
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        let names: Vec<_> = db
+            .list_workspaces()
+            .unwrap()
+            .into_iter()
+            .map(|w| w.name)
+            .collect();
+        assert_eq!(names, ["Default", "Client work", "Private"]);
+        assert_eq!(
+            db.get_workspace(&WorkspaceId::new("w2")).unwrap(),
+            Some(ws("w2", "Client work"))
+        );
+    }
+
+    #[test]
+    fn deleting_a_workspace_never_deletes_its_projects() {
+        let db = Db::open_in_memory().unwrap();
+        let (w1, w2) = (WorkspaceId::new("w1"), WorkspaceId::new("w2"));
+        db.insert_workspace(&ws("w2", "Client work"), 10).unwrap();
+        db.insert_project(&project("p1", "/a"), 1).unwrap();
+        assert!(
+            db.set_project_workspace(&ProjectId::new("p1"), &w2)
+                .unwrap()
+        );
+        assert!(
+            !db.set_project_workspace(&ProjectId::new("zz"), &w2)
+                .unwrap()
+        );
+        assert_eq!(
+            db.get_project(&ProjectId::new("p1"))
+                .unwrap()
+                .unwrap()
+                .workspace_id,
+            w2
+        );
+
+        // refused while it has projects: nothing changes
+        assert!(matches!(
+            db.delete_workspace(&w2, None),
+            Err(DbError::NotEmpty)
+        ));
+        assert_eq!(db.list_workspaces().unwrap().len(), 2);
+        assert_eq!(db.list_projects().unwrap().len(), 1);
+
+        // moved to the default workspace in the same step
+        assert!(db.delete_workspace(&w2, Some(&w1)).unwrap());
+        assert_eq!(db.list_workspaces().unwrap(), vec![ws("w1", "Default")]);
+        assert_eq!(
+            db.get_project(&ProjectId::new("p1"))
+                .unwrap()
+                .unwrap()
+                .workspace_id,
+            w1
+        );
+
+        // an empty one needs no target
+        db.insert_workspace(&ws("w3", "Empty"), 20).unwrap();
+        assert!(db.delete_workspace(&WorkspaceId::new("w3"), None).unwrap());
+        assert!(!db.delete_workspace(&WorkspaceId::new("w3"), None).unwrap());
+    }
+
+    #[test]
+    fn transcripts_are_remembered_and_old_ones_dropped() {
+        let db = Db::open_in_memory().unwrap();
+        db.remember_transcript("/a.jsonl", 100).unwrap();
+        db.remember_transcript("/b.jsonl", 200).unwrap();
+        db.remember_transcript("/a.jsonl", 300).unwrap(); // seen again
+        assert_eq!(db.recent_transcripts(0).unwrap(), ["/b.jsonl", "/a.jsonl"]);
+        assert_eq!(db.recent_transcripts(250).unwrap(), ["/a.jsonl"]);
+        assert_eq!(db.recent_transcripts(0).unwrap(), ["/a.jsonl"], "pruned");
     }
 
     #[test]

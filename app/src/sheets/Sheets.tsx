@@ -2,13 +2,18 @@ import { useEffect } from 'react';
 import { useClient } from '../lib/client';
 import { onUiCommand } from '../lib/ui/commands';
 import { AddProjectSheet } from './AddProjectSheet';
+import { ChangesSheet } from './ChangesSheet';
 import { hostBridge } from './hostBridge';
 import { NewSessionSheet } from './NewSessionSheet';
 import { openOverlay, openProjectStylePicker, toggleOverlay, useOverlay } from './overlay';
 import { ProjectStylePicker } from './ProjectStylePicker';
 import { ShortcutsSheet } from './ShortcutsSheet';
+import { TranscriptSheet } from './TranscriptSheet';
 
-/** New session, Add project, project colour/icon popover and the shortcuts sheet. Listens for `openNewSession` / `openAddProject`. */
+/**
+ * New session, Add project, project colour/icon popover, the shortcuts sheet and the read-only Show Changes /
+ * Show Transcript sheets. Listens for `openNewSession` / `openAddProject` / `showChanges` / `showTranscript`.
+ */
 export function Sheets() {
   const client = useClient();
   const overlay = useOverlay();
@@ -17,6 +22,8 @@ export function Sheets() {
     const offs = [
       onUiCommand('openNewSession', (projectId) => openOverlay({ name: 'newSession', projectId })),
       onUiCommand('openAddProject', () => openOverlay({ name: 'addProject' })),
+      onUiCommand('showChanges', (sessionId) => sessionId && openOverlay({ name: 'changes', sessionId })),
+      onUiCommand('showTranscript', (sessionId) => sessionId && openOverlay({ name: 'transcript', sessionId })),
       onUiCommand('openProjectStyle', (projectId) => {
         if (!projectId) return;
         // below the project's tile, like the mock's popover
@@ -83,6 +90,8 @@ export function Sheets() {
       {overlay?.name === 'addProject' && <AddProjectSheet key={overlay.repos?.root ?? 'home'} />}
       {overlay?.name === 'shortcuts' && <ShortcutsSheet />}
       {overlay?.name === 'projectStyle' && <ProjectStylePicker key={overlay.projectId} />}
+      {overlay?.name === 'changes' && <ChangesSheet key={overlay.sessionId} sessionId={overlay.sessionId} />}
+      {overlay?.name === 'transcript' && <TranscriptSheet key={overlay.sessionId} sessionId={overlay.sessionId} />}
     </>
   );
 }

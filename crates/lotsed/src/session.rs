@@ -10,6 +10,8 @@ use crate::hub::{Bytes, ClientTx, Hub};
 use crate::perm_answer::{AnswerError, always_option, answer_keys};
 use crate::ring::Ring;
 use crate::title::{LineTracker, derive_title};
+use crate::transcript;
+use crate::usage::UsageTracker;
 use lotse_detect::engine::StatusUpdate;
 use lotse_detect::osc7501::QUERY_REPLY;
 use lotse_proto::{
@@ -21,7 +23,7 @@ use nix::unistd::Pid;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -53,6 +55,10 @@ pub struct Ctx {
     pub db: Arc<Db>,
     /// Shared with the registry: notification toggles are read when a status changes.
     pub settings: Arc<RwLock<Settings>>,
+    /// Follows the Claude Code transcripts that hooks announce (today's tokens and cost).
+    pub usage: Arc<UsageTracker>,
+    /// Transcript paths must lie below it; `None` accepts none.
+    pub home: Option<PathBuf>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -223,6 +229,8 @@ pub struct SessionHandle {
     id: SessionId,
     ctx: Ctx,
     activity: Activity,
+    /// The agent's transcript file, as its latest hook announced it (validated).
+    transcript: Mutex<Option<(AgentKind, PathBuf)>>,
     inner: Mutex<Inner>,
 }
 
@@ -304,6 +312,7 @@ impl SessionHandle {
             id: meta.id.clone(),
             ctx,
             activity: Activity::new(),
+            transcript: Mutex::new(None),
             inner: Mutex::new(Inner {
                 limiter: NotifyLimiter::default(),
                 detector,
@@ -440,6 +449,7 @@ impl SessionHandle {
     /// An agent hook payload (`Request::HookEvent`).
     pub fn on_hook(&self, agent: AgentKind, payload: serde_json::Value) {
         self.activity.bump();
+        self.note_transcript(agent, &payload);
         let at = now_ms();
         let triggers = {
             let mut g = self.lock();
@@ -450,6 +460,51 @@ impl SessionHandle {
             self.apply(&mut g, update.into_iter().collect())
         };
         self.notify(triggers);
+    }
+
+    /// Keep the newest `transcript_path` of a Claude Code or Codex hook, if it passes
+    /// [`transcript::validate_path`]. Claude Code transcripts also feed today's usage.
+    fn note_transcript(&self, agent: AgentKind, payload: &serde_json::Value) {
+        if !matches!(agent, AgentKind::ClaudeCode | AgentKind::Codex) {
+            return;
+        }
+        let Some(raw) = payload.get("transcript_path").and_then(|v| v.as_str()) else {
+            return;
+        };
+        if self
+            .transcript()
+            .is_some_and(|(a, p)| a == agent && p == Path::new(raw))
+        {
+            return; // the same file as the last hook: already checked
+        }
+        let Some(path) = self
+            .ctx
+            .home
+            .as_deref()
+            .and_then(|home| transcript::validate_path(raw, home))
+        else {
+            tracing::debug!("session {}: transcript path refused", self.id);
+            return;
+        };
+        if agent == AgentKind::ClaudeCode && self.ctx.usage.add(path.clone()) {
+            let now = now_ms();
+            if let Err(e) = self
+                .ctx
+                .db
+                .remember_transcript(&path.to_string_lossy(), now)
+            {
+                tracing::warn!("remembering a transcript path: {e}");
+            }
+        }
+        *self.transcript.lock().unwrap_or_else(|e| e.into_inner()) = Some((agent, path));
+    }
+
+    /// The agent and transcript file its hooks announced, once one has.
+    pub fn transcript(&self) -> Option<(AgentKind, PathBuf)> {
+        self.transcript
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// About every 100 ms: foreground process, screen sample, clock tick.
@@ -997,6 +1052,8 @@ mod tests {
             hub: Arc::new(Hub::default()),
             db: Arc::new(Db::open_in_memory().unwrap()),
             settings: Arc::new(RwLock::new(Settings::default())),
+            usage: Arc::new(UsageTracker::new()),
+            home: None,
         };
         let meta = Session {
             id: SessionId::new("s-1"),

@@ -14,6 +14,8 @@ export type MenuEntry =
       label: ReactNode;
       /** Right-aligned key hint, or the reason it is unavailable ("Beta"). */
       hint?: string;
+      /** Tooltip: the full reason when the hint is short. */
+      title?: string;
       /** Small glyph in the leading column (instead of the ✓ slot). */
       icon?: ReactNode;
       disabled?: boolean;
@@ -62,6 +64,7 @@ function Entries({ entries, onHoverItem, onPick }: {
             aria-checked={e.checked === undefined ? undefined : e.checked}
             aria-disabled={e.disabled || undefined}
             aria-haspopup={e.submenu ? 'menu' : undefined}
+            title={e.title}
             tabIndex={-1}
             data-entry={i}
             onMouseEnter={(ev) => {
@@ -170,7 +173,9 @@ export function ContextMenu({ x, y, label, entries, onClose }: {
     }
   };
 
-  const subEntries = sub ? (entries[sub.index] as Extract<MenuEntry, { kind: 'item' }>).submenu : undefined;
+  const subItem = sub ? (entries[sub.index] as Extract<MenuEntry, { kind: 'item' }>) : undefined;
+  const subEntries = subItem?.submenu;
+  const subLabel = typeof subItem?.label === 'string' ? subItem.label : 'Submenu';
 
   return createPortal(
     <div
@@ -195,7 +200,7 @@ export function ContextMenu({ x, y, label, entries, onClose }: {
         />
       </div>
       {sub && subEntries && (
-        <div ref={subRef} role="menu" aria-label="Notifications" className={`${BOX} w-[260px]`} style={{ left: sub.left, top: sub.top }}>
+        <div ref={subRef} role="menu" aria-label={subLabel} className={`${BOX} w-[260px]`} style={{ left: sub.left, top: sub.top }}>
           <Entries entries={subEntries} onHoverItem={() => {}} onPick={pick} />
         </div>
       )}

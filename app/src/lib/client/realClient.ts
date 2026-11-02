@@ -4,6 +4,7 @@ import type {
   AgentKind,
   AttachInfo,
   DaemonEvent,
+  GitDiff,
   GitInfo,
   HelloOk,
   LaunchCommandInfo,
@@ -19,6 +20,9 @@ import type {
   SessionId,
   Settings,
   Snapshot,
+  Transcript,
+  Workspace,
+  WorkspaceId,
 } from './types';
 import { DaemonError } from './types';
 
@@ -222,6 +226,18 @@ export class RealClient implements DaemonClient {
   removeProject(projectId: ProjectId): Promise<void> {
     return this.ok({ method: 'remove_project', params: { project_id: projectId } });
   }
+  moveProject(projectId: ProjectId, workspaceId: WorkspaceId): Promise<Project> {
+    return this.data({ method: 'move_project', params: { project_id: projectId, workspace_id: workspaceId } }, 'project');
+  }
+  createWorkspace(name: string): Promise<Workspace> {
+    return this.data({ method: 'create_workspace', params: { name } }, 'workspace');
+  }
+  renameWorkspace(workspaceId: WorkspaceId, name: string): Promise<Workspace> {
+    return this.data({ method: 'rename_workspace', params: { workspace_id: workspaceId, name } }, 'workspace');
+  }
+  deleteWorkspace(workspaceId: WorkspaceId, moveProjects: boolean): Promise<void> {
+    return this.ok({ method: 'delete_workspace', params: { workspace_id: workspaceId, move_projects: moveProjects } });
+  }
   listSessions(projectId?: ProjectId): Promise<Session[]> {
     return this.data({ method: 'list_sessions', params: { project_id: projectId ?? null } }, 'sessions');
   }
@@ -276,6 +292,12 @@ export class RealClient implements DaemonClient {
   }
   getGitInfo(projectId: ProjectId, sessionId?: SessionId): Promise<GitInfo> {
     return this.data({ method: 'get_git_info', params: { project_id: projectId, session_id: sessionId ?? null } }, 'git_info');
+  }
+  getDiff(sessionId: SessionId): Promise<GitDiff> {
+    return this.data({ method: 'get_diff', params: { session_id: sessionId } }, 'diff');
+  }
+  getTranscript(sessionId: SessionId, limit?: number): Promise<Transcript> {
+    return this.data({ method: 'get_transcript', params: { session_id: sessionId, limit: limit ?? null } }, 'transcript');
   }
   hookEvent(agent: AgentKind, sessionId: SessionId | null, payload: unknown): Promise<void> {
     return this.ok({ method: 'hook_event', params: { agent, session_id: sessionId, payload } });
