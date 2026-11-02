@@ -146,7 +146,8 @@ pub enum Request {
         session_id: Option<SessionId>,
     },
 
-    /// From `lotse-hook`: an agent hook payload, forwarded verbatim.
+    /// From `lotse-hook`: an agent hook payload. Forwarded as received, except that `lotse-hook`
+    /// strips `tool_response` (tool output can be huge and no adapter reads it).
     HookEvent {
         agent: AgentKind,
         session_id: Option<SessionId>,

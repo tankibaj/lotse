@@ -3,13 +3,14 @@
 use crate::config::Config;
 use crate::db::{DEFAULT_WORKSPACE, Db, DbError, SessionRow};
 use crate::git;
+use crate::git_glue;
 use crate::hub::{ClientTx, Hub};
 use crate::launch::{self, LaunchEnv};
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
 use lotse_proto::{
-    AgentKind, DaemonInfo, DetectSource, ErrorCode, Event, Frame, GitInfo, Message, NewProject,
-    NewSession, PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
+    AgentKind, DaemonInfo, DetectSource, ErrorCode, Event, Frame, Message, NewProject, NewSession,
+    PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
     ResponseEnvelope, Session, SessionId, Settings, Snapshot, WorkspaceId,
 };
 use std::collections::HashMap;
@@ -31,6 +32,10 @@ const MAX_SCROLLBACK: u64 = 32 * 1024 * 1024;
 const KILL_GRACE: Duration = Duration::from_secs(2);
 const DEFAULT_COLS: u16 = 80;
 const DEFAULT_ROWS: u16 = 24;
+/// Detectors sample the screen and the foreground process this often.
+const DETECT_TICK: Duration = Duration::from_millis(100);
+/// How often each session's git line is re-read.
+const GIT_REFRESH: Duration = Duration::from_secs(5);
 
 fn err(code: ErrorCode, message: impl Into<String>) -> Response {
     Response::Error(ProtoError {
@@ -46,6 +51,16 @@ fn internal(e: impl std::fmt::Display) -> Response {
 
 fn db_err(e: DbError) -> Response {
     internal(e)
+}
+
+fn git_err(e: &lotse_git::GitError) -> Response {
+    use lotse_git::GitError as G;
+    let code = match e {
+        G::InvalidBranch(_) | G::NotADirectory(_) | G::NotARepo(_) => ErrorCode::InvalidRequest,
+        G::PathExists(_) => ErrorCode::Conflict,
+        _ => ErrorCode::Unavailable,
+    };
+    err(code, e.to_string())
 }
 
 fn session_err(e: SessionError) -> Response {
@@ -64,7 +79,7 @@ pub struct State {
     cfg: Config,
     pub hub: Arc<Hub>,
     db: Arc<Db>,
-    settings: RwLock<Settings>,
+    settings: Arc<RwLock<Settings>>,
     sessions: RwLock<HashMap<SessionId, Arc<SessionHandle>>>,
     started_at: u64,
     shutdown: Notify,
@@ -84,7 +99,7 @@ impl State {
             cfg,
             hub: Arc::new(Hub::default()),
             db: Arc::new(db),
-            settings: RwLock::new(settings),
+            settings: Arc::new(RwLock::new(settings)),
             sessions: RwLock::new(HashMap::new()),
             started_at: now_ms(),
             shutdown: Notify::new(),
@@ -122,6 +137,7 @@ impl State {
         Ctx {
             hub: self.hub.clone(),
             db: self.db.clone(),
+            settings: self.settings.clone(),
         }
     }
 
@@ -286,11 +302,20 @@ impl State {
             Request::GetGitInfo {
                 project_id,
                 session_id,
-            } => self.git_info(&project_id, session_id.as_ref()),
-            // Forwarded to the status engine when WP8 wires `lotse-detect`; accepted and acknowledged now.
-            Request::HookEvent { session_id, .. } => match session_id {
-                Some(id) if self.session(&id).is_none() => not_found("session"),
-                _ => Response::Ok,
+            } => self.git_info(&project_id, session_id.as_ref()).await,
+            Request::HookEvent {
+                agent,
+                session_id,
+                payload,
+            } => match session_id {
+                None => Response::Ok,
+                Some(id) => match self.session(&id) {
+                    None => not_found("session"),
+                    Some(h) => {
+                        h.on_hook(agent, payload);
+                        Response::Ok
+                    }
+                },
             },
             Request::Shutdown => {
                 self.shutdown.notify_one();
@@ -421,12 +446,6 @@ impl State {
             Ok(None) => return not_found("project"),
             Err(e) => return db_err(e),
         };
-        if ns.worktree.is_some() {
-            return err(
-                ErrorCode::Unavailable,
-                "worktree sessions need the git helpers (WP7); create the session without a worktree",
-            );
-        }
         let settings = self.settings();
         let command = match ns.command.as_deref().map(str::trim) {
             Some(c) if !c.is_empty() => c.to_owned(),
@@ -437,14 +456,14 @@ impl State {
             Ok(a) => a,
             Err(m) => return err(ErrorCode::InvalidRequest, format!("launch command: {m}")),
         };
-        let cwd = PathBuf::from(&project.path);
-        if !cwd.is_dir() {
+        let project_dir = PathBuf::from(&project.path);
+        if !project_dir.is_dir() {
             return err(
                 ErrorCode::InvalidRequest,
                 format!("project folder {} does not exist", project.path),
             );
         }
-        match env.resolve(&argv, &cwd) {
+        match env.resolve(&argv, &project_dir) {
             Some(p) => argv[0] = p.to_string_lossy().into_owned(),
             None => {
                 return err(
@@ -453,6 +472,20 @@ impl State {
                 );
             }
         }
+        // after the command is known to exist: a worktree must not be left behind by a bad launch
+        let branch = ns.worktree.as_ref().map(|w| w.branch.clone());
+        let repo = project_dir.clone();
+        let (cwd, git) = match tokio::task::spawn_blocking(move || {
+            let cwd = git_glue::session_dir(&repo, branch.as_deref())?;
+            let git = git_glue::info(&cwd);
+            Ok::<_, lotse_git::GitError>((cwd, git))
+        })
+        .await
+        {
+            Ok(Ok(v)) => v,
+            Ok(Err(e)) => return git_err(&e),
+            Err(e) => return internal(e),
+        };
 
         let id = SessionId::new(format!("s-{}", short_id()));
         let (title, title_auto) = match ns
@@ -473,7 +506,7 @@ impl State {
             command: command.clone(),
             status: initial_status(ns.agent),
             sub_agents: Vec::new(),
-            git: git::info(&cwd),
+            git,
             created_at: now,
             last_activity: now,
             running_since: None,
@@ -483,7 +516,7 @@ impl State {
         };
         let spec = SpawnSpec {
             argv,
-            cwd,
+            cwd: cwd.clone(),
             env: self.session_env(&env, &id, &project.id),
         };
         let ring_cap = usize::try_from(settings.scrollback_bytes).unwrap_or(usize::MAX);
@@ -498,6 +531,7 @@ impl State {
             last_activity: now,
         };
         if let Err(e) = self.db.insert_session(&row) {
+            drop_new_worktree(&project_dir, &cwd);
             return db_err(e);
         }
         // Registered and announced inside `spawn`, before the process can report anything: a
@@ -523,6 +557,7 @@ impl State {
             Ok(h) => h,
             Err(e) => {
                 let _ = self.db.delete_session(&id);
+                drop_new_worktree(&project_dir, &cwd);
                 return session_err(e);
             }
         };
@@ -555,6 +590,9 @@ impl State {
             "LOTSE_TOKEN_FILE".into(),
             self.cfg.token_path().to_string_lossy().into_owned(),
         );
+        if let Some(hook) = hook_bin() {
+            vars.insert("LOTSE_HOOK_BIN".into(), hook.to_string_lossy().into_owned());
+        }
         vars.into_iter().collect()
     }
 
@@ -605,6 +643,10 @@ impl State {
                     running_since: None,
                     at,
                 });
+                self.hub.broadcast(Event::SubAgentsChanged {
+                    session_id: id.clone(),
+                    sub_agents: Vec::new(),
+                });
                 self.hub.broadcast(Event::SessionUpdated(meta.clone()));
                 Response::Session(meta)
             }
@@ -633,21 +675,82 @@ impl State {
             .map_or_else(LaunchEnv::from_process, |e| (**e).clone())
     }
 
-    fn git_info(&self, project_id: &ProjectId, session_id: Option<&SessionId>) -> Response {
+    async fn git_info(&self, project_id: &ProjectId, session_id: Option<&SessionId>) -> Response {
         let project = match self.db.get_project(project_id) {
             Ok(Some(p)) => p,
             Ok(None) => return not_found("project"),
             Err(e) => return db_err(e),
         };
+        // a session may run in its own worktree: ask about the folder it runs in
+        let mut dir = PathBuf::from(&project.path);
         if let Some(sid) = session_id {
             match self.session(sid) {
-                Some(h) if &h.snapshot().project_id == project_id => {}
+                Some(h) if &h.snapshot().project_id == project_id => dir = h.cwd(),
                 _ => return not_found("session"),
             }
         }
-        let info: GitInfo = git::info(Path::new(&project.path));
-        Response::GitInfo(info)
+        match tokio::task::spawn_blocking(move || git_glue::info(&dir)).await {
+            Ok(info) => Response::GitInfo(info),
+            Err(e) => internal(e),
+        }
     }
+
+    /// Periodic work: every 100 ms the detectors (screen samples, foreground process, tick), every
+    /// 5 s the git line of each session. Runs on plain threads: both block (`ps`, `git`).
+    pub fn start_background(self: &Arc<Self>) {
+        let state = Arc::downgrade(self);
+        let spawn = |name: &str, period: Duration, work: fn(&State)| {
+            let state = state.clone();
+            let built = std::thread::Builder::new()
+                .name(name.into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(period);
+                        let Some(state) = state.upgrade() else { return };
+                        if state.closing.load(Ordering::Acquire) {
+                            return;
+                        }
+                        work(&state);
+                    }
+                });
+            if let Err(e) = built {
+                tracing::error!("cannot start thread {name}: {e}");
+            }
+        };
+        spawn("lotse-detect-tick", DETECT_TICK, |s| {
+            for h in s.handles() {
+                h.tick();
+            }
+        });
+        spawn("lotse-git-refresh", GIT_REFRESH, |s| {
+            // sessions of one project share a folder: ask git once per folder
+            let mut by_folder: HashMap<PathBuf, lotse_proto::GitInfo> = HashMap::new();
+            for h in s.handles() {
+                let git = by_folder
+                    .entry(h.cwd())
+                    .or_insert_with_key(|dir| git_glue::info(dir))
+                    .clone();
+                h.apply_git(git);
+            }
+        });
+    }
+}
+
+/// A launch that failed after its worktree was made must not leave the folder behind (the branch
+/// stays, so a retry with the same name reuses it).
+fn drop_new_worktree(project_dir: &Path, cwd: &Path) {
+    if cwd != project_dir {
+        git_glue::remove_worktree(project_dir, cwd);
+    }
+}
+
+/// `lotse-hook` next to the daemon binary (how both ship), unless `LOTSE_HOOK_BIN` points elsewhere.
+fn hook_bin() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("LOTSE_HOOK_BIN").filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    let sibling = std::env::current_exe().ok()?.with_file_name("lotse-hook");
+    sibling.is_file().then_some(sibling)
 }
 
 fn not_found(what: &str) -> Response {

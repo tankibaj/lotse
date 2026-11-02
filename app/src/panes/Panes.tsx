@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { X } from 'lucide-react';
 import type { Project, Session, SessionId } from '../lib/client';
+import { onUiCommand } from '../lib/ui/commands';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { TerminalView } from '../terminal';
 import { useTerminalAppearance } from '../terminal/useTerminalAppearance';
@@ -133,6 +134,7 @@ export function Panes() {
 
   // Other WPs ask for a split through the bus (card context menu, palette).
   useEffect(() => onSplitRequest(split), [split]);
+  useEffect(() => onUiCommand('splitSession', (id) => split(id ?? null)), [split]);
 
   // ⌥-click on a session card opens it side by side (cards carry `data-session-id`).
   useEffect(() => {

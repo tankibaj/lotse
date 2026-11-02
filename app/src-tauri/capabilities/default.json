@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal capabilities for the main window. Grow per WP, never wildcard.",
+  "description": "Minimal capabilities for the main window. Grow per WP, never wildcard. App commands (daemon bridge, host bridge, notifications) are the app's own and need no plugin permission.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "dialog:allow-open"]
 }

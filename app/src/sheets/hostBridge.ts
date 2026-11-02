@@ -1,10 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 
-// What the Add project sheet needs from the host (file system, git, native dialog). The frozen
-// DaemonClient has no such calls, so they go through Tauri commands in the app and are simulated in the
-// browser (dev server / MockClient). The command names below are PROPOSED and UNVERIFIED: WP7/WP8 must
-// provide them (see the WP5 report, "Requests"). Tests inject their own bridge with `setHostBridge`.
+// What the Add project sheet and the sidebar need from the host (file system, git, native dialog,
+// Finder). The frozen DaemonClient has no such calls, so they go through Tauri commands in the app
+// (`app/src-tauri/src/host.rs`, WP8) and are simulated in the browser (dev server / MockClient).
+// Tests inject their own bridge with `setHostBridge`.
 
 export interface RepoScan {
   /** The folder itself is a git repository. */
@@ -20,6 +20,8 @@ export interface HostBridge {
   cloneRepo(url: string, dest: string): Promise<void>;
   /** Create `path` (and `git init` when asked). */
   createProject(path: string, gitInit: boolean): Promise<void>;
+  /** Show a folder in Finder. `undefined` in the browser (there is no Finder to ask). */
+  revealInFinder?(path: string): Promise<void>;
   /**
    * Folder drops onto `region()` (looked up per event: the sidebar can be hidden and shown again).
    * `onHover` fires while a file drag is over it. Returns the cleanup.
@@ -120,6 +122,7 @@ const tauriBridge: HostBridge = {
   scanRepos: (path) => call<RepoScan>('scan_repos', { path }),
   cloneRepo: (url, dest) => call<void>('clone_repo', { url, dest }),
   createProject: (path, gitInit) => call<void>('create_project_dir', { path, gitInit }),
+  revealInFinder: (path) => call<void>('reveal_in_finder', { path }),
   watchDrops: tauriDrops,
 };
 

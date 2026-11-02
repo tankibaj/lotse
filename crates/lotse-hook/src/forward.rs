@@ -28,8 +28,14 @@ pub const DEFAULT_DEADLINE: Duration = Duration::from_millis(1500);
 /// Env var the daemon sets on every PTY it spawns; hooks outside Lotse sessions do nothing.
 pub const SESSION_ENV: &str = "LOTSE_SESSION_ID";
 
+/// Socket path, exported by the daemon on every PTY it spawns.
+pub const SOCKET_ENV: &str = "LOTSE_SOCKET";
+
+/// Path of the token file (never the token itself), exported by the daemon next to [`SOCKET_ENV`].
+pub const TOKEN_FILE_ENV: &str = "LOTSE_TOKEN_FILE";
+
 /// Optional override of the Lotse data directory (the one holding `lotsed.sock` and `token`);
-/// default `~/Library/Application Support/Lotse`.
+/// default `~/Library/Application Support/Lotse`. Only a fallback for [`SOCKET_ENV`] / [`TOKEN_FILE_ENV`].
 pub const DATA_DIR_ENV: &str = "LOTSE_DATA_DIR";
 
 #[derive(Debug, Clone)]
@@ -62,6 +68,28 @@ pub fn data_dir(override_dir: Option<&OsStr>) -> Option<PathBuf> {
 }
 
 impl Config {
+    /// The daemon's contract: `LOTSE_SOCKET` + `LOTSE_TOKEN_FILE` (both set, else the data
+    /// directory fallback) and `LOTSE_SESSION_ID`. The token is only ever read from its file.
+    pub fn from_env(
+        agent: AgentKind,
+        get: impl Fn(&str) -> Option<std::ffi::OsString>,
+    ) -> Option<Config> {
+        let non_empty = |name: &str| get(name).filter(|v| !v.is_empty());
+        let session_id = non_empty(SESSION_ENV).and_then(|s| s.into_string().ok());
+        let mut cfg = match (non_empty(SOCKET_ENV), non_empty(TOKEN_FILE_ENV)) {
+            (Some(socket), Some(token_file)) => Config {
+                socket: PathBuf::from(socket),
+                token_file: PathBuf::from(token_file),
+                session_id: None,
+                agent,
+                deadline: DEFAULT_DEADLINE,
+            },
+            _ => Config::in_data_dir(&data_dir(get(DATA_DIR_ENV).as_deref())?, agent, None),
+        };
+        cfg.session_id = session_id;
+        Some(cfg)
+    }
+
     /// Socket and token paths inside `data_dir`.
     pub fn in_data_dir(data_dir: &Path, agent: AgentKind, session_id: Option<String>) -> Config {
         Config {

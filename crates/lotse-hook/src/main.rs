@@ -2,20 +2,23 @@
 //!
 //! ```text
 //! lotse-hook [claude|codex|opencode]                 hook mode: stdin JSON -> lotsed (default claude)
-//! lotse-hook integration claude install|uninstall|status [--config-dir DIR]
+//! lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]
 //! ```
+//! Hook mode reads `LOTSE_SESSION_ID`, `LOTSE_SOCKET` and `LOTSE_TOKEN_FILE` (set by the daemon on
+//! every pane); the token is read from that file, never from the environment.
 //!
 //! Hook mode prints nothing and always exits 0 (see `lotse_hook::forward`); set `LOTSE_HOOK_DEBUG`
 //! to see why an event was not delivered on stderr.
 
 use lotse_hook::claude_settings::{self, InstallOutcome, InstallStatus, UninstallOutcome};
-use lotse_hook::forward::{self, Config, DATA_DIR_ENV, SESSION_ENV};
+use lotse_hook::forward::{self, Config};
+use lotse_hook::opencode_plugin;
 use lotse_proto::AgentKind;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: lotse-hook [claude|codex|opencode]\n       lotse-hook integration claude install|uninstall|status [--config-dir DIR]";
+const USAGE: &str = "usage: lotse-hook [claude|codex|opencode]\n       lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -49,11 +52,9 @@ fn hook(agent_arg: &str) {
         "opencode" => AgentKind::OpenCode,
         _ => return,
     };
-    let Some(dir) = forward::data_dir(std::env::var_os(DATA_DIR_ENV).as_deref()) else {
+    let Some(cfg) = Config::from_env(agent, |name| std::env::var_os(name)) else {
         return;
     };
-    let session = std::env::var(SESSION_ENV).ok();
-    let cfg = Config::in_data_dir(&dir, agent, session);
     if let Err(e) = forward::run(&cfg, std::io::stdin().lock())
         && debug
     {
@@ -75,10 +76,17 @@ fn run_integration(args: &[String]) -> Result<(), String> {
     let [target, action, rest @ ..] = args else {
         return Err("missing arguments".into());
     };
-    if target != "claude" {
-        return Err(format!("unknown integration {target:?}"));
-    }
+    let opencode = match target.as_str() {
+        "claude" => false,
+        "opencode" => true,
+        _ => return Err(format!("unknown integration {target:?}")),
+    };
     let dir = match rest {
+        [] if opencode => opencode_plugin::config_dir(
+            std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+            dirs::home_dir().as_deref(),
+        )
+        .ok_or("cannot find the home directory; pass --config-dir")?,
         [] => claude_settings::config_dir(
             std::env::var_os("CLAUDE_CONFIG_DIR").as_deref(),
             dirs::home_dir().as_deref(),
@@ -88,6 +96,33 @@ fn run_integration(args: &[String]) -> Result<(), String> {
         _ => return Err("unexpected arguments".into()),
     };
     let report = |e: anyhow::Error| format!("{e:#}");
+    if opencode {
+        match action.as_str() {
+            "install" => match opencode_plugin::install(&dir).map_err(report)? {
+                InstallOutcome::Unchanged => println!("plugin already installed"),
+                InstallOutcome::Written { backup: Some(b) } => {
+                    println!("plugin installed; backup: {}", b.display());
+                }
+                InstallOutcome::Written { backup: None } => println!("plugin installed"),
+            },
+            "uninstall" => match opencode_plugin::uninstall(&dir).map_err(report)? {
+                UninstallOutcome::NotInstalled => println!("no Lotse plugin found"),
+                UninstallOutcome::Removed => println!("plugin removed"),
+                UninstallOutcome::RestoredBackup => {
+                    println!("plugin removed; previous file restored from backup");
+                }
+            },
+            "status" => match opencode_plugin::status(&dir).map_err(report)? {
+                InstallStatus::NotInstalled => println!("not installed"),
+                InstallStatus::Installed => println!("installed"),
+                InstallStatus::Partial { missing } => {
+                    println!("outdated; missing: {}", missing.join(", "));
+                }
+            },
+            other => return Err(format!("unknown action {other:?}")),
+        }
+        return Ok(());
+    }
     match action.as_str() {
         "install" => {
             let hook_path = std::env::current_exe()

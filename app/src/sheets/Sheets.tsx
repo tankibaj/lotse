@@ -15,8 +15,15 @@ export function Sheets() {
 
   useEffect(() => {
     const offs = [
-      onUiCommand('openNewSession', () => openOverlay({ name: 'newSession' })),
+      onUiCommand('openNewSession', (projectId) => openOverlay({ name: 'newSession', projectId })),
       onUiCommand('openAddProject', () => openOverlay({ name: 'addProject' })),
+      onUiCommand('openProjectStyle', (projectId) => {
+        if (!projectId) return;
+        // below the project's tile, like the mock's popover
+        const row = document.querySelector<HTMLElement>(`[data-pid="${CSS.escape(projectId)}"]`);
+        const r = row?.getBoundingClientRect();
+        openProjectStylePicker(projectId, r ? { left: r.left + 8, bottom: r.top + 28 } : undefined);
+      }),
     ];
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey) return;

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useClient } from '../lib/client';
+import type { AppearanceSettings } from '../lib/client/types';
+import { getThemePref, setTheme } from '../theme';
 import { onUiCommand } from '../lib/ui/commands';
 import { inTauri } from '../sheets/hostBridge';
 import { closeOverlay, openSettings, useOverlay } from '../sheets/overlay';
@@ -85,11 +87,16 @@ export function SettingsPage() {
     };
   }, []);
 
-  // Fonts are saved in the daemon's settings: apply them at start and whenever they change.
+  // Fonts and theme are saved in the daemon's settings: apply them at start and whenever they change.
+  // The daemon wins over the local `lotse-theme` pref (which only serves until it has answered).
   useEffect(() => {
     let alive = true;
-    client.getSettings().then((s) => alive && applyAppearance(s.appearance)).catch(() => {});
-    const off = client.onEvent((e) => e.event === 'settings_changed' && applyAppearance(e.data.appearance));
+    const adopt = (a: AppearanceSettings) => {
+      applyAppearance(a);
+      if (a.theme !== getThemePref()) setTheme(a.theme);
+    };
+    client.getSettings().then((s) => alive && adopt(s.appearance)).catch(() => {});
+    const off = client.onEvent((e) => e.event === 'settings_changed' && adopt(e.data.appearance));
     return () => {
       alive = false;
       off();

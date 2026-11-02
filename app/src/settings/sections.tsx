@@ -1,5 +1,7 @@
-import { useState } from 'react';
-import type { AppearanceSettings, EventPrefs, NotificationSettings } from '../lib/client/types';
+import { useEffect, useState } from 'react';
+import type { AgentKind, AppearanceSettings, EventPrefs, NotificationSettings } from '../lib/client/types';
+import { integrationBridge } from './integration';
+import type { IntegrationId, IntegrationState } from './integration';
 import { setTheme, getThemePref } from '../theme';
 import type { ThemePref } from '../theme';
 import { AGENTS } from '../sheets/validation';
@@ -9,6 +11,57 @@ import type { SettingsDraft } from './useSettings';
 const dim = 'text-dim';
 const h2 = 'mb-4 text-[20px] font-semibold';
 const check = 'accent-blue';
+
+const INTEGRATIONS: Partial<Record<AgentKind, { id: IntegrationId; noun: string }>> = {
+  claude_code: { id: 'claude', noun: 'hooks' },
+  opencode: { id: 'opencode', noun: 'plugin' },
+};
+
+/** "Install hooks" / "Remove hooks" next to an agent's version (app only; backup and marker are the installer's). */
+function IntegrationControl({ kind }: { kind: AgentKind }) {
+  const meta = INTEGRATIONS[kind];
+  const bridge = integrationBridge();
+  const [state, setState] = useState<IntegrationState | 'busy' | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const id = meta?.id;
+  useEffect(() => {
+    if (!bridge || !id) return;
+    let alive = true;
+    bridge.status(id).then((s) => alive && setState(s), () => alive && setState(null));
+    return () => {
+      alive = false;
+    };
+  }, [bridge, id]);
+  if (!bridge || !meta || state === null) return null;
+  const act = async (run: () => Promise<void>) => {
+    setState('busy');
+    setError(null);
+    try {
+      await run();
+      setState(await bridge.status(meta.id));
+    } catch (e) {
+      setError(typeof e === 'string' ? e : e instanceof Error ? e.message : 'failed');
+      setState(await bridge.status(meta.id).catch(() => null));
+    }
+  };
+  const installed = state === 'installed';
+  return (
+    <>
+      <span className="text-[11px] text-dim" data-testid={`integration-${meta.id}`}>
+        {state === 'busy' ? '…' : installed ? `${meta.noun} installed` : state === 'outdated' ? `${meta.noun} outdated` : `${meta.noun} not installed`}
+      </span>
+      <button
+        type="button"
+        className="text-[12px] text-blue disabled:opacity-50"
+        disabled={state === 'busy'}
+        onClick={() => void act(() => (installed ? bridge.uninstall(meta.id) : bridge.install(meta.id)))}
+      >
+        {installed ? `Remove ${meta.noun}` : `Install ${meta.noun}`}
+      </button>
+      {error && <span role="alert" className="text-[11px] text-red">{error}</span>}
+    </>
+  );
+}
 
 export function AgentsSection({ draft }: { draft: SettingsDraft }) {
   const { settings, launch, update } = draft;
@@ -31,6 +84,7 @@ export function AgentsSection({ draft }: { draft: SettingsDraft }) {
               {info && (info.found
                 ? <span className="text-[11px] text-green">{[info.version, info.integration].filter(Boolean).join(' · ') || 'found'}</span>
                 : <span className="text-[11px] text-orange">not found on PATH</span>)}
+              {INTEGRATIONS[kind] && <IntegrationControl kind={kind} />}
               <button type="button" className="ml-auto text-[12px] text-blue" aria-label={`Reset ${label} command`} onClick={() => set(def)}>Reset</button>
             </div>
             <input

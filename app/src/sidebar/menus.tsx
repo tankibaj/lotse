@@ -23,6 +23,9 @@ const fromGlobal = (s: Settings | null): CustomMode => ({
 
 export interface ProjectMenuActions {
   newSession: () => void;
+  changeStyle: () => void;
+  /** Native only: `undefined` (browser) shows the item disabled. */
+  reveal?: () => void;
   rename: () => void;
   remove: () => void;
 }
@@ -69,10 +72,11 @@ export function projectMenu(
         { kind: 'note', label: 'Global defaults: Settings › Notifications' },
       ],
     },
-    // Unavailable until the icon picker (sheets) and the native bridge expose a command for them.
-    { kind: 'item', label: 'Change Icon & Color…', disabled: true, hint: 'Soon' },
+    { kind: 'item', label: 'Change Icon & Color…', onSelect: actions.changeStyle },
     { kind: 'separator' },
-    { kind: 'item', label: 'Reveal in Finder', disabled: true, hint: 'Soon' },
+    actions.reveal
+      ? { kind: 'item', label: 'Reveal in Finder', onSelect: actions.reveal }
+      : { kind: 'item', label: 'Reveal in Finder', disabled: true, hint: 'App only' },
     {
       kind: 'item',
       label: 'Copy Path',
@@ -86,6 +90,7 @@ export function projectMenu(
 
 export interface SessionMenuActions {
   open: () => void;
+  split: () => void;
   rename: () => void;
   stop: () => void;
 }
@@ -95,12 +100,12 @@ export function sessionMenu(session: Session, actions: SessionMenuActions): Menu
   return [
     { kind: 'header', label: session.title },
     { kind: 'item', label: 'Open', hint: '⏎', onSelect: actions.open },
-    { kind: 'item', label: 'Split Right', disabled: true, hint: 'Soon' },
+    { kind: 'item', label: 'Open in Split Right', hint: '⌥-click', onSelect: actions.split },
     { kind: 'separator' },
     { kind: 'item', label: 'Rename…', onSelect: actions.rename },
     { kind: 'item', label: 'Show Transcript', disabled: true, hint: 'Beta' },
     { kind: 'item', label: 'Show Changes', disabled: true, hint: 'Beta' },
     { kind: 'separator' },
-    { kind: 'item', label: 'Stop', danger: true, onSelect: actions.stop },
+    { kind: 'item', label: 'Stop Session', danger: true, onSelect: actions.stop },
   ];
 }

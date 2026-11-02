@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { onUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId } from '../lib/ui/selection';
+import { hostBridge, setHostBridge } from '../sheets/hostBridge';
 import { StatusBar } from '../statusbar';
 import { Sidebar } from './Sidebar';
 import { mount } from './testUtils';
@@ -369,6 +370,37 @@ describe('context menus', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('project menu: icon & colour and New Session carry the project id; Reveal in Finder is app-only', async () => {
+    await ready();
+    const style = vi.fn();
+    const fresh = vi.fn();
+    const offs = [onUiCommand('openProjectStyle', style), onUiCommand('openNewSession', fresh)];
+    fireEvent.contextMenu(row(/billing-api/));
+    // in the browser there is no Finder to ask
+    expect(screen.getByRole('menuitem', { name: /Reveal in Finder/ })).toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(screen.getByRole('menuitem', { name: /Change Icon & Color/ }));
+    expect(style).toHaveBeenCalledWith('p1');
+    fireEvent.contextMenu(row(/billing-api/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /New Session/ }));
+    expect(fresh).toHaveBeenCalledWith('p1');
+    offs.forEach((off) => off());
+
+    // with a native bridge the item reveals the project's folder
+    const reveal = vi.fn().mockResolvedValue(undefined);
+    setHostBridge({ ...hostBridge(), revealInFinder: reveal });
+    fireEvent.contextMenu(row(/billing-api/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Reveal in Finder/ }));
+    expect(reveal).toHaveBeenCalledWith(expect.stringMatching(/^\//));
+    setHostBridge(null);
+  });
+
+  it('Retry on a card whose process still runs shows the daemon\'s message instead of failing silently', async () => {
+    const { client } = await ready();
+    vi.spyOn(client, 'retrySession').mockRejectedValue(new Error('the process is still running; Retry re-runs a command that has exited'));
+    await userEvent.click(within(card('a4')).getByRole('button', { name: /Retry/ }));
+    expect(await screen.findByRole('status')).toHaveTextContent('still running');
+  });
+
   it('custom notifications start from the global toggles and can be changed per event', async () => {
     const { client } = await ready();
     fireEvent.contextMenu(row(/billing-api/));
@@ -430,9 +462,16 @@ describe('context menus', () => {
     const menu = screen.getByRole('menu', { name: 'Flyway migration V42 actions' });
     expect(within(menu).getByRole('menuitem', { name: /Show Transcript/ })).toHaveAttribute('aria-disabled', 'true');
     expect(within(menu).getByRole('menuitem', { name: /Show Changes/ })).toHaveAttribute('aria-disabled', 'true');
-    expect(within(menu).getByRole('menuitem', { name: /Split Right/ })).toHaveAttribute('aria-disabled', 'true');
-    await userEvent.click(within(menu).getByRole('menuitem', { name: /Open/ }));
+    expect(within(menu).getByRole('menuitem', { name: /Split Right/ })).not.toHaveAttribute('aria-disabled', 'true');
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /^Open(?! in)/ }));
     expect(getSelectedSessionId()).toBe('a2');
+    // Split Right asks the panes (UI command bus) for this session
+    const split = vi.fn();
+    const off = onUiCommand('splitSession', split);
+    fireEvent.contextMenu(card('a2'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Split Right/ }));
+    expect(split).toHaveBeenCalledWith('a2');
+    off();
     fireEvent.contextMenu(card('a2'));
     await userEvent.click(screen.getByRole('menuitem', { name: /Stop/ }));
     await waitFor(() => expect(document.querySelector('[data-sid="a2"]')).toBeNull());
@@ -451,8 +490,9 @@ describe('context menus', () => {
   it('menus are keyboard operable: ↓ moves, Enter activates', async () => {
     await ready();
     fireEvent.contextMenu(card('a2'));
-    expect(screen.getByRole('menuitem', { name: /Open/ })).toHaveFocus();
-    await userEvent.keyboard('{ArrowDown}'); // Split Right is disabled: skipped
+    expect(screen.getByRole('menuitem', { name: /^Open(?! in)/ })).toHaveFocus();
+    await userEvent.keyboard('{ArrowDown}'); // Split Right
+    await userEvent.keyboard('{ArrowDown}');
     expect(screen.getByRole('menuitem', { name: /Rename/ })).toHaveFocus();
     await userEvent.keyboard('{Enter}');
     expect(screen.getByRole('textbox', { name: 'Session title' })).toBeInTheDocument();

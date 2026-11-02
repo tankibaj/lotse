@@ -15,6 +15,7 @@ import {
   visibleSessionIds,
 } from '../lib/state';
 import { emitUiCommand } from '../lib/ui/commands';
+import { hostBridge } from '../sheets/hostBridge';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu } from './ContextMenu';
@@ -39,6 +40,7 @@ export function Sidebar() {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [renaming, setRenaming] = useState<Target | null>(null);
   const [confirm, setConfirm] = useState<Target | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Time labels are coarse and only change the sidebar when their text changes, never under the pointer or focus.
   const signature = useCallback((n: number) => timeSignature(sessions, n), [sessions]);
@@ -74,11 +76,17 @@ export function Sidebar() {
   const onRetry = useCallback(
     (id: SessionId) => {
       selectSession(id);
-      client.retrySession(id).catch(noop);
+      // A process that still runs is not re-run: the daemon says so and the card shows it for a moment.
+      client.retrySession(id).catch((e: unknown) => setNotice(e instanceof Error ? e.message : 'Retry failed'));
       refocus({ kind: 'session', id });
     },
     [client, refocus],
   );
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
   const renamingRef = useRef<Target | null>(null);
   useEffect(() => {
     renamingRef.current = renaming;
@@ -189,6 +197,11 @@ export function Sidebar() {
         onPointerEnter={() => (hovering.current = true)}
         onPointerLeave={() => (hovering.current = false)}
       >
+        {notice && (
+          <div role="status" className="mx-1 mb-2 rounded-md px-2 py-1.5 text-[12px] [background:color-mix(in_srgb,var(--orange)_14%,transparent)]">
+            {notice}
+          </div>
+        )}
         {filterOn && (
           <div className="mx-1 mb-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px] [background:color-mix(in_srgb,var(--orange)_14%,transparent)]">
             <span className="text-orange">▲</span>
@@ -248,7 +261,11 @@ export function Sidebar() {
           y={menu.y}
           label={`${menuProject.name} actions`}
           entries={projectMenu(menuProject, settings, client, {
-            newSession: () => emitUiCommand('openNewSession'),
+            newSession: () => emitUiCommand('openNewSession', menuProject.id),
+            changeStyle: () => emitUiCommand('openProjectStyle', menuProject.id),
+            reveal: hostBridge().revealInFinder
+              ? () => void hostBridge().revealInFinder?.(menuProject.path)?.catch(noop)
+              : undefined,
             rename: () => setRenaming({ kind: 'project', id: menuProject.id }),
             remove: () => setConfirm({ kind: 'project', id: menuProject.id }),
           })}
@@ -262,6 +279,7 @@ export function Sidebar() {
           label={`${menuSession.title} actions`}
           entries={sessionMenu(menuSession, {
             open: () => selectSession(menuSession.id),
+            split: () => emitUiCommand('splitSession', menuSession.id),
             rename: () => setRenaming({ kind: 'session', id: menuSession.id }),
             stop: () =>
               menuSession.status === 'run' || menuSession.status === 'perm'

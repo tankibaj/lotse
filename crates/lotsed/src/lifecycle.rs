@@ -106,6 +106,7 @@ async fn serve(state: &Arc<State>, listener: UnixListener, token: Arc<str>) -> R
     // a controlling terminal going away must not take the daemon down
     let _hup = signal(SignalKind::hangup())?;
 
+    state.start_background();
     // capture the login environment while the first client connects
     let warm = state.clone();
     tokio::spawn(async move {
