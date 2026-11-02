@@ -2,15 +2,18 @@
 //!
 //! ```text
 //! lotse-hook [claude|codex|opencode] [--injected]    hook mode: stdin JSON -> lotsed (default claude)
-//! lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]
+//! lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]
 //! ```
 //! Hook mode reads `LOTSE_SESSION_ID`, `LOTSE_SOCKET` and `LOTSE_TOKEN_FILE` (set by the daemon on
 //! every pane); the token is read from that file, never from the environment.
 //!
 //! Hook mode prints nothing and always exits 0 (see `lotse_hook::forward`); set `LOTSE_HOOK_DEBUG`
 //! to see why an event was not delivered on stderr.
+//!
+//! Lotse never installs global hooks: status hooks are injected per pane by `lotsed`. The
+//! `integration` commands only report on and remove a global install made by an older build.
 
-use lotse_hook::claude_settings::{self, InstallOutcome, InstallStatus, UninstallOutcome};
+use lotse_hook::claude_settings::{self, InstallStatus, UninstallOutcome};
 use lotse_hook::forward::{self, Config};
 use lotse_hook::opencode_plugin;
 use lotse_proto::AgentKind;
@@ -18,7 +21,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode install|uninstall|status [--config-dir DIR]";
+const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -102,13 +105,6 @@ fn run_integration(args: &[String]) -> Result<(), String> {
     let report = |e: anyhow::Error| format!("{e:#}");
     if opencode {
         match action.as_str() {
-            "install" => match opencode_plugin::install(&dir).map_err(report)? {
-                InstallOutcome::Unchanged => println!("plugin already installed"),
-                InstallOutcome::Written { backup: Some(b) } => {
-                    println!("plugin installed; backup: {}", b.display());
-                }
-                InstallOutcome::Written { backup: None } => println!("plugin installed"),
-            },
             "uninstall" => match opencode_plugin::uninstall(&dir).map_err(report)? {
                 UninstallOutcome::NotInstalled => println!("no Lotse plugin found"),
                 UninstallOutcome::Removed => println!("plugin removed"),
@@ -128,18 +124,6 @@ fn run_integration(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     match action.as_str() {
-        "install" => {
-            let hook_path = std::env::current_exe()
-                .and_then(|p| p.canonicalize())
-                .map_err(|e| format!("cannot locate the lotse-hook binary: {e}"))?;
-            match claude_settings::install(&dir, &hook_path).map_err(report)? {
-                InstallOutcome::Unchanged => println!("hooks already installed"),
-                InstallOutcome::Written { backup: Some(b) } => {
-                    println!("hooks installed; backup: {}", b.display());
-                }
-                InstallOutcome::Written { backup: None } => println!("hooks installed"),
-            }
-        }
         "uninstall" => match claude_settings::uninstall(&dir).map_err(report)? {
             UninstallOutcome::NotInstalled => println!("no Lotse hooks found"),
             UninstallOutcome::Removed => println!("hooks removed"),

@@ -138,7 +138,7 @@ fn debug_env_explains_a_failed_delivery_on_stderr_only() {
 }
 
 #[test]
-fn integration_install_status_uninstall_round_trip() {
+fn the_cli_never_installs_global_hooks_but_removes_an_old_install() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let cfg = tempfile::tempdir().unwrap();
@@ -154,21 +154,15 @@ fn integration_install_status_uninstall_round_trip() {
     };
     let say = |out: &Output| String::from_utf8_lossy(&out.stdout).into_owned();
 
+    // `install` is gone: it fails and leaves the settings alone
+    assert!(!integration("install").status.success());
+    assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
     assert_eq!(say(&integration("status")).trim(), "not installed");
-    let out = integration("install");
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(say(&out).contains("hooks installed"));
-    assert_eq!(say(&integration("status")).trim(), "installed");
-    // The installed command points at the binary that ran the install.
-    let installed = std::fs::read_to_string(&settings).unwrap();
-    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_lotse-hook")).unwrap();
-    assert!(installed.contains(exe.to_str().unwrap()), "{installed}");
-    assert!(say(&integration("install")).contains("already installed"));
 
+    // an install made by an older build is reported and removed
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_lotse-hook")).unwrap();
+    lotse_hook::claude_settings::install(cfg.path(), &exe).unwrap();
+    assert_eq!(say(&integration("status")).trim(), "installed");
     assert!(say(&integration("uninstall")).contains("restored from backup"));
     assert_eq!(std::fs::read_to_string(&settings).unwrap(), original);
 
@@ -179,11 +173,12 @@ fn integration_install_status_uninstall_round_trip() {
 }
 
 #[test]
-fn opencode_plugin_install_and_uninstall_leave_foreign_files_alone() {
+fn the_cli_never_installs_the_opencode_plugin_but_removes_an_old_one() {
     let home = tempfile::tempdir().unwrap();
     let data = tempfile::tempdir().unwrap();
     let xdg = tempfile::tempdir().unwrap();
-    let plugins = xdg.path().join("opencode/plugins");
+    let config = xdg.path().join("opencode");
+    let plugins = config.join("plugins");
     let integration = |action: &str| -> Output {
         let mut cmd = hook(home.path(), data.path());
         cmd.env("XDG_CONFIG_HOME", xdg.path())
@@ -192,18 +187,19 @@ fn opencode_plugin_install_and_uninstall_leave_foreign_files_alone() {
     };
     let say = |out: &Output| String::from_utf8_lossy(&out.stdout).trim().to_owned();
 
+    assert!(!integration("install").status.success());
+    assert!(!plugins.join("lotse-status.js").exists());
     assert_eq!(say(&integration("status")), "not installed");
-    let out = integration("install");
-    assert!(out.status.success());
-    assert!(plugins.join("lotse-status.js").is_file());
+
+    // an install made by an older build is reported and removed
+    lotse_hook::opencode_plugin::install(&config).unwrap();
     assert_eq!(say(&integration("status")), "installed");
     assert_eq!(say(&integration("uninstall")), "plugin removed");
     assert!(!plugins.join("lotse-status.js").exists());
 
-    // a file of the same name that is not ours: never overwritten, never removed
+    // a file of the same name that is not ours: never removed
     let foreign = "// somebody else's plugin\n";
     std::fs::write(plugins.join("lotse-status.js"), foreign).unwrap();
-    let _ = integration("install");
     let _ = integration("uninstall");
     assert_eq!(
         std::fs::read_to_string(plugins.join("lotse-status.js")).unwrap(),
@@ -239,4 +235,58 @@ fn the_injected_flag_tags_the_event_for_the_daemon() {
         panic!("hook event expected");
     };
     assert_eq!(payload["lotse_source"], "injected");
+}
+
+#[test]
+fn the_codex_hook_command_of_the_mirror_delivers_a_tagged_codex_event_through_a_shell() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    // the daemon exports the binary's path in LOTSE_HOOK_BIN; one with a space must survive the shell
+    let bin_dir = home.path().join("Application Support");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let bin = bin_dir.join("lotse-hook");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lotse-hook"), &bin).unwrap();
+    std::fs::write(data.path().join("token"), "tok\n").unwrap();
+    let listener = UnixListener::bind(data.path().join("lotsed.sock")).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut conn, _) = listener.accept().unwrap();
+        let _hello = read_frame(&mut conn).unwrap();
+        let Some(Frame::Control(Message::Request(req))) = read_frame(&mut conn).unwrap() else {
+            panic!("request expected");
+        };
+        let reply = Message::Response(ResponseEnvelope {
+            req_id: req.req_id,
+            response: Response::Ok,
+        });
+        write_frame(&mut conn, &Frame::Control(reply)).unwrap();
+        req
+    });
+    let mut cmd = Command::new("/bin/sh");
+    cmd.env_clear()
+        .env("HOME", home.path())
+        .env("LOTSE_DATA_DIR", data.path())
+        .env("LOTSE_SESSION_ID", "c7")
+        .env("LOTSE_HOOK_BIN", &bin)
+        .args(["-c", lotse_hook::codex_home::HOOK_COMMAND])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let out = run_with_stdin(
+        cmd,
+        br#"{"hook_event_name":"SubagentStart","agent_id":"a1","agent_type":"worker","prompt":"private"}"#,
+    );
+    assert!(out.status.success() && out.stdout.is_empty() && out.stderr.is_empty());
+    assert_eq!(
+        daemon.join().unwrap().request,
+        Request::HookEvent {
+            agent: AgentKind::Codex,
+            session_id: Some(SessionId::new("c7")),
+            payload: serde_json::json!({
+                "hook_event_name": "SubagentStart",
+                "agent_id": "a1",
+                "agent_type": "worker",
+                "lotse_source": "injected",
+            }),
+        }
+    );
 }
