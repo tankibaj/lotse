@@ -7,6 +7,8 @@
 //! - [`server`]: handshake and per-client request loop
 //! - [`state`]: registry (projects, sessions, settings) and the request dispatcher
 //! - [`session`]: one PTY (threads, ring buffer, attached clients)
+//! - [`detect_glue`]: hooks, OSC 7501, VT screen and process signals into the status engine (WP8)
+//! - [`git_glue`]: `lotse-git` wiring: git line, worktrees (WP8)
 //! - [`launch`]: launch commands, PATH lookup, version detection, login environment
 //! - [`db`]: SQLite schema and migrations
 
@@ -14,7 +16,9 @@
 
 pub mod config;
 pub mod db;
+pub mod detect_glue;
 pub mod git;
+pub mod git_glue;
 pub mod hub;
 pub mod launch;
 pub mod lifecycle;

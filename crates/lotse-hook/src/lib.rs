@@ -5,3 +5,4 @@
 pub mod claude_settings;
 pub mod forward;
 pub mod json;
+pub mod opencode_plugin;

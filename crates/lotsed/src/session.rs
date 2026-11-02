@@ -5,10 +5,16 @@
 //! channel so a child that stops reading input can never block the reader (deadlock).
 
 use crate::db::Db;
+use crate::detect_glue::{Detector, Trigger, notification, process_name};
 use crate::hub::{Bytes, ClientTx, Hub};
 use crate::ring::Ring;
 use crate::title::{LineTracker, derive_title};
-use lotse_proto::{AttachInfo, DetectSource, Event, Frame, Session, SessionId, Status, UnixMs};
+use lotse_detect::engine::StatusUpdate;
+use lotse_detect::osc7501::QUERY_REPLY;
+use lotse_proto::{
+    AgentKind, AttachInfo, DetectSource, Event, Frame, GitInfo, Session, SessionId, Settings,
+    Status, UnixMs,
+};
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
@@ -16,7 +22,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Replay is sent in frames of this size.
@@ -44,6 +50,8 @@ pub struct SpawnSpec {
 pub struct Ctx {
     pub hub: Arc<Hub>,
     pub db: Arc<Db>,
+    /// Shared with the registry: notification toggles are read when a status changes.
+    pub settings: Arc<RwLock<Settings>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +60,7 @@ pub enum SessionError {
     Launch(String),
     #[error("session process has exited")]
     Exited,
-    #[error("session is still running")]
+    #[error("the process is still running; Retry re-runs a command that has exited")]
     StillRunning,
     #[error("invalid size")]
     BadSize,
@@ -130,6 +138,8 @@ struct Inner {
     closing: bool,
     got_output: bool,
     spec: SpawnSpec,
+    /// Feeds the status engine (hooks, OSC 7501, screen, process).
+    detector: Detector,
 }
 
 pub struct SessionHandle {
@@ -211,10 +221,12 @@ impl SessionHandle {
     ) -> Result<Arc<Self>, SessionError> {
         let launched = launch(&spec, cols, rows)?;
         let pgid = launched.child.process_id();
+        let detector = Detector::new(meta.id.clone(), meta.agent, cols, rows);
         let handle = Arc::new(Self {
             id: meta.id.clone(),
             ctx,
             inner: Mutex::new(Inner {
+                detector,
                 meta,
                 title_auto,
                 tracker: LineTracker::new(),
@@ -325,20 +337,206 @@ impl SessionHandle {
             Ok(b) => b.into(),
             Err(_) => return,
         };
-        let mut g = self.lock();
-        g.got_output = true;
-        g.meta.last_activity = now_ms();
-        g.ring.push(data);
-        g.attached.retain(|_, c| c.send_bytes(frame.clone()));
+        let at = now_ms();
+        let triggers = {
+            let mut g = self.lock();
+            g.got_output = true;
+            g.meta.last_activity = at;
+            g.ring.push(data);
+            g.attached.retain(|_, c| c.send_bytes(frame.clone()));
+            let fed = g.detector.on_output(data, Instant::now(), at);
+            if fed.reply {
+                // the agent asked whether this terminal speaks OSC 7501: it does
+                let _ = queue_input(g.live.as_ref(), QUERY_REPLY);
+            }
+            self.apply(&mut g, fed.updates)
+        };
+        self.notify(triggers);
+    }
+
+    /// An agent hook payload (`Request::HookEvent`).
+    pub fn on_hook(&self, agent: AgentKind, payload: serde_json::Value) {
+        let at = now_ms();
+        let triggers = {
+            let mut g = self.lock();
+            if g.closing || g.live.is_none() {
+                return;
+            }
+            let update = g.detector.on_hook(agent, payload, at);
+            self.apply(&mut g, update.into_iter().collect())
+        };
+        self.notify(triggers);
+    }
+
+    /// About every 100 ms: foreground process, screen sample, clock tick.
+    pub fn tick(&self) {
+        let now = Instant::now();
+        let at = now_ms();
+        // the foreground process group is cheap to read; its name needs a `ps`, so only on change
+        let changed = {
+            let g = self.lock();
+            if g.closing || g.live.is_none() {
+                return;
+            }
+            let pgid = g
+                .live
+                .as_ref()
+                .and_then(|l| l.master.process_group_leader());
+            (pgid != g.detector.fg_pgid).then_some(pgid).flatten()
+        };
+        let name = changed.map(|pgid| (pgid, process_name(pgid)));
+        let triggers = {
+            let mut g = self.lock();
+            if g.closing || g.live.is_none() {
+                return;
+            }
+            let mut updates = Vec::new();
+            if let Some((pgid, name)) = name {
+                g.detector.fg_pgid = Some(pgid);
+                if let Some(name) = name {
+                    updates.extend(g.detector.on_foreground(name, at));
+                }
+            }
+            updates.extend(g.detector.tick(now, at));
+            self.apply(&mut g, updates)
+        };
+        self.notify(triggers);
+    }
+
+    /// Take a fresh git line (branch, ahead, dirty) for this session's folder; broadcast
+    /// `git_info_changed` when it moved. The caller reads it with `git_glue::info(&self.cwd())` (off
+    /// every lock: it runs `git`), once per folder when several sessions share one.
+    pub fn apply_git(&self, git: GitInfo) {
+        let changed = {
+            let mut g = self.lock();
+            if g.closing || g.meta.git == git {
+                false
+            } else {
+                g.meta.git = git.clone();
+                true
+            }
+        };
+        if changed {
+            self.ctx.hub.broadcast(Event::GitInfoChanged {
+                session_id: self.id.clone(),
+                git,
+            });
+        }
+    }
+
+    /// Folder the session runs in (the project, or its worktree).
+    pub fn cwd(&self) -> PathBuf {
+        self.lock().spec.cwd.clone()
+    }
+
+    /// Merge engine updates into the session and broadcast what changed. Called with the session
+    /// lock held so events keep their order; returns what may deserve a notification.
+    fn apply(&self, g: &mut Inner, updates: Vec<StatusUpdate>) -> Vec<(Session, Trigger)> {
+        let mut triggers = Vec::new();
+        let notify =
+            g.detector.agent() != AgentKind::Terminal || g.meta.agent != AgentKind::Terminal;
+        for update in updates {
+            let prev = g.meta.status;
+            let prev_perm = g.meta.perm.clone();
+            let status_moved = prev != update.status || prev_perm != update.perm;
+            g.meta.status = update.status;
+            g.meta.source = update.source;
+            g.meta.perm = update.perm.clone();
+            g.meta.running_since = update.running_since;
+            g.meta.last_activity = update.at;
+            let finished = matches!(update.status, Status::Done | Status::Fail)
+                && !matches!(prev, Status::Done | Status::Fail);
+            if finished && !g.meta.unread {
+                g.meta.unread = true;
+                self.ctx
+                    .hub
+                    .broadcast(Event::SessionUpdated(g.meta.clone()));
+            }
+            if status_moved {
+                self.ctx.hub.broadcast(Event::StatusChanged {
+                    session_id: self.id.clone(),
+                    status: update.status,
+                    source: update.source,
+                    perm: update.perm.clone(),
+                    running_since: update.running_since,
+                    at: update.at,
+                });
+                if notify {
+                    let trigger = match update.status {
+                        // a new request while one is open is a new reason to look up
+                        Status::Perm if prev != Status::Perm || update.perm != prev_perm => {
+                            Some(Trigger::Perm(update.perm.clone()))
+                        }
+                        Status::Fail if prev != Status::Fail => Some(Trigger::Fail),
+                        // a finished turn, not an agent that merely settled at its prompt
+                        Status::Done if matches!(prev, Status::Run | Status::Perm) => {
+                            Some(Trigger::Done)
+                        }
+                        _ => None,
+                    };
+                    triggers.extend(trigger.map(|t| (g.meta.clone(), t)));
+                }
+            }
+            if let Some(subs) = update.sub_agents.filter(|s| *s != g.meta.sub_agents) {
+                for sub in &subs {
+                    let before = g.meta.sub_agents.iter().find(|s| s.id == sub.id);
+                    if before.map(|s| s.status) != Some(sub.status) {
+                        self.ctx.hub.broadcast(Event::SubAgentStatus {
+                            session_id: self.id.clone(),
+                            sub_agent_id: sub.id.clone(),
+                            status: sub.status,
+                        });
+                        if notify && sub.status == Status::Done {
+                            triggers
+                                .push((g.meta.clone(), Trigger::SubAgentDone(sub.name.clone())));
+                        }
+                    }
+                }
+                g.meta.sub_agents.clone_from(&subs);
+                self.ctx.hub.broadcast(Event::SubAgentsChanged {
+                    session_id: self.id.clone(),
+                    sub_agents: subs,
+                });
+            }
+        }
+        triggers
+    }
+
+    /// Turn triggers into `Event::Notification` (settings and the project's override applied).
+    fn notify(&self, triggers: Vec<(Session, Trigger)>) {
+        for (session, trigger) in triggers {
+            let project = match self.ctx.db.get_project(&session.project_id) {
+                Ok(Some(p)) => p,
+                _ => continue,
+            };
+            let settings = self
+                .ctx
+                .settings
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .notifications
+                .clone();
+            if let Some(event) = notification(
+                &settings,
+                &project.notifications,
+                &project.name,
+                &session,
+                &trigger,
+                now_ms(),
+            ) {
+                self.ctx.hub.broadcast(event);
+            }
+        }
     }
 
     fn on_exit(&self, generation: u64, code: Option<i32>) {
         let at = now_ms();
-        let status = {
+        let (status, trigger) = {
             let mut g = self.lock();
             if g.generation != generation || g.closing {
                 return;
             }
+            g.detector.on_exit(code, at);
             g.live = None;
             // keep the group id only while survivors hold it (a freed id may be reused by anyone)
             if g.pgid.is_some_and(|p| !group_alive(p)) {
@@ -355,7 +553,11 @@ impl SessionHandle {
             g.meta.running_since = None;
             g.meta.perm = None;
             g.meta.last_activity = at;
-            status
+            let agent_session =
+                g.meta.agent != AgentKind::Terminal || g.detector.agent() != AgentKind::Terminal;
+            let failed = status == Status::Fail && !matches!(code, Some(130 | 143));
+            let trigger = (agent_session && failed).then(|| (g.meta.clone(), Trigger::Fail));
+            (status, trigger)
         };
         self.ctx.hub.broadcast(Event::SessionExited {
             session_id: self.id.clone(),
@@ -369,6 +571,7 @@ impl SessionHandle {
             running_since: None,
             at,
         });
+        self.notify(trigger.into_iter().collect());
     }
 
     /// Answer the request and start streaming, atomically: `respond` builds the `attached`
@@ -384,6 +587,7 @@ impl SessionHandle {
         let mut g = self.lock();
         g.cols = cols;
         g.rows = rows;
+        g.detector.resize(cols, rows);
         if let Some(live) = &g.live {
             let _ = live.master.resize(pty_size(cols, rows));
         }
@@ -416,6 +620,7 @@ impl SessionHandle {
         let mut g = self.lock();
         g.cols = cols;
         g.rows = rows;
+        g.detector.resize(cols, rows);
         if let Some(live) = &g.live {
             let _ = live.master.resize(pty_size(cols, rows));
         }
@@ -488,8 +693,13 @@ impl SessionHandle {
         g.generation += 1;
         let generation = g.generation;
         g.live = Some(self.start_io(launched, generation));
+        let (cols, rows) = (g.cols, g.rows);
+        g.detector.reset(cols, rows);
         g.meta.status = initial;
         g.meta.source = DetectSource::Process;
+        g.meta.sub_agents.clear();
+        g.meta.perm = None;
+        g.meta.running_since = None;
         g.meta.last_activity = now_ms();
         g.got_output = false;
         Ok(g.meta.clone())

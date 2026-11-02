@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient } from '../lib/client';
+import { emitUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { FakeTerminal } from '../terminal/fakeXterm';
 import { Panes, SESSION_DRAG_TYPE } from './Panes';
@@ -69,6 +70,23 @@ describe('Panes', () => {
     act(() => selectSession('a4'));
     expect(paneIds()).toEqual(['a4']);
     expect(document.querySelector('[data-pane="a4"]')).toHaveAttribute('data-focused', 'true');
+  });
+
+  it('the sidebar menu\'s "Split Right" (UI command splitSession) opens that session beside the focused pane', async () => {
+    await mount();
+    act(() => void emitUiCommand('splitSession', 'a4'));
+    expect(paneIds()).toEqual(['a1', 'a4']);
+    expect(getSelectedSessionId()).toBe('a4');
+  });
+
+  it('⌥-click on a session card (data-session-id) splits, and the shared workspace store feeds the panes', async () => {
+    const card = document.createElement('div');
+    card.setAttribute('data-session-id', 'a3');
+    document.body.append(card);
+    await mount();
+    fireEvent.click(card, { altKey: true });
+    expect(paneIds()).toEqual(['a1', 'a3']);
+    card.remove();
   });
 
   describe('add', () => {

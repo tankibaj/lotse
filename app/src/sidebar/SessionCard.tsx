@@ -55,6 +55,7 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, onSelec
   return (
     <div
       data-sid={s.id}
+      data-session-id={s.id}
       draggable
       aria-current={selected ? 'true' : undefined}
       className={`group @container ml-4 mr-1 cursor-pointer rounded-md px-2 py-1.5 text-left has-focus-visible:ring-2 has-focus-visible:ring-blue ${

@@ -1,12 +1,36 @@
 import { act, fireEvent, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { emitUiCommand } from '../lib/ui/commands';
 import { mountWp5 } from './harness';
 import { setHostBridge } from './hostBridge';
 import type { HostBridge } from './hostBridge';
 import { getOverlay, openOverlay } from './overlay';
 
 const key = (init: KeyboardEventInit) => fireEvent.keyDown(window, init);
+
+describe('UI commands with a payload', () => {
+  it('openNewSession(projectId) opens the sheet with that project selected', async () => {
+    mountWp5();
+    act(() => void emitUiCommand('openNewSession', 'p3'));
+    expect(getOverlay()).toEqual({ name: 'newSession', projectId: 'p3' });
+    const dlg = await screen.findByRole('dialog', { name: /New session/i });
+    expect(dlg).toBeInTheDocument();
+  });
+
+  it('openProjectStyle(projectId) opens the colour and icon popover below the project row', () => {
+    mountWp5();
+    const row = document.createElement('div');
+    row.setAttribute('data-pid', 'p2');
+    row.getBoundingClientRect = () => ({ left: 10, top: 100, right: 200, bottom: 130, width: 190, height: 30, x: 10, y: 100, toJSON: () => ({}) });
+    document.body.append(row);
+    act(() => void emitUiCommand('openProjectStyle', 'p2'));
+    expect(getOverlay()).toMatchObject({ name: 'projectStyle', projectId: 'p2', x: 18 });
+    act(() => void emitUiCommand('openProjectStyle')); // no id: nothing changes
+    expect(getOverlay()).toMatchObject({ projectId: 'p2' });
+    row.remove();
+  });
+});
 
 describe('shortcut bindings', () => {
   it('⌘/ toggles the shortcuts sheet, which lists the shortcuts', async () => {

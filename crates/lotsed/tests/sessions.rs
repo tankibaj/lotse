@@ -601,7 +601,8 @@ fn create_session_errors() {
         error_code(new("claude 'unterminated", false)),
         ErrorCode::InvalidRequest
     );
-    assert_eq!(error_code(new("/bin/sh", true)), ErrorCode::Unavailable);
+    // a worktree needs a git repository (the project folder is a plain temp dir)
+    assert_eq!(error_code(new("/bin/sh", true)), ErrorCode::InvalidRequest);
     // none of the failures left a session behind
     match c.request(Request::ListSessions { project_id: None }) {
         Response::Sessions(s) => assert!(s.is_empty()),

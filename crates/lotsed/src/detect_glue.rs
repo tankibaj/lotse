@@ -1,0 +1,618 @@
+//! Glue between one session's raw signals and `lotse_detect::Engine`.
+//!
+//! A [`Detector`] lives inside each [`crate::session::SessionHandle`]. It turns what the daemon sees
+//! into [`Observation`]s:
+//!
+//! | Signal | Observation |
+//! |---|---|
+//! | `Request::HookEvent` | `Hook` |
+//! | OSC 7501 in PTY output (queries are answered with `QUERY_REPLY`) | `Osc` |
+//! | PTY output → `alacritty_terminal` VT model, sampled after ~100 ms of quiet (at most every 500 ms while streaming), never inside a `?2026` synchronized update | `Screen` |
+//! | foreground process group change, child exit | `Process` |
+//! | ~1 s | `Tick` |
+//!
+//! The merged result ([`StatusUpdate`]) is applied to the session by the handle, which also decides
+//! about notifications ([`notification`]).
+
+use alacritty_terminal::event::VoidListener;
+use alacritty_terminal::grid::Dimensions;
+use alacritty_terminal::index::{Column, Line};
+use alacritty_terminal::term::cell::Flags;
+use alacritty_terminal::term::{Config as TermConfig, Term};
+use alacritty_terminal::vte::ansi::Processor;
+use lotse_detect::adapter::{
+    HookObservation, Observation, OscObservation, ProcessObservation, ScreenObservation,
+};
+use lotse_detect::engine::{Engine, StatusUpdate};
+use lotse_detect::osc7501::{Osc7501Scanner, is_query};
+use lotse_detect::screen::{identify_agent, is_shell};
+use lotse_proto::{
+    AgentKind, DetectSource, Event, NotificationKind, NotificationMode, NotificationSettings,
+    PermRequest, Session, SessionId, Status, UnixMs,
+};
+use std::time::{Duration, Instant};
+
+/// Output must be quiet this long before the screen is sampled.
+const QUIET: Duration = Duration::from_millis(100);
+/// While output keeps streaming, sample at most this often.
+const STREAM_SAMPLE: Duration = Duration::from_millis(500);
+/// A synchronized update that never ends is flushed after this long.
+const SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+/// Clock ticks for timeouts inside the adapters.
+const TICK: Duration = Duration::from_secs(1);
+/// Most output kept for the VT model between two ticks.
+const BACKLOG_MAX: usize = 256 * 1024;
+
+struct Size {
+    cols: usize,
+    rows: usize,
+}
+
+impl Dimensions for Size {
+    fn total_lines(&self) -> usize {
+        self.rows
+    }
+    fn screen_lines(&self) -> usize {
+        self.rows
+    }
+    fn columns(&self) -> usize {
+        self.cols
+    }
+}
+
+/// What feeding PTY output produced.
+#[derive(Debug, Default)]
+pub struct Fed {
+    pub updates: Vec<StatusUpdate>,
+    /// An OSC 7501 query was seen: write `osc7501::QUERY_REPLY` to the PTY.
+    pub reply: bool,
+}
+
+pub struct Detector {
+    id: SessionId,
+    /// The agent the session was launched as; a shell session goes back to it when an agent exits.
+    base_agent: AgentKind,
+    engine: Engine,
+    scanner: Osc7501Scanner,
+    term: Term<VoidListener>,
+    parser: Processor,
+    /// Output not yet parsed by the VT model (see `on_output`).
+    backlog: Vec<u8>,
+    dirty: bool,
+    last_output: Option<Instant>,
+    last_sample: Option<Instant>,
+    last_tick: Option<Instant>,
+    /// Foreground process group seen last (`None`: not looked at yet).
+    pub fg_pgid: Option<i32>,
+    exited: bool,
+}
+
+impl Detector {
+    pub fn new(id: SessionId, agent: AgentKind, cols: u16, rows: u16) -> Self {
+        let size = Size {
+            cols: usize::from(cols),
+            rows: usize::from(rows),
+        };
+        // the raw ring keeps the scrollback; the VT model only needs the visible screen
+        let config = TermConfig {
+            scrolling_history: 0,
+            ..TermConfig::default()
+        };
+        Self {
+            engine: Engine::with_default_adapters(id.clone(), agent),
+            id,
+            base_agent: agent,
+            scanner: Osc7501Scanner::new(),
+            term: Term::new(config, &size, VoidListener),
+            parser: Processor::new(),
+            backlog: Vec::new(),
+            dirty: false,
+            last_output: None,
+            last_sample: None,
+            last_tick: None,
+            fg_pgid: None,
+            exited: false,
+        }
+    }
+
+    /// The agent the engine currently follows.
+    pub fn agent(&self) -> AgentKind {
+        self.engine.agent()
+    }
+
+    fn set_agent(&mut self, agent: AgentKind) {
+        if agent != self.engine.agent() {
+            self.engine = Engine::with_default_adapters(self.id.clone(), agent);
+        }
+    }
+
+    pub fn resize(&mut self, cols: u16, rows: u16) {
+        self.term.resize(Size {
+            cols: usize::from(cols),
+            rows: usize::from(rows),
+        });
+    }
+
+    fn observe(&mut self, obs: Observation) -> Option<StatusUpdate> {
+        if self.exited {
+            return None;
+        }
+        self.engine.observe(obs)
+    }
+
+    pub fn on_output(&mut self, data: &[u8], now: Instant, at: UnixMs) -> Fed {
+        let mut fed = Fed::default();
+        if self.exited {
+            return fed;
+        }
+        for osc in self.scanner.feed(data, at) {
+            if is_query(&osc.payload) {
+                fed.reply = true;
+            } else {
+                fed.updates
+                    .extend(self.observe(Observation::Osc(OscObservation { ..osc })));
+            }
+        }
+        // The VT model is fed from `tick`, off the reader's hot path: a flood (`cat bigfile`) must
+        // not slow the byte stream down. Only the newest bytes matter for the visible screen.
+        self.backlog.extend_from_slice(data);
+        if self.backlog.len() > BACKLOG_MAX {
+            let excess = self.backlog.len() - BACKLOG_MAX;
+            self.backlog.drain(..excess);
+        }
+        self.dirty = true;
+        self.last_output = Some(now);
+        fed
+    }
+
+    /// Feed the VT model with what arrived since the last call.
+    fn flush(&mut self) {
+        if !self.backlog.is_empty() {
+            let data = std::mem::take(&mut self.backlog);
+            self.parser.advance(&mut self.term, &data);
+        }
+    }
+
+    pub fn on_hook(
+        &mut self,
+        agent: AgentKind,
+        payload: serde_json::Value,
+        at: UnixMs,
+    ) -> Option<StatusUpdate> {
+        if !self.exited {
+            self.set_agent(agent);
+        }
+        self.observe(Observation::Hook(HookObservation { agent, payload, at }))
+    }
+
+    /// The foreground process group changed; `name` is its executable.
+    pub fn on_foreground(&mut self, name: String, at: UnixMs) -> Vec<StatusUpdate> {
+        let mut out = Vec::new();
+        if let Some(agent) = identify_agent(&name) {
+            self.set_agent(agent);
+        } else if is_shell(&name) && self.engine.agent() != self.base_agent {
+            // the agent quit back into the shell: process identity ends its signals
+            out.extend(self.observe(Observation::Process(ProcessObservation {
+                foreground: Some(name),
+                exit_code: None,
+                at,
+            })));
+            self.engine = Engine::with_default_adapters(self.id.clone(), self.base_agent);
+            out.push(StatusUpdate {
+                status: if self.base_agent == AgentKind::Terminal {
+                    Status::Idle
+                } else {
+                    Status::Unknown
+                },
+                source: DetectSource::Process,
+                perm: None,
+                sub_agents: Some(Vec::new()),
+                running_since: None,
+                at,
+            });
+            return out;
+        }
+        out.extend(self.observe(Observation::Process(ProcessObservation {
+            foreground: Some(name),
+            exit_code: None,
+            at,
+        })));
+        out
+    }
+
+    /// The child exited. The handle sets the final status itself; this resets the adapters.
+    pub fn on_exit(&mut self, code: Option<i32>, at: UnixMs) {
+        self.observe(Observation::Process(ProcessObservation {
+            foreground: None,
+            exit_code: code,
+            at,
+        }));
+        self.exited = true;
+    }
+
+    /// Restart after a retry: fresh engine and screen.
+    pub fn reset(&mut self, cols: u16, rows: u16) {
+        *self = Self::new(self.id.clone(), self.base_agent, cols, rows);
+    }
+
+    /// Called about every 100 ms: screen sample, synchronized-update timeout, 1 s tick.
+    pub fn tick(&mut self, now: Instant, at: UnixMs) -> Vec<StatusUpdate> {
+        let mut out = Vec::new();
+        if self.exited {
+            return out;
+        }
+        self.flush();
+        let quiet_for = self.last_output.map(|t| now.saturating_duration_since(t));
+        if self.parser.sync_bytes_count() > 0 && quiet_for.is_some_and(|q| q >= SYNC_TIMEOUT) {
+            // an update that never ended: show what we have, like a terminal would
+            self.parser.stop_sync(&mut self.term);
+        }
+        let in_sync = self.parser.sync_bytes_count() > 0;
+        let due = quiet_for.is_some_and(|q| q >= QUIET)
+            || self
+                .last_sample
+                .is_none_or(|s| now.saturating_duration_since(s) >= STREAM_SAMPLE);
+        if self.dirty && !in_sync && due {
+            self.dirty = false;
+            self.last_sample = Some(now);
+            let rows = self.screen_rows();
+            out.extend(self.observe(Observation::Screen(ScreenObservation { rows, at })));
+        }
+        if self
+            .last_tick
+            .is_none_or(|t| now.saturating_duration_since(t) >= TICK)
+        {
+            self.last_tick = Some(now);
+            out.extend(self.observe(Observation::Tick { now: at }));
+        }
+        out
+    }
+
+    /// Visible rows, top to bottom, trailing blanks of each row trimmed.
+    pub fn screen_rows(&mut self) -> Vec<String> {
+        self.flush();
+        let grid = self.term.grid();
+        (0..grid.screen_lines())
+            .map(|l| {
+                let line = &grid[Line(l as i32)];
+                let text: String = (0..grid.columns())
+                    .map(|c| &line[Column(c)])
+                    .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+                    .map(|cell| cell.c)
+                    .collect();
+                text.trim_end().to_owned()
+            })
+            .collect()
+    }
+}
+
+/// Executable name of a process (`ps -o comm=`), for process identity. macOS and Linux `ps` agree.
+pub fn process_name(pid: i32) -> Option<String> {
+    let out = std::process::Command::new("/bin/ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    (!name.is_empty()).then_some(name)
+}
+
+// ---- notifications ------------------------------------------------------------------------------
+
+/// Why a notification may be due.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Trigger {
+    Perm(Option<PermRequest>),
+    Fail,
+    Done,
+    SubAgentDone(String),
+}
+
+impl Trigger {
+    fn kind(&self) -> NotificationKind {
+        match self {
+            Trigger::Perm(_) => NotificationKind::Perm,
+            Trigger::Fail => NotificationKind::Fail,
+            Trigger::Done => NotificationKind::Done,
+            Trigger::SubAgentDone(_) => NotificationKind::SubAgentDone,
+        }
+    }
+}
+
+/// Settings + per-project override → `Some(sound)` when a banner is due (mock `notifies`).
+/// A custom "off" silences the whole event, sound included; the sound follows the global row.
+///
+/// Known limit: "banner off, sound on" yields `None` (no event), because `Event::Notification` has no
+/// banner flag and the app always shows a banner for it. Sound-only needs a proto field (request).
+pub fn resolve(
+    settings: &NotificationSettings,
+    mode: &NotificationMode,
+    kind: NotificationKind,
+) -> Option<bool> {
+    let global = match kind {
+        NotificationKind::Perm => settings.perm,
+        NotificationKind::Fail => settings.fail,
+        NotificationKind::Done => settings.done,
+        NotificationKind::SubAgentDone => settings.sub_agent_done,
+    };
+    let banner = match mode {
+        NotificationMode::Mute => return None,
+        NotificationMode::Global => global.banner,
+        NotificationMode::Custom {
+            perm,
+            fail,
+            done,
+            sub_agent_done,
+        } => match kind {
+            NotificationKind::Perm => *perm,
+            NotificationKind::Fail => *fail,
+            NotificationKind::Done => *done,
+            NotificationKind::SubAgentDone => *sub_agent_done,
+        },
+    };
+    banner.then_some(global.sound)
+}
+
+/// The `Event::Notification` for a trigger, or `None` when settings or the project say no.
+/// Pause and focus are the app's call (it knows the window).
+pub fn notification(
+    settings: &NotificationSettings,
+    mode: &NotificationMode,
+    project_name: &str,
+    session: &Session,
+    trigger: &Trigger,
+    at: UnixMs,
+) -> Option<Event> {
+    let kind = trigger.kind();
+    let sound = resolve(settings, mode, kind)?;
+    let (subtitle, body) = match trigger {
+        Trigger::Perm(Some(p)) => (
+            "Needs permission",
+            Some(format!("{}({})", p.tool, p.summary)),
+        ),
+        Trigger::Perm(None) => ("Needs permission", None),
+        Trigger::Fail => ("Failed", Some(session.title.clone())),
+        Trigger::Done => ("Finished", Some(session.title.clone())),
+        Trigger::SubAgentDone(name) => ("Sub-agent finished", Some(name.clone())),
+    };
+    Some(Event::Notification {
+        session_id: session.id.clone(),
+        kind,
+        title: format!("{project_name} · {}", session.agent.label()),
+        subtitle: subtitle.into(),
+        body,
+        sound,
+        at,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lotse_proto::EventPrefs;
+
+    fn detector(agent: AgentKind) -> Detector {
+        Detector::new(SessionId::new("s-1"), agent, 80, 24)
+    }
+
+    fn feed(d: &mut Detector, text: &str, t0: Instant, ms: u64) {
+        d.on_output(text.as_bytes(), t0 + Duration::from_millis(ms), 1_000 + ms);
+    }
+
+    #[test]
+    fn the_vt_model_renders_the_visible_screen() {
+        let mut d = detector(AgentKind::Terminal);
+        let t0 = Instant::now();
+        feed(&mut d, "hello\r\n\x1b[1mworld\x1b[0m  ", t0, 0);
+        let rows = d.screen_rows();
+        assert_eq!(rows.len(), 24);
+        assert_eq!(rows[0], "hello");
+        assert_eq!(rows[1], "world");
+        assert_eq!(rows[2], "");
+    }
+
+    #[test]
+    fn osc_queries_are_answered_not_observed() {
+        let mut d = detector(AgentKind::Terminal);
+        // split across two chunks: the scanner keeps state between them
+        let first = d.on_output(b"\x1b]7501;", Instant::now(), 1);
+        assert!(!first.reply);
+        let fed = d.on_output(b"?\x1b\\", Instant::now(), 2);
+        assert!(fed.reply);
+        assert!(fed.updates.is_empty());
+    }
+
+    #[test]
+    fn screen_is_sampled_after_quiet_and_not_inside_a_synchronized_update() {
+        let mut d = detector(AgentKind::Codex);
+        let t0 = Instant::now();
+        // begin a synchronized update, never end it
+        feed(&mut d, "\x1b[?2026hpartial frame", t0, 0);
+        // quiet for 120 ms but still inside the update: no sample (dirty stays)
+        d.tick(t0 + Duration::from_millis(120), 1_120);
+        assert!(d.parser.sync_bytes_count() > 0);
+        assert!(d.dirty, "no sampling inside ?2026");
+        // past the sync timeout the update is flushed and the screen sampled
+        d.tick(t0 + Duration::from_millis(300), 1_300);
+        assert!(!d.dirty);
+        assert!(d.screen_rows()[0].contains("partial frame"));
+    }
+
+    #[test]
+    fn streaming_output_is_sampled_at_most_every_500_ms() {
+        let mut d = detector(AgentKind::Codex);
+        let t0 = Instant::now();
+        feed(&mut d, "a", t0, 0);
+        d.tick(t0 + Duration::from_millis(10), 1_010); // first sample (no earlier one)
+        assert!(!d.dirty);
+        feed(&mut d, "b", t0, 20);
+        d.tick(t0 + Duration::from_millis(30), 1_030); // streaming, last sample 20 ms ago
+        assert!(d.dirty, "too soon, still streaming");
+        d.tick(t0 + Duration::from_millis(600), 1_600);
+        assert!(!d.dirty);
+    }
+
+    #[test]
+    fn hook_event_switches_the_engine_to_the_hook_agent_and_reports_status() {
+        let mut d = detector(AgentKind::Terminal);
+        let up = d
+            .on_hook(
+                AgentKind::ClaudeCode,
+                serde_json::json!({"hook_event_name": "UserPromptSubmit"}),
+                5,
+            )
+            .expect("claude starts running");
+        assert_eq!(up.status, Status::Run);
+        assert_eq!(d.agent(), AgentKind::ClaudeCode);
+    }
+
+    #[test]
+    fn agent_quitting_back_to_the_shell_resets_a_shell_session_to_idle() {
+        let mut d = detector(AgentKind::Terminal);
+        d.on_hook(
+            AgentKind::ClaudeCode,
+            serde_json::json!({"hook_event_name": "UserPromptSubmit"}),
+            5,
+        );
+        let ups = d.on_foreground("/bin/zsh".into(), 9);
+        assert_eq!(d.agent(), AgentKind::Terminal);
+        let last = ups.last().expect("reset update");
+        assert_eq!(last.status, Status::Idle);
+        assert_eq!(last.sub_agents, Some(Vec::new()));
+    }
+
+    #[test]
+    fn identify_agent_in_the_foreground_switches_the_engine() {
+        let mut d = detector(AgentKind::Terminal);
+        d.on_foreground("/opt/homebrew/bin/codex".into(), 1);
+        assert_eq!(d.agent(), AgentKind::Codex);
+    }
+
+    fn settings() -> NotificationSettings {
+        NotificationSettings::default()
+    }
+
+    fn session(agent: AgentKind) -> Session {
+        serde_json::from_value(serde_json::json!({
+            "id": "s-1", "project_id": "p-1", "title": "Fix login", "agent": agent,
+            "command": "claude", "status": "perm", "sub_agents": [],
+            "git": {"is_git": true, "branch": "main", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null},
+            "created_at": 1, "last_activity": 1, "running_since": null, "unread": false,
+            "perm": null, "source": "hook"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn notifications_follow_the_mock_defaults() {
+        let s = session(AgentKind::ClaudeCode);
+        let perm = Trigger::Perm(Some(PermRequest {
+            tool: "Bash".into(),
+            summary: "npx playwright test e2e/patients".into(),
+        }));
+        let Some(Event::Notification {
+            title,
+            subtitle,
+            body,
+            sound,
+            ..
+        }) = notification(
+            &settings(),
+            &NotificationMode::Global,
+            "praxis-web",
+            &s,
+            &perm,
+            1,
+        )
+        else {
+            panic!("perm banner is on by default");
+        };
+        assert_eq!(title, "praxis-web · Claude Code");
+        assert_eq!(subtitle, "Needs permission");
+        assert_eq!(
+            body.as_deref(),
+            Some("Bash(npx playwright test e2e/patients)")
+        );
+        assert!(sound);
+        // done: banner, no sound; sub-agent done: off
+        let done = notification(
+            &settings(),
+            &NotificationMode::Global,
+            "p",
+            &s,
+            &Trigger::Done,
+            1,
+        );
+        assert!(matches!(
+            done,
+            Some(Event::Notification { sound: false, .. })
+        ));
+        let sub = Trigger::SubAgentDone("explore-repo".into());
+        assert!(notification(&settings(), &NotificationMode::Global, "p", &s, &sub, 1).is_none());
+    }
+
+    #[test]
+    fn sound_without_banner_sends_nothing_until_the_proto_can_say_so() {
+        let sound_only = NotificationSettings {
+            done: EventPrefs {
+                banner: false,
+                sound: true,
+                allow_deny: false,
+            },
+            ..settings()
+        };
+        assert_eq!(
+            resolve(
+                &sound_only,
+                &NotificationMode::Global,
+                NotificationKind::Done
+            ),
+            None
+        );
+        assert_eq!(
+            resolve(
+                &settings(),
+                &NotificationMode::Global,
+                NotificationKind::Perm
+            ),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn mute_and_custom_overrides() {
+        let s = session(AgentKind::Codex);
+        assert!(
+            notification(
+                &settings(),
+                &NotificationMode::Mute,
+                "p",
+                &s,
+                &Trigger::Fail,
+                1
+            )
+            .is_none()
+        );
+        let custom = NotificationMode::Custom {
+            perm: false,
+            fail: false,
+            done: false,
+            sub_agent_done: true,
+        };
+        let sub = Trigger::SubAgentDone("x".into());
+        assert!(notification(&settings(), &custom, "p", &s, &sub, 1).is_some());
+        assert!(notification(&settings(), &custom, "p", &s, &Trigger::Fail, 1).is_none());
+        let off = NotificationSettings {
+            fail: EventPrefs {
+                banner: false,
+                sound: true,
+                allow_deny: false,
+            },
+            ..settings()
+        };
+        assert!(
+            notification(&off, &NotificationMode::Global, "p", &s, &Trigger::Fail, 1).is_none()
+        );
+    }
+}
