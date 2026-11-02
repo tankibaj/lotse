@@ -5,6 +5,8 @@ import { ClientProvider, MockClient } from '../lib/client';
 import { onUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { closeOverlay, getOverlay } from '../sheets/overlay';
+import { onTabDrag } from './splitBus';
+import type { TabDrag } from './splitBus';
 import { TabStrip } from './TabStrip';
 
 let client: MockClient;
@@ -103,6 +105,7 @@ describe('tab context menu', () => {
     expect([...menu.querySelectorAll('[role="menuitem"]')].map((i) => i.textContent)).toEqual([
       'Open⏎',
       'Open in Split Right⌥-click',
+      'Open in Split Down⌥⇧-click',
       'Rename…',
       'Show TranscriptBeta',
       'Show ChangesBeta',
@@ -121,6 +124,18 @@ describe('tab context menu', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: /Split Right/ }));
     expect(split).toHaveBeenCalledWith('a2');
     off();
+  });
+
+  it('Open in Split Down raises splitSessionDown, not splitSession', async () => {
+    await mount();
+    const right = vi.fn();
+    const down = vi.fn();
+    const offs = [onUiCommand('splitSession', right), onUiCommand('splitSessionDown', down)];
+    fireEvent.contextMenu(tab('Flyway'));
+    await userEvent.click(screen.getByRole('menuitem', { name: /Split Down/ }));
+    expect(down).toHaveBeenCalledWith('a2');
+    expect(right).not.toHaveBeenCalled();
+    offs.forEach((off) => off());
   });
 
   it('Rename… edits the title in place and renames through the client', async () => {
@@ -307,6 +322,52 @@ describe('drag to reorder', () => {
     await addThird();
     await mount(3);
     expect(tabNames()).toEqual(['Flyway migration V42', 'Fix invoice rounding', 'Third']);
+  });
+
+  it('dragging a tab down onto the panes reports the pointer and drops there instead of reordering', async () => {
+    await addThird();
+    await mount(3);
+    layout();
+    const seen: TabDrag[] = [];
+    const off = onTabDrag((d) => {
+      seen.push(d);
+      return d.phase !== 'cancel';
+    });
+    const at = (type: 'pointermove' | 'pointerup', clientX: number, clientY: number) => fireEvent(window, new MouseEvent(type, { clientX, clientY }));
+    fireEvent.pointerDown(tab('Third'), { clientX: 250, clientY: 16, button: 0 });
+    at('pointermove', 250, 300); // straight down: no sideways movement needed to start the drag
+    expect(seen.at(-1)).toEqual({ phase: 'move', sessionId: 'a8', x: 250, y: 300 });
+    expect(screen.queryByTestId('tab-drop-indicator')).toBeNull(); // no reorder bar over the panes
+    at('pointerup', 250, 300);
+    // `restore`: what was selected before the mouse went down on the tab (mouse down selects), so the panes can undo that swap
+    expect(seen.at(-1)).toEqual({ phase: 'drop', sessionId: 'a8', x: 250, y: 300, restore: 'a1' });
+    expect(tabNames()).toEqual(['Fix invoice rounding', 'Flyway migration V42', 'Third']);
+    expect(localStorage.getItem('lotse-tab-order')).toBeNull();
+    off();
+  });
+
+  it('Esc while a tab hovers over the panes cancels the drop zone', async () => {
+    await mount();
+    layout();
+    const seen: TabDrag[] = [];
+    const off = onTabDrag((d) => (seen.push(d), d.phase === 'move'));
+    fireEvent.pointerDown(tab('Flyway'), { clientX: 150, clientY: 16, button: 0 });
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 150, clientY: 300 }));
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(seen.at(-1)).toEqual({ phase: 'cancel' });
+    off();
+  });
+
+  it('a drag that never leaves the strip does not talk to the panes except to clear the zone', async () => {
+    await mount();
+    layout();
+    const seen: TabDrag[] = [];
+    const off = onTabDrag((d) => (seen.push(d), false));
+    fireEvent.pointerDown(tab('Flyway'), { clientX: 150, clientY: 16, button: 0 });
+    pointer('pointermove', 10);
+    pointer('pointerup', 10);
+    expect(seen.every((d) => d.phase !== 'drop')).toBe(true);
+    off();
   });
 
   it('a small wobble while clicking does not reorder, and the click still selects', async () => {

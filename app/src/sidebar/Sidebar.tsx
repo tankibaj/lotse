@@ -295,6 +295,7 @@ export function Sidebar() {
           entries={sessionMenu(menuSession, {
             open: () => selectSession(menuSession.id),
             split: () => emitUiCommand('splitSession', menuSession.id),
+            splitDown: () => emitUiCommand('splitSessionDown', menuSession.id),
             rename: () => setRenaming({ kind: 'session', id: menuSession.id }),
             stop: () =>
               menuSession.status === 'run' || menuSession.status === 'perm'

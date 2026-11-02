@@ -1,21 +1,35 @@
 import { describe, expect, it } from 'vitest';
 import {
   MAX_PANES,
+  MIN_PANE_HEIGHT_PX,
   MIN_PANE_PX,
   addPane,
   closePane,
+  columnsOf,
+  dropDirection,
   emptyLayout,
   focusPane,
   focusStep,
   leftShare,
+  migrateLayout,
   nextSessionToOpen,
   resizePair,
+  resizeStack,
   syncLayout,
+  topShare,
   weightOf,
 } from './layout';
 import type { PaneLayout } from './layout';
 
 const layout = (panes: string[], focus = 0, weights: Record<string, number> = {}): PaneLayout => ({ panes, focus, weights });
+/** Columns of stacked panes: stacked([['a1'], ['a2', 'a3']]) is a1 beside (a2 over a3). */
+const stacked = (columns: string[][], focus = 0, extra: Partial<PaneLayout> = {}): PaneLayout => ({
+  panes: columns.flat(),
+  cols: columns.map((c) => c.length),
+  focus,
+  weights: {},
+  ...extra,
+});
 const all = () => true;
 
 describe('addPane', () => {
@@ -164,5 +178,173 @@ describe('syncLayout', () => {
   it('is a no-op (same object) when nothing changes', () => {
     const l = layout(['a1', 'a2'], 1);
     expect(syncLayout(l, 'a2', all)).toBe(l);
+  });
+
+  it('keeps stacks intact and replaces the focused pane in place', () => {
+    const l = syncLayout(stacked([['a1', 'a2'], ['a3']], 1), 'a9', all);
+    expect(columnsOf(l)).toEqual([['a1', 'a9'], ['a3']]);
+    expect(l.focus).toBe(1);
+  });
+
+  it('drops a vanished pane from its column and goes flat again when no stack is left', () => {
+    const l = syncLayout(stacked([['a1', 'a2'], ['a3']], 0), 'a1', (id) => id !== 'a2');
+    expect(columnsOf(l)).toEqual([['a1'], ['a3']]);
+    expect(l.cols).toBeUndefined();
+  });
+});
+
+describe('split down', () => {
+  it('opens the session below the focused pane, in the same column, and focuses it', () => {
+    const { layout: l, outcome } = addPane(layout(['a1', 'a2'], 0), 'a3', 'down');
+    expect(outcome).toBe('added');
+    expect(columnsOf(l)).toEqual([['a1', 'a3'], ['a2']]);
+    expect(l.panes).toEqual(['a1', 'a3', 'a2']);
+    expect(l.focus).toBe(1);
+  });
+
+  it('split right of a stacked pane opens a new full-height column after that column', () => {
+    const { layout: l } = addPane(stacked([['a1', 'a2'], ['a3']], 0), 'a4', 'right');
+    expect(columnsOf(l)).toEqual([['a1', 'a2'], ['a4'], ['a3']]);
+    expect(l.panes[l.focus]).toBe('a4');
+  });
+
+  it('split down of the lower pane of a stack appends to it', () => {
+    const { layout: l } = addPane(stacked([['a1', 'a2']], 1), 'a3', 'down');
+    expect(columnsOf(l)).toEqual([['a1', 'a2', 'a3']]);
+    expect(l.focus).toBe(2);
+  });
+
+  it('shares the pane limit with split right, and focuses a session that is already open', () => {
+    const full = stacked([['a1', 'a2'], ['a3', 'a4']], 0);
+    expect(addPane(full, 'a5', 'down')).toEqual({ layout: full, outcome: 'full' });
+    const again = addPane(full, 'a4', 'down');
+    expect(again.outcome).toBe('focused');
+    expect(again.layout.focus).toBe(3);
+  });
+
+  it('a flat layout is a row of single-pane columns', () => {
+    expect(columnsOf(layout(['a1', 'a2', 'a3']))).toEqual([['a1'], ['a2'], ['a3']]);
+    expect(columnsOf(emptyLayout())).toEqual([]);
+  });
+});
+
+describe('close in a split', () => {
+  it('closing the lower pane of a stack collapses the stack and focuses the pane above', () => {
+    const l = closePane(stacked([['a1'], ['a2', 'a3']], 2), 2);
+    expect(columnsOf(l)).toEqual([['a1'], ['a2']]);
+    expect(l.focus).toBe(1);
+  });
+
+  it('closing the upper pane of a stack focuses the pane that takes its place, and the column keeps its width', () => {
+    const l = closePane(stacked([['a1'], ['a2', 'a3']], 1, { weights: { a1: 1, a2: 2.5 } }), 1);
+    expect(columnsOf(l)).toEqual([['a1'], ['a3']]);
+    expect(l.panes[l.focus]).toBe('a3');
+    expect(weightOf(l, 'a3')).toBe(2.5);
+    expect(l.weights.a2).toBeUndefined();
+  });
+
+  it('closing the only pane of a column removes the column', () => {
+    const l = closePane(stacked([['a1', 'a2'], ['a3']], 2), 2);
+    expect(columnsOf(l)).toEqual([['a1', 'a2']]);
+    expect(l.cols).toEqual([2]);
+    expect(l.focus).toBe(1);
+  });
+
+  it('forgets the height of a closed pane and goes back to the plain flat shape when no stack is left', () => {
+    const l = closePane(stacked([['a1', 'a2']], 1, { heights: { a1: 0.6, a2: 1.4 } }), 1);
+    expect(l.cols).toBeUndefined();
+    expect(l.heights).toBeUndefined();
+    expect(l.panes).toEqual(['a1']);
+  });
+
+  it('focus stays on the same session when an earlier pane closes', () => {
+    const l = closePane(stacked([['a1', 'a2'], ['a3']], 2), 0);
+    expect(l.panes).toEqual(['a2', 'a3']);
+    expect(l.panes[l.focus]).toBe('a3');
+  });
+});
+
+describe('migrateLayout', () => {
+  it('treats a layout saved before split down (no cols) as a row of single-pane columns', () => {
+    const l = migrateLayout({ panes: ['a1', 'a2', 'a3'], focus: 1, weights: { a1: 2 } });
+    expect(columnsOf(l)).toEqual([['a1'], ['a2'], ['a3']]);
+    expect(l).toMatchObject({ panes: ['a1', 'a2', 'a3'], focus: 1, weights: { a1: 2 } });
+    expect(l.cols).toBeUndefined();
+  });
+
+  it('keeps a valid column shape', () => {
+    const l = migrateLayout({ panes: ['a1', 'a2', 'a3'], cols: [1, 2], focus: 2, weights: {}, heights: { a2: 2 } });
+    expect(columnsOf(l)).toEqual([['a1'], ['a2', 'a3']]);
+    expect(l.heights).toEqual({ a2: 2 });
+  });
+
+  it('falls back to a row when cols does not add up, and drops duplicates, junk and an out-of-range focus', () => {
+    expect(columnsOf(migrateLayout({ panes: ['a1', 'a2'], cols: [1, 5], focus: 0, weights: {} }))).toEqual([['a1'], ['a2']]);
+    const l = migrateLayout({ panes: ['a1', 'a1', 7, 'a2'], focus: 9, weights: { a1: 'x', a2: 3 } });
+    expect(l.panes).toEqual(['a1', 'a2']);
+    expect(l.focus).toBe(1);
+    expect(l.weights).toEqual({ a2: 3 });
+  });
+
+  it('anything that is not a layout becomes the empty layout', () => {
+    expect(migrateLayout(null)).toEqual(emptyLayout());
+    expect(migrateLayout('x')).toEqual(emptyLayout());
+    expect(migrateLayout({ focus: 1 })).toEqual(emptyLayout());
+  });
+});
+
+describe('stack resize', () => {
+  it('resizeStack gives the dragged height to the upper pane and keeps the pair total', () => {
+    const l = resizeStack(stacked([['a1', 'a2']], 0), 1, 300, 1000);
+    expect(l.heights?.a1).toBeCloseTo(0.6);
+    expect(l.heights?.a2).toBeCloseTo(1.4);
+    expect(topShare(l, 1)).toBeCloseTo(0.3);
+  });
+
+  it(`keeps both panes at least ${MIN_PANE_HEIGHT_PX}px high`, () => {
+    const l = stacked([['a1', 'a2']]);
+    expect(topShare(resizeStack(l, 1, 5, 1000), 1)).toBeCloseTo(MIN_PANE_HEIGHT_PX / 1000);
+    expect(topShare(resizeStack(l, 1, 995, 1000), 1)).toBeCloseTo((1000 - MIN_PANE_HEIGHT_PX) / 1000);
+  });
+
+  it('ignores a divider that is not inside a column, and a pair too short for two minimum panes', () => {
+    const flat = layout(['a1', 'a2']);
+    expect(resizeStack(flat, 1, 300, 1000)).toBe(flat);
+    const l = stacked([['a1', 'a2']]);
+    expect(resizeStack(l, 1, 100, 2 * MIN_PANE_HEIGHT_PX)).toBe(l);
+    expect(resizeStack(l, 0, 300, 1000)).toBe(l);
+  });
+
+  it('only touches the two panes around the divider and leaves column widths alone', () => {
+    const l = resizeStack(stacked([['a1', 'a2', 'a3']], 0, { weights: { a1: 3 }, heights: { a3: 3 } }), 1, 500, 1000);
+    expect(l.heights?.a3).toBe(3);
+    expect(weightOf(l, 'a1')).toBe(3);
+  });
+
+  it('resizePair drags the divider between columns, using the weight of each column', () => {
+    const l = resizePair(stacked([['a1', 'a2'], ['a3']], 0), 2, 300, 1000);
+    expect(leftShare(l, 2)).toBeCloseTo(0.3);
+    expect(weightOf(l, 'a1')).toBeCloseTo(0.6);
+    expect(weightOf(l, 'a3')).toBeCloseTo(1.4);
+    // index 1 is a divider inside the column, not between columns
+    const same = stacked([['a1', 'a2'], ['a3']]);
+    expect(resizePair(same, 1, 300, 1000)).toBe(same);
+  });
+});
+
+describe('dropDirection', () => {
+  it('the right half of a pane splits right, the bottom half splits down', () => {
+    expect(dropDirection(900, 100, 1000, 800)).toBe('right');
+    expect(dropDirection(100, 700, 1000, 800)).toBe('down');
+  });
+
+  it('near the right edge splits right, near the bottom edge splits down', () => {
+    expect(dropDirection(980, 600, 1000, 800)).toBe('right');
+    expect(dropDirection(600, 790, 1000, 800)).toBe('down');
+  });
+
+  it('the top-left quarter and a pane with no size keep the old behaviour: right', () => {
+    expect(dropDirection(100, 100, 1000, 800)).toBe('right');
+    expect(dropDirection(0, 0, 0, 0)).toBe('right');
   });
 });

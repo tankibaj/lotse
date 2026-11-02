@@ -5,6 +5,7 @@
 //   openNewSession (optional project id)         -> WP5: the sheet preselects that project
 //   openProjectStyle (project id)                -> WP5: colour and icon popover next to the project row
 //   splitSession (session id)                    -> WP4: open the session in the right pane
+//   splitSessionDown (session id)                -> WP4: open the session in a pane below the focused one
 //   toggleSidebar                                -> shell
 
 export type UiCommand =
@@ -14,7 +15,8 @@ export type UiCommand =
   | 'openAddProject'
   | 'toggleSidebar'
   | 'openProjectStyle'
-  | 'splitSession';
+  | 'splitSession'
+  | 'splitSessionDown';
 
 /** Optional payload: a project id or a session id, depending on the command. */
 export type UiCommandHandler = (arg?: string) => void;
