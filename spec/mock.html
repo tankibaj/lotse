@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lotse Main Terminal</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<script src="https://unpkg.com/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script>tailwind.config={darkMode:'class'};(function(){let p='auto';try{p=localStorage.getItem('lotse-theme')||'auto'}catch(e){}const mq=matchMedia('(prefers-color-scheme: dark)');window.setTheme=function(v){p=v;window.themePref=v;try{localStorage.setItem('lotse-theme',v)}catch(e){}document.documentElement.classList.toggle('dark',v==='dark'||(v==='auto'&&mq.matches));document.querySelectorAll('[data-t]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.t===v))};mq.addEventListener('change',()=>p==='auto'&&setTheme('auto'));setTheme(p);addEventListener('DOMContentLoaded',()=>setTheme(p))})();</script>
+<style>
+:root{--c-purple:#AF52DE;--c-indigo:#5856D6;--c-pink:#FF2D55;--c-teal:#30B0C7;--c-mint:#00C7BE;--c-cyan:#32ADE6;--c-brown:#A2845E;--c-yellow:#FFCC00;--blue:#007AFF;--orange:#FF9500;--red:#FF3B30;--green:#34C759;--gray:#8E8E93;--win:#FFFFFF;--side:#F5F5F7;--line:#E5E5EA;--txt:#1D1D1F;--dim:#6E6E73;--term:#FFFFFF;--tdim:#8A8A8E;--sel:rgba(0,122,255,.12)}
+.dark{--c-purple:#BF5AF2;--c-indigo:#5E5CE6;--c-pink:#FF375F;--c-teal:#40C8E0;--c-mint:#63E6E2;--c-cyan:#64D2FF;--c-brown:#AC8E68;--c-yellow:#FFD60A;--blue:#0A84FF;--orange:#FF9F0A;--red:#FF453A;--green:#30D158;--gray:#98989D;--win:#1E1E1E;--side:#252527;--line:#38383A;--txt:#F5F5F7;--dim:#A1A1A6;--term:#1E1E1E;--tdim:#7C7C80;--sel:rgba(10,132,255,.22)}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;font-size:13px}
+.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace}
+.term{font-size:13px;line-height:1.5;color:var(--txt);background:var(--term)}
+.d{color:var(--tdim)} .o{color:var(--orange)} .g{color:var(--green)} .r{color:var(--red)} .b{color:var(--blue)}
+.spin{animation:sp 1s linear infinite;display:inline-block}@keyframes sp{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.spin{animation:none}}
+[aria-pressed=true]{background:var(--sel);color:var(--blue)}
+.ico{width:28px;height:26px;display:grid;place-items:center;border-radius:6px;color:var(--dim)}.ico:hover{background:var(--sel)}
+.ico .lucide-settings{width:16px;height:16px;stroke-width:1.6}.lucide-note{width:20px;height:20px;stroke-width:2.2}.gi{width:11px;height:11px;stroke-width:2;flex:none}.gi-wrap .gi{width:12px;height:12px}.addi{width:20px;height:20px;stroke-width:1.6;flex:none}.ed-ln{display:inline-block;width:3.2em;padding-right:1em;text-align:right;color:var(--tdim);user-select:none;flex:none}.ed-mk{display:inline-block;width:1.1em;flex:none;user-select:none;color:var(--tdim)}.ed-add{background:color-mix(in srgb,var(--green) 12%,transparent)}.ed-add .ed-mk{color:var(--green)}.ed-del{background:color-mix(in srgb,var(--red) 12%,transparent)}.ed-del .ed-mk{color:var(--red)}.ed-del span:last-child{opacity:.75}.tk{color:#9B4DCA}.ts{color:#2E8B57}.tc{color:var(--tdim);font-style:italic}.tn{color:#B5651D}.dark .tk{color:#C084FC}.dark .ts{color:#4ADE80}.dark .tn{color:#FB923C}.sg{width:14px;height:14px;flex:none;display:inline-block;vertical-align:-2px}.sub .sg{width:12px;height:12px}svg.spin{transform-origin:50% 50%}.tile{display:inline-grid;place-items:center;border-radius:5px;color:#fff;flex:none}.tile svg{width:68%;height:68%;stroke-width:2.4}.pic svg{width:20px;height:20px}.card[aria-current=true]{background:var(--sel)}
+:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+</style>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-300 to-zinc-400 dark:from-zinc-800 dark:to-black p-4 lg:p-8">
+<div id="win" class="relative mx-auto max-w-[1600px] h-[calc(100vh-4rem)] min-h-[620px] rounded-xl overflow-hidden shadow-2xl ring-1 ring-black/10 flex flex-col" style="background:var(--win);color:var(--txt)">
+  <div class="flex flex-1 min-h-0">
+    <!-- Sidebar -->
+    <aside id="side" class="flex flex-col shrink-0 min-h-0 min-w-0 overflow-hidden border-r" style="width:260px;background:var(--side);border-color:var(--line)">
+      <div class="h-11 flex items-center gap-2 px-3">
+        <span class="w-3 h-3 rounded-full bg-[#FF5F57]"></span><span class="w-3 h-3 rounded-full bg-[#FEBC2E]"></span><span class="w-3 h-3 rounded-full bg-[#28C840]"></span>
+        <span class="ml-2 font-semibold">Lotse</span>
+        <button class="ico ml-auto" onclick="openSet()" aria-label="Settings" title="Settings ⌘,"><i data-lucide="settings" class="gear"></i></button>
+        <button class="ico" onclick="toggleSide()" aria-label="Hide sidebar (⌃⌘S)" title="Hide sidebar ⌃⌘S"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1.5" y="2.5" width="13" height="11" rx="2"/><path d="M6 2.5v11"/></svg></button>
+      </div>
+      <div class="px-3"><div onclick="openPal()" class="cursor-text flex items-center gap-2 rounded-md px-2 py-1.5" style="background:var(--line)" role="button" tabindex="0" aria-label="Search, ⌘K"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--dim)"><circle cx="5.5" cy="5.5" r="4"/><path d="M9 9l3 3"/></svg><span style="color:var(--dim)">Search</span><span class="ml-auto text-[11px]" style="color:var(--dim)">⌘K</span></div></div>
+      <div class="flex items-center px-4 mt-4 mb-1 text-[11px] font-semibold uppercase tracking-wide" style="color:var(--dim)">Projects
+        <button class="ico ml-auto" onclick="openAdd()" aria-label="Add a project" title="Add a project ⇧⌘O">+</button></div>
+      <nav id="tree" class="flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-contain px-2 pb-3 space-y-0.5" ondragover="event.preventDefault();this.style.outline='2px dashed var(--blue)'" ondragleave="this.style.outline=''" ondrop="dropFolder(event)"></nav>
+    </aside>
+    <div id="grip" class="w-1 -ml-0.5 cursor-col-resize hover:bg-[color:var(--blue)]/40 z-10" aria-label="Resize sidebar" role="separator"></div>
+
+    <!-- Main -->
+    <main class="flex-1 min-w-0 flex flex-col">
+      <div class="h-11 flex items-end gap-1 px-2 border-b" style="border-color:var(--line)">
+        <button id="showSide" class="ico mb-2 hidden" onclick="toggleSide()" aria-label="Show sidebar">☰</button>
+        <div id="tabs" class="flex items-end gap-1 min-w-0"></div>
+        <button class="ico mb-2" onclick="openNew()" aria-label="New session" title="New session ⌘T">+</button>
+        <div class="ml-auto flex items-center gap-0.5 mb-2" role="toolbar" aria-label="Panels">
+          <button class="ico" data-p="session" title="Session ⇧⌘I" aria-label="Session"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="2.5"/><path d="M5 6h6M5 8.5h6M5 11h4"/></svg></button>
+          <button class="ico" data-p="changes" title="Changes ⇧⌘D" aria-label="Changes"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="2" y="2" width="12" height="12" rx="2.5"/><path d="M8 4.5v4M6 6.5h4M6 11h4"/></svg></button>
+          <button class="ico" data-p="files" title="Files ⇧⌘F" aria-label="Files"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M2 4.5a1.5 1.5 0 0 1 1.5-1.5H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/></svg></button>
+          <button class="ico" data-p="transcript" title="Transcript ⇧⌘T" aria-label="Transcript"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 3.5h10M3 6.5h7M3 9.5h10M3 12.5h5"/></svg></button>
+          <button class="ico" data-p="usage" title="Usage &amp; time ⇧⌘U" aria-label="Usage and time"><svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4"><path d="M3 13V8M6.5 13V4M10 13V9M13.5 13V6"/></svg></button>
+        </div>
+      </div>
+      <div class="flex flex-1 min-h-0">
+        <div id="panes" class="relative flex flex-1 min-w-0" ondragover="paneDragOver(event)" ondragleave="paneDragLeave(event)" ondrop="paneDrop(event)">
+          <div id="dropHint" class="hidden absolute inset-y-3 right-3 w-1/2 rounded-xl border-2 border-dashed grid place-items-center text-[13px] z-10 pointer-events-none" style="border-color:var(--blue);background:color-mix(in srgb,var(--blue) 8%,transparent);color:var(--blue)">Open side by side</div>
+        </div>
+        <aside id="panel" class="hidden shrink-0 border-l overflow-y-auto p-4" style="width:340px;border-color:var(--line);background:var(--side)"></aside>
+      </div>
+    </main>
+  </div>
+<!-- Full diff (full page) -->
+  <div id="diff" class="hidden absolute inset-0 z-30 flex flex-col" style="background:var(--win);color:var(--txt)">
+   <div class="h-11 shrink-0 flex items-center gap-3 px-3 border-b" style="border-color:var(--line)">
+    <span class="w-3 h-3 rounded-full bg-[#FF5F57]"></span><span class="w-3 h-3 rounded-full bg-[#FEBC2E]"></span><span class="w-3 h-3 rounded-full bg-[#28C840]"></span>
+    <button onclick="closeAll()" class="ml-2 text-[13px] b px-2 py-1 rounded-md hover:bg-black/5 dark:hover:bg-white/5">‹ Back <span class="d text-[11px]">esc</span></button>
+    <span id="diffTitle" class="text-[13px] font-medium truncate"></span>
+    <div class="ml-auto flex items-center gap-2 text-[12px]">
+     <div class="inline-flex rounded-md p-0.5" style="background:var(--line)" role="group" aria-label="Diff layout"><button data-dm="split" onclick="setDm('split')" class="px-2 py-0.5 rounded">Side by side</button><button data-dm="unified" onclick="setDm('unified')" class="px-2 py-0.5 rounded">Unified</button></div>
+     <button onclick="toast('Patch copied')" class="px-2 py-1 rounded-md bg-black/5 dark:bg-white/10">Copy patch</button>
+     <button onclick="sendReview()" class="px-2.5 py-1 rounded-md text-white" style="background:var(--blue)">Send review to agent <span id="cCount" class="opacity-80"></span></button>
+    </div>
+   </div>
+   <div class="flex flex-1 min-h-0">
+    <aside class="w-[260px] shrink-0 border-r overflow-y-auto py-2" style="background:var(--side);border-color:var(--line)">
+     <div id="diffMeta" class="px-3 pb-2 text-[11px]" style="color:var(--dim)"></div>
+     <div id="diffFiles" class="px-1.5 space-y-0.5"></div>
+    </aside>
+    <div id="diffBody" class="flex-1 overflow-auto mono text-[12.5px] leading-[1.55]"></div>
+   </div>
+  </div>
+<!-- Settings (full page) -->
+  <div id="set" class="hidden absolute inset-0 z-30 flex" style="background:var(--win);color:var(--txt)">
+   <aside class="w-[220px] shrink-0 border-r flex flex-col" style="background:var(--side);border-color:var(--line)">
+    <div class="h-11 flex items-center gap-2 px-3"><span class="w-3 h-3 rounded-full bg-[#FF5F57]"></span><span class="w-3 h-3 rounded-full bg-[#FEBC2E]"></span><span class="w-3 h-3 rounded-full bg-[#28C840]"></span></div>
+    <button onclick="closeAll()" class="mx-2 mb-2 text-left px-3 py-1.5 rounded-md text-[13px] b hover:bg-black/5 dark:hover:bg-white/5">‹ Back to sessions <span class="d text-[11px]">esc</span></button>
+    <nav class="px-2 space-y-0.5 text-[13px]" aria-label="Settings sections"><button data-sec="Agents" onclick="setSec('Agents')" class="w-full text-left px-3 py-1.5 rounded-md">Agents</button><button data-sec="Notifications" onclick="setSec('Notifications')" class="w-full text-left px-3 py-1.5 rounded-md">Notifications</button><button data-sec="Appearance" onclick="setSec('Appearance')" class="w-full text-left px-3 py-1.5 rounded-md">Appearance</button><button data-sec="Remote" onclick="setSec('Remote')" class="w-full text-left px-3 py-1.5 rounded-md">Remote</button><button data-sec="Privacy" onclick="setSec('Privacy')" class="w-full text-left px-3 py-1.5 rounded-md">Privacy</button><button data-sec="Shortcuts" onclick="setSec('Shortcuts')" class="w-full text-left px-3 py-1.5 rounded-md">Shortcuts</button></nav>
+   </aside>
+   <div class="flex-1 overflow-y-auto"><div class="max-w-[680px] mx-auto px-8 py-8"><section data-pane="Agents" class="hidden"><h2 class="text-[20px] font-semibold mb-4">Agents</h2><p class="text-[12px] pb-2" style="color:var(--dim)">Command used when a new session starts. Add flags, a wrapper or a full path. Runs in the project folder with your login shell environment.</p><div class="py-3 border-b last:border-0" style="border-color:var(--line)">
+   <div class="flex items-center gap-2 mb-1.5"><span class="font-medium">Terminal</span><span class="text-[11px] g">zsh 5.9</span><button class="ml-auto text-[12px] b" onclick="const i=this.parentElement.nextElementSibling;i.value=i.placeholder;saveCmd(i)">Reset</button></div>
+   <input data-cmd="Terminal" class="w-full mono text-[12px] rounded-md px-2 py-1.5 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" placeholder="$SHELL -l" value="$SHELL -l" oninput="saveCmd(this)" aria-label="Terminal launch command" spellcheck="false">
+  </div>
+   <div class="py-3 border-b last:border-0" style="border-color:var(--line)">
+   <div class="flex items-center gap-2 mb-1.5"><span class="font-medium">Claude Code</span><span class="text-[11px] g">v2.1.309 · hooks installed</span><button class="ml-auto text-[12px] b" onclick="const i=this.parentElement.nextElementSibling;i.value=i.placeholder;saveCmd(i)">Reset</button></div>
+   <input data-cmd="Claude Code" class="w-full mono text-[12px] rounded-md px-2 py-1.5 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" placeholder="claude" value="claude" oninput="saveCmd(this)" aria-label="Claude Code launch command" spellcheck="false">
+  </div>
+   <div class="py-3 border-b last:border-0" style="border-color:var(--line)">
+   <div class="flex items-center gap-2 mb-1.5"><span class="font-medium">Codex</span><span class="text-[11px] g">v0.98 · OSC 7501</span><button class="ml-auto text-[12px] b" onclick="const i=this.parentElement.nextElementSibling;i.value=i.placeholder;saveCmd(i)">Reset</button></div>
+   <input data-cmd="Codex" class="w-full mono text-[12px] rounded-md px-2 py-1.5 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" placeholder="codex" value="codex" oninput="saveCmd(this)" aria-label="Codex launch command" spellcheck="false">
+  </div>
+   <div class="py-3 border-b last:border-0" style="border-color:var(--line)">
+   <div class="flex items-center gap-2 mb-1.5"><span class="font-medium">OpenCode</span><span class="text-[11px] o">not found on PATH</span><button class="ml-auto text-[12px] b" onclick="const i=this.parentElement.nextElementSibling;i.value=i.placeholder;saveCmd(i)">Reset</button></div>
+   <input data-cmd="OpenCode" class="w-full mono text-[12px] rounded-md px-2 py-1.5 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" placeholder="opencode" value="opencode" oninput="saveCmd(this)" aria-label="OpenCode launch command" spellcheck="false">
+  </div>
+  </section><section data-pane="Notifications" class="hidden"><h2 class="text-[20px] font-semibold mb-4">Notifications</h2><table class="w-full text-[13px]"><thead><tr style="color:var(--dim)" class="text-[12px]"><th class="text-left font-normal py-2">Event</th><th class="font-normal">Banner</th><th class="font-normal">Sound</th><th class="font-normal">Allow/Deny in banner</th></tr></thead><tbody>
+<tr class="border-t" style="border-color:var(--line)"><td class="py-2"><span class="o">▲</span> Needs permission</td><td class="text-center"><input type="checkbox" checked class="accent-[color:var(--blue)]"></td><td class="text-center"><input type="checkbox" checked class="accent-[color:var(--blue)]"></td><td class="text-center"><input type="checkbox" checked class="accent-[color:var(--blue)]"></td></tr>
+<tr class="border-t" style="border-color:var(--line)"><td class="py-2"><span class="r">✕</span> Failed</td><td class="text-center"><input type="checkbox" checked class="accent-[color:var(--blue)]"></td><td class="text-center"><input type="checkbox" checked class="accent-[color:var(--blue)]"></td><td class="text-center" style="color:var(--dim)">—</td></tr>
+<tr class="border-t" style="border-color:var(--line)"><td class="py-2"><span class="g">✓</span> Done</td><td class="text-center"><input type="checkbox" checked class="accent-[color:var(--blue)]"></td><td class="text-center"><input type="checkbox"  class="accent-[color:var(--blue)]"></td><td class="text-center" style="color:var(--dim)">—</td></tr>
+<tr class="border-t" style="border-color:var(--line)"><td class="py-2"><span class="g">✓</span> Sub-agent done</td><td class="text-center"><input type="checkbox"  class="accent-[color:var(--blue)]"></td><td class="text-center"><input type="checkbox"  class="accent-[color:var(--blue)]"></td><td class="text-center" style="color:var(--dim)">—</td></tr></tbody></table>
+<label class="flex items-center gap-2 mt-4"><input type="checkbox" checked class="accent-[color:var(--blue)]"> Only when Lotse is not focused on that session</label>
+<p class="mt-4 text-[12px]" style="color:var(--dim)">Per-project overrides: right-click a project › Notifications.</p></section><section data-pane="Appearance" class="hidden"><h2 class="text-[20px] font-semibold mb-4">Appearance</h2><div class="space-y-5"><div><div class="text-[12px] mb-1.5" style="color:var(--dim)">Theme</div><div class="inline-flex rounded-md p-0.5 text-[12px]" style="background:var(--line)"><button data-t="light" onclick="setTheme('light')" class="px-3 py-1 rounded">Light</button><button data-t="dark" onclick="setTheme('dark')" class="px-3 py-1 rounded">Dark</button><button data-t="auto" onclick="setTheme('auto')" class="px-3 py-1 rounded">Auto</button></div></div>
+<div class="grid grid-cols-2 gap-4"><div><div class="text-[12px] mb-1.5" style="color:var(--dim)">Interface font</div><select class="w-full rounded-md px-2 py-1.5" style="background:var(--side)"><option>System (SF Pro)</option><option>Helvetica Neue</option><option>Inter</option></select><div class="mt-2 flex items-center gap-2 text-[12px]">Size <input type="range" min="11" max="17" value="13" class="flex-1"> 13</div></div>
+<div><div class="text-[12px] mb-1.5" style="color:var(--dim)">Terminal font</div><select class="w-full rounded-md px-2 py-1.5" style="background:var(--side)"><option>SF Mono</option><option>Menlo</option><option>JetBrains Mono</option></select><div class="mt-2 flex items-center gap-2 text-[12px]">Size <input type="range" min="10" max="24" value="13" class="flex-1"> 13</div></div></div>
+<div class="mono text-[13px] rounded-md p-3" style="background:var(--term);border:1px solid var(--line)"><span class="d">❯</span> claude <span class="d">— preview</span></div></div></section><section data-pane="Remote" class="hidden"><h2 class="text-[20px] font-semibold mb-4">Remote</h2><label class="flex items-center gap-2"><input type="checkbox"  class="accent-[color:var(--blue)]"> Allow access from devices on my network <span style="color:var(--dim)">(off)</span></label><p class="mt-2 text-[12px]" style="color:var(--dim)">When on, Lotse listens only on the interface you pick. Pair a phone by QR code. Each device gets View or Approve access.</p></section><section data-pane="Privacy" class="hidden"><h2 class="text-[20px] font-semibold mb-4">Privacy</h2><p><b>Zero telemetry.</b> Nothing leaves this Mac. No account, no sign-in, no analytics, no crash upload.</p><p class="mt-2 text-[12px]" style="color:var(--dim)">Network use: none by default. Update checks are off until you turn them on.</p></section><section data-pane="Shortcuts" class="hidden"><h2 class="text-[20px] font-semibold mb-4">Shortcuts</h2><div class="grid grid-cols-[1fr_auto] gap-y-1.5 text-[13px]"><span>Command palette</span><kbd class="mono">⌘K</kbd><span>Next session that needs you</span><kbd class="mono">⌘J</kbd><span>New session</span><kbd class="mono">⌘T</kbd><span>Add a project</span><kbd class="mono">⇧⌘O</kbd><span>Settings</span><kbd class="mono">⌘,</kbd><span>Toggle sidebar</span><kbd class="mono">⌃⌘S</kbd><span>Changes · Files · Transcript · Usage · Session</span><kbd class="mono">⇧⌘D · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I</kbd></div></section></div></div>
+  </div>
+  <footer class="h-7 flex items-center gap-4 px-3 text-[11px] border-t" style="border-color:var(--line);background:var(--side);color:var(--dim)">
+    <button id="needBtn" onclick="toggleNeed()" class="o font-medium rounded px-1.5 -mx-1.5 hover:bg-black/5 dark:hover:bg-white/10" aria-pressed="false" title="Show only what needs you"></button><span id="ftGit" class="flex items-center gap-1.5 min-w-0"></span><span>● lotsed running · 6 sessions</span>
+    <button id="dnd" onclick="toggleDnd()" class="ml-auto rounded px-1.5 hover:bg-black/5 dark:hover:bg-white/10" aria-pressed="false" aria-label="Pause notifications" title="Pause notifications ⌥⌘N"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" style="display:inline;vertical-align:-2px"><path d="M3.5 10V6.5a3 3 0 0 1 6 0V10l1 1.2h-8z"/><path d="M5.5 12.2a1 1 0 0 0 2 0"/></svg></button><span>LAN Off</span><span>Today 412k tokens · $4.18</span>
+  </footer>
+</div>
+
+<!-- Icon & color popover -->
+<div id="icoPop" class="fixed inset-0 hidden z-50" onclick="if(event.target===this)closeIcon()">
+ <div id="icoBox" class="absolute w-[340px] rounded-2xl shadow-2xl ring-1 ring-black/10 overflow-hidden backdrop-blur-xl" style="background:color-mix(in srgb,var(--win) 92%,transparent);color:var(--txt)" role="dialog" aria-label="Project icon and color">
+  <div id="icoSw" class="grid grid-cols-8 gap-2.5 p-4 pb-3"></div>
+  <div class="px-3 pb-3 border-b" style="border-color:var(--line)"><input id="icoQ" class="w-full rounded-lg px-3 py-1.5 text-[13px] outline-none ring-1 focus:ring-2" style="background:var(--side);--tw-ring-color:var(--line)" placeholder="Search symbols" aria-label="Search symbols"></div>
+  <div id="icoGrid" class="max-h-[300px] overflow-y-auto pb-2"></div>
+ </div></div>
+<!-- Project context menu -->
+<div id="ctx" class="fixed inset-0 hidden z-50" onclick="if(event.target===this)closeCtx()" oncontextmenu="event.preventDefault();closeCtx()">
+ <div id="ctxBox" class="absolute w-[240px] rounded-lg shadow-2xl ring-1 ring-black/10 p-1 text-[13px] backdrop-blur-xl" style="background:color-mix(in srgb,var(--win) 88%,transparent);color:var(--txt)" role="menu"></div>
+ <div id="ctxSub" class="absolute hidden w-[260px] rounded-lg shadow-2xl ring-1 ring-black/10 p-1 text-[13px] backdrop-blur-xl" style="background:color-mix(in srgb,var(--win) 88%,transparent);color:var(--txt)" role="menu"></div>
+</div>
+<!-- Add project -->
+<div id="addDlg" class="fixed inset-0 hidden bg-black/25 z-40" onclick="if(event.target===this)closeAll()">
+ <div class="relative mx-auto mt-20 w-[520px] max-w-[92vw] rounded-2xl shadow-2xl ring-1 ring-black/10 p-6" style="background:var(--win);color:var(--txt)" role="dialog" aria-labelledby="addTitle">
+  <button onclick="closeAll()" class="absolute right-4 top-4 ico" aria-label="Close">✕</button>
+  <h3 id="addTitle" class="text-[20px] font-semibold mb-5">Add a project</h3>
+  <div data-av="home">
+   <div class="rounded-xl ring-1 overflow-hidden" style="--tw-ring-color:var(--line);background:var(--side)"><button onclick="browseFolder()" class="w-full flex items-center gap-4 px-4 py-3 text-left hover:bg-black/5 dark:hover:bg-white/5 " style="border-color:var(--line)"><i data-lucide="folder-open" class="addi"></i><span><span class="block text-[14px] font-medium">Browse folder</span><span class="block text-[12px]" style="color:var(--dim)">Local project, Git repo, or folder with many repos</span></span></button></div>
+   <div class="text-[11px] font-semibold uppercase tracking-wide mt-5 mb-2" style="color:var(--dim)">Other ways to add</div>
+   <div class="rounded-xl ring-1 overflow-hidden" style="--tw-ring-color:var(--line);background:var(--side)"><button onclick="addView('clone')" class="w-full flex items-center gap-4 px-4 py-3 text-left hover:bg-black/5 dark:hover:bg-white/5 " style="border-color:var(--line)"><i data-lucide="globe" class="addi"></i><span><span class="block text-[14px] font-medium">Clone from URL</span><span class="block text-[12px]" style="color:var(--dim)">Clone a remote Git repository</span></span></button><button onclick="addView('create')" class="w-full flex items-center gap-4 px-4 py-3 text-left hover:bg-black/5 dark:hover:bg-white/5 border-t" style="border-color:var(--line)"><i data-lucide="plus" class="addi"></i><span><span class="block text-[14px] font-medium">Create new project</span><span class="block text-[12px]" style="color:var(--dim)">Start from an empty folder</span></span></button></div>
+   <div class="text-[11px] mt-4" style="color:var(--dim)">Tip: drag a folder from Finder onto the sidebar.</div>
+  </div>
+  <div data-av="path" class="hidden"><label class="block text-[12px] mb-1" style="color:var(--dim)">Folder path</label><input id="addPath" class="w-full mono text-[12px] rounded-md px-2 py-1.5 mb-3 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" value="~/Repos/" placeholder="" spellcheck="false"><div id="addRecent" class="space-y-0.5 text-[12px] mono mb-3"></div><div class="flex justify-between items-center mt-2"><button onclick="addView('home')" class="text-[12px] b">‹ Back</button><div class="flex gap-2"><button onclick="closeAll()" class="px-3 py-1 rounded-md bg-black/5 dark:bg-white/10">Cancel</button><button onclick="confirmPath()" class="px-3 py-1 rounded-md text-white" style="background:var(--blue)">Add ⏎</button></div></div></div>
+  <div data-av="clone" class="hidden"><label class="block text-[12px] mb-1" style="color:var(--dim)">Repository URL</label><input id="cloneUrl" class="w-full mono text-[12px] rounded-md px-2 py-1.5 mb-3 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" value="" placeholder="https://github.com/owner/repo.git or git@…" spellcheck="false"><label class="block text-[12px] mb-1" style="color:var(--dim)">Clone into</label><input id="cloneDir" class="w-full mono text-[12px] rounded-md px-2 py-1.5 mb-3 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" value="~/Repos" placeholder="" spellcheck="false"><div class="flex justify-between items-center mt-2"><button onclick="addView('home')" class="text-[12px] b">‹ Back</button><div class="flex gap-2"><button onclick="closeAll()" class="px-3 py-1 rounded-md bg-black/5 dark:bg-white/10">Cancel</button><button onclick="confirmClone()" class="px-3 py-1 rounded-md text-white" style="background:var(--blue)">Clone ⏎</button></div></div></div>
+  <div data-av="create" class="hidden"><label class="block text-[12px] mb-1" style="color:var(--dim)">Project name</label><input id="newName" class="w-full mono text-[12px] rounded-md px-2 py-1.5 mb-3 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" value="" placeholder="my-project" spellcheck="false"><label class="block text-[12px] mb-1" style="color:var(--dim)">Location</label><input id="newDir" class="w-full mono text-[12px] rounded-md px-2 py-1.5 mb-3 ring-1" style="background:var(--side);--tw-ring-color:var(--line)" value="~/Repos" placeholder="" spellcheck="false"><label class="flex items-center gap-2 text-[12px] mb-3"><input id="newGit" type="checkbox" checked> Initialize git repository <span style="color:var(--dim)">(optional)</span></label><div class="flex justify-between items-center mt-2"><button onclick="addView('home')" class="text-[12px] b">‹ Back</button><div class="flex gap-2"><button onclick="closeAll()" class="px-3 py-1 rounded-md bg-black/5 dark:bg-white/10">Cancel</button><button onclick="confirmCreate()" class="px-3 py-1 rounded-md text-white" style="background:var(--blue)">Create ⏎</button></div></div></div>
+ </div></div>
+<!-- Palette -->
+<div id="pal" class="fixed inset-0 hidden bg-black/20 z-40" onclick="if(event.target===this)closeAll()">
+ <div class="mx-auto mt-24 w-[560px] max-w-[92vw] rounded-xl shadow-2xl ring-1 ring-black/10 overflow-hidden" style="background:var(--win);color:var(--txt)">
+  <input id="palIn" class="w-full px-4 py-3 bg-transparent outline-none text-[15px] border-b" style="border-color:var(--line)" placeholder="Jump to session, project or command…" aria-label="Command palette">
+  <div id="palList" class="max-h-[360px] overflow-y-auto py-1"></div>
+ </div></div>
+<!-- New session -->
+<div id="newS" class="fixed inset-0 hidden bg-black/20 z-40" onclick="if(event.target===this)closeAll()">
+ <div class="mx-auto mt-24 w-[440px] max-w-[92vw] rounded-xl shadow-2xl ring-1 ring-black/10 p-5" style="background:var(--win);color:var(--txt)">
+  <h3 class="font-semibold mb-3">New session</h3>
+  <label class="block text-[12px] mb-1" style="color:var(--dim)">Project</label><select id="nsProj" class="w-full mb-3 rounded-md px-2 py-1.5" style="background:var(--side)"></select>
+  <label class="block text-[12px] mb-1" style="color:var(--dim)">Run</label>
+  <div class="grid grid-cols-4 gap-2 mb-3" role="radiogroup" aria-label="Run in session"><button class="ag rounded-md py-2 text-[12px] ring-1" style="--tw-ring-color:var(--line)" aria-pressed="true">Terminal</button><button class="ag rounded-md py-2 text-[12px] ring-1" style="--tw-ring-color:var(--line)" aria-pressed="false">Claude Code</button><button class="ag rounded-md py-2 text-[12px] ring-1" style="--tw-ring-color:var(--line)" aria-pressed="false">Codex</button><button class="ag rounded-md py-2 text-[12px] ring-1" style="--tw-ring-color:var(--line)" aria-pressed="false">OpenCode</button></div>
+  <div id="cmdHint" class="mono text-[11px] -mt-1 mb-3" style="color:var(--dim)"></div>
+  <label class="flex items-center gap-2 text-[12px] mb-3"><input id="wt" type="checkbox" onchange="document.getElementById('wtBranch').classList.toggle('hidden',!this.checked)"> Create isolated git worktree <span style="color:var(--dim)">(optional)</span></label>
+  <input id="wtBranch" class="hidden w-full mono text-[12px] rounded-md px-2 py-1.5 mb-3 -mt-1" style="background:var(--side)" value="lotse/new-task" aria-label="Worktree branch name">
+  <label id="fpL" class="hidden block text-[12px] mb-1" style="color:var(--dim)">First prompt (optional)</label>
+  <textarea id="fp" class="hidden w-full rounded-md px-2 py-1.5 text-[12px]" rows="2" style="background:var(--side)" placeholder="What should the agent do?"></textarea>
+  <div class="flex justify-end gap-2 mt-4"><button onclick="closeAll()" class="px-3 py-1 rounded-md bg-black/5 dark:bg-white/10">Cancel</button><button onclick="closeAll()" class="px-3 py-1 rounded-md text-white" style="background:var(--blue)">Start ⏎</button></div>
+ </div></div>
+<!-- Shortcuts -->
+<div id="keys" class="fixed inset-0 hidden bg-black/20 z-40" onclick="if(event.target===this)closeAll()">
+ <div class="mx-auto mt-20 w-[520px] max-w-[92vw] rounded-xl shadow-2xl ring-1 ring-black/10 p-5 text-[13px]" style="background:var(--win);color:var(--txt)">
+  <h3 class="font-semibold mb-3">Keyboard shortcuts</h3>
+  <div class="grid grid-cols-[1fr_auto] gap-y-1.5">
+   <span>Command palette / jump anywhere</span><kbd class="mono">⌘K</kbd><span>Next session that needs you</span><kbd class="mono">⌘J</kbd>
+   <span>Switch to tab 1–9</span><kbd class="mono">⌘1…9</kbd><span>New session (Terminal by default)</span><kbd class="mono">⌘T</kbd>
+   <span>Open side by side (split)</span><kbd class="mono">⌘D · ⌥-click · drag</kbd><span>Focus previous / next pane</span><kbd class="mono">⌘[ · ⌘]</kbd><span>Full diff review</span><kbd class="mono">⌥⌘D</kbd><span>Close pane</span><kbd class="mono">⌘W</kbd><span>Open file in editor pane</span><kbd class="mono">Files panel · click</kbd><span>Save file</span><kbd class="mono">⌘S</kbd><span>Expand / restore editor</span><kbd class="mono">⌥⌘↩</kbd><span>Toggle sidebar</span><kbd class="mono">⌃⌘S</kbd>
+   <span>Changes · Files · Transcript · Usage · Session</span><kbd class="mono">⇧⌘D · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I</kbd>
+   <span>Add project folder</span><kbd class="mono">⇧⌘O</kbd><span>Settings</span><kbd class="mono">⌘,</kbd><span>Pause notifications</span><kbd class="mono">⌥⌘N</kbd><span>Terminal font bigger / smaller</span><kbd class="mono">⌘+ / ⌘−</kbd>
+  </div></div></div>
+
+<!-- Notification banner -->
+<div id="note" class="group fixed top-3 right-3 w-[372px] flex rounded-[18px] shadow-[0_8px_30px_rgba(0,0,0,.18)] ring-1 ring-black/5 dark:ring-white/10 backdrop-blur-2xl backdrop-saturate-150 bg-white/75 dark:bg-[#2c2c2e]/75 text-[13px] leading-[1.3] text-black dark:text-white translate-x-[120%] transition-transform duration-500 z-50" role="alert" aria-label="Notification from Lotse">
+  <button onclick="hideNote()" class="absolute -left-1.5 -top-1.5 w-5 h-5 rounded-full grid place-items-center text-[10px] opacity-0 group-hover:opacity-100 bg-white/90 dark:bg-zinc-700 ring-1 ring-black/10 shadow" aria-label="Close">✕</button>
+  <div class="flex gap-2.5 p-3 flex-1 min-w-0">
+    <div class="w-9 h-9 shrink-0 rounded-[9px] grid place-items-center text-white shadow-sm" style="background:linear-gradient(160deg,#4FA3FF,#1A5FD6)" aria-hidden="true"><i data-lucide="anchor" class="lucide-note"></i></div>
+    <div class="min-w-0 flex-1">
+      <div class="flex items-baseline gap-2"><span class="font-semibold truncate flex-1">praxis-web · Claude Code</span><span class="text-[11px] opacity-50 shrink-0">now</span></div>
+      <div class="truncate">Needs permission</div>
+      <div class="opacity-70 truncate mono text-[12px]">Bash(npx playwright test e2e/patients)</div>
+    </div>
+  </div>
+  <div class="w-[78px] shrink-0 flex flex-col border-l border-black/10 dark:border-white/10">
+    <button onclick="act('a3','run')" class="flex-1 font-medium hover:bg-black/5 dark:hover:bg-white/10 rounded-tr-[18px]">Allow</button>
+    <button onclick="act('a3','idle')" class="flex-1 font-medium border-t border-black/10 dark:border-white/10 hover:bg-black/5 dark:hover:bg-white/10 rounded-br-[18px]">Deny</button>
+  </div>
+</div>
+
+<script>
+const SG=(inner,lab,cls='')=>`<svg class="sg ${cls}" viewBox="0 0 16 16" role="img" aria-label="${lab}"><title>${lab}</title>${inner}</svg>`;
+const G={run:SG('<circle cx="8" cy="8" r="6" fill="none" stroke="var(--line)" stroke-width="2"/><path d="M8 2a6 6 0 0 1 6 6" fill="none" stroke="var(--blue)" stroke-width="2" stroke-linecap="round"/>','In progress','spin'),
+ perm:SG('<path d="M8 1.8 14.8 13.8H1.2z" fill="var(--orange)" stroke="var(--orange)" stroke-width="1.4" stroke-linejoin="round"/><path d="M8 6v3.4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="11.6" r=".9" fill="#fff"/>','Needs permission'),
+ fail:SG('<circle cx="8" cy="8" r="7" fill="var(--red)"/><path d="M5.7 5.7l4.6 4.6M10.3 5.7l-4.6 4.6" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>','Failed'),
+ done:SG('<circle cx="8" cy="8" r="7" fill="var(--green)"/><path d="M4.9 8.2l2.1 2.1 4.2-4.4" fill="none" stroke="#fff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>','Done'),
+ idle:SG('<circle cx="8" cy="8" r="6" fill="none" stroke="var(--gray)" stroke-width="1.5"/>','Idle')};
+const T={ shell:`<span class="d">Last login: Sun Nov  2 09:14 on ttys004</span>
+naim@mbp <span class="b">~/Documents/notes</span> % ls
+2026-q4-goals.md   standup.md   ideas/
+naim@mbp <span class="b">~/Documents/notes</span> % git status
+<span class="r">fatal: not a git repository (or any of the parent directories): .git</span>
+naim@mbp <span class="b">~/Documents/notes</span> % <span style="background:var(--txt)"> </span>`, claude:`<span class="o">✻</span> <b>Claude Code</b> <span class="d">v2.1.309</span>
+  <span class="d">Opus 5.5 · ~/Repos/billing-api · worktree lotse/fix-rounding</span>
+
+<span class="d">❯</span> Fix the flaky invoice rounding test and make totals use banker's rounding
+
+<span class="b">●</span> I'll start by finding the rounding logic and the failing test.
+
+<span class="g">●</span> <b>Task</b>(explore-repo)
+  <span class="d">⎿  Found 3 call sites in src/invoice/totals.ts</span>
+<span class="g">●</span> <b>Read</b>(src/invoice/totals.ts)
+  <span class="d">⎿  Read 212 lines</span>
+<span class="g">●</span> <b>Update</b>(src/invoice/totals.ts)
+  <span class="d">⎿  Updated with 2 additions and 1 removal</span>
+     <span class="d">41</span>  <span class="r">-   return Math.round(sum * 100) / 100</span>
+     <span class="d">41</span>  <span class="g">+   return roundHalfEven(sum, 2)</span>
+     <span class="d">42</span>  <span class="g">+   // banker's rounding avoids 0.005 drift</span>
+<span class="b spin">✻</span> <b>Task</b>(test-runner) <span class="d">· running 1m 12s</span>
+  <span class="d">⎿  Running invoice totals suite…</span>
+
+<span class="b">✻ Simmering…</span> <span class="d">(2m 41s · ↓ 8.2k tokens · esc to interrupt)</span>
+
+<span class="d">────────────────────────────────────────────────────────────────────────────</span>
+<span class="d">❯</span> <span style="background:var(--txt)"> </span>
+<span class="d">────────────────────────────────────────────────────────────────────────────</span>
+  <span class="d">Opus 5.5 · billing-api · lotse/fix-rounding ↑2 · ctx 38% · $1.14</span>
+  <span class="o">⏵⏵ auto mode on</span> <span class="d">(shift+tab to cycle) · 1 background agent</span>`,
+ perm:`<span class="o">✻</span> <b>Claude Code</b> <span class="d">v2.1.309</span>
+  <span class="d">Opus 5.5 · ~/Repos/praxis-web · worktree lotse/patients-signals</span>
+
+<span class="d">❯</span> Move the patient list to Signals and keep the e2e suite green
+
+<span class="g">●</span> <b>Update</b>(src/app/patients/patient-list.component.ts)
+  <span class="d">⎿  Updated with 18 additions and 24 removals</span>
+<span class="g">●</span> <b>Task</b>(spec-updater) <span class="d">⎿ Done · 6 specs updated</span>
+
+<span class="o">╭──────────────────────────────────────────────────────────────╮</span>
+<span class="o">│</span> <b>Bash command</b>                                                 <span class="o">│</span>
+<span class="o">│</span>   npx playwright test e2e/patients                           <span class="o">│</span>
+<span class="o">│</span>   <span class="d">Run patient list e2e tests</span>                                 <span class="o">│</span>
+<span class="o">│</span>                                                              <span class="o">│</span>
+<span class="o">│</span> Do you want to proceed?                                      <span class="o">│</span>
+<span class="o">│</span> <span class="b">❯ 1. Yes</span>                                                     <span class="o">│</span>
+<span class="o">│</span>   2. Yes, and don't ask again for npx playwright in praxis-web<span class="o">│</span>
+<span class="o">│</span>   3. No, and tell Claude what to do differently (esc)        <span class="o">│</span>
+<span class="o">╰──────────────────────────────────────────────────────────────╯</span>`,
+ codex:`<span class="d">╭───────────────────────────────────────────╮</span>
+<span class="d">│</span> <b>&gt;_ Codex CLI</b> <span class="d">(v0.9x)</span>                       <span class="d">│</span>
+<span class="d">│</span> <span class="d">model: gpt-5 · dir: ~/Repos/praxis-web</span>    <span class="d">│</span>
+<span class="d">╰───────────────────────────────────────────╯</span>
+
+<span class="d">user</span>
+Bump Angular 19 → 20
+
+<span class="d">codex</span>
+Running ng update @angular/core@20 @angular/cli@20
+
+<span class="r">✗ npm ERR! ERESOLVE could not resolve peer dependency</span>
+<span class="r">  @ngrx/store@18 requires @angular/core@^19</span>
+
+Task failed after 3 attempts. Exit code 1.
+
+<span class="d">▌</span> <span class="d">Ask Codex to do anything</span>
+<span class="d">  ⏎ send · ⇧⏎ newline · ctrl+c quit</span>`,
+ open:`<b>opencode</b> <span class="d">· ~/Repos/dotfiles · session 3f2a</span>
+
+<span class="d">&gt;</span> Migrate prompt to starship and remove p10k
+
+<span class="g">✓</span> write  .config/starship.toml
+<span class="g">✓</span> edit   .zshrc  <span class="g">+4</span> <span class="r">-11</span>
+<span class="g">✓</span> bash   starship explain
+
+Done. Restart your shell to load the new prompt.
+
+<span class="d">──────────────────────────────────────────────</span>
+<span class="d">&gt;</span> <span style="background:var(--txt)"> </span>
+<span class="d">  build · claude-sonnet · ctrl+p commands</span>`};
+const P=[
+ {n:'billing-api',git:true,open:true,s:[{id:'a1',title:'Fix invoice rounding',wt:true,ahead:2,dirty:3,t:'claude',k:'Claude Code',st:'run',el:161,b:'lotse/fix-rounding',time:'2m',sub:[['explore-repo','done'],['test-runner','run']]},{id:'a2',title:'Flyway migration V42',wt:true,ahead:0,dirty:0,t:'claude',k:'Codex',st:'idle',b:'lotse/flyway-v42',time:'1h',sub:[]}]},
+ {n:'praxis-web',git:true,open:true,s:[{id:'a3',title:'Patient list → Signals',wt:true,ahead:5,dirty:12,t:'perm',k:'Claude Code',st:'perm',b:'lotse/patients-signals',time:'now',sub:[['component-migrator','done'],['spec-updater','done'],['e2e-runner','perm']]},{id:'a4',title:'Bump Angular 20',wt:true,ahead:1,dirty:2,t:'codex',k:'Codex',st:'fail',b:'lotse/angular-20',time:'14m',sub:[]}]},
+ {n:'infra-terraform',git:true,open:false,s:[{id:'a5',title:'RDS Postgres 17',wt:false,ahead:0,dirty:1,t:'claude',k:'Claude Code',st:'run',el:305,b:'lotse/rds-pg17',time:'5m',sub:[]}]},
+ {n:'dotfiles',git:true,open:false,s:[{id:'a6',title:'Starship prompt',wt:false,ahead:1,dirty:0,t:'open',k:'OpenCode',st:'done',unread:true,b:'main',time:'32m',sub:[]}]},
+ {n:'notes',git:false,open:true,s:[{id:'a7',title:'Scratch shell',t:'shell',k:'Terminal',st:'idle',b:'',time:'3h',sub:[]}]},
+];
+const PC=['purple','indigo','teal','mint','cyan','brown','yellow'];
+const pcol=n=>{let h=0;for(const ch of n)h=(h*31+ch.charCodeAt(0))>>>0;return 'var(--c-'+PC[h%PC.length]+')'};
+const SW={red:'#FF5E57',coral:'#FF7F50',orange:'#FF9F40',yellow:'#F5C518',green:'#4CB963',teal:'#2EC4B6',sky:'#7CC6F2',blue:'#3B82F6',indigo:'#5B6CD9',purple:'#9B59D0',lavender:'#B47EE5',pink:'#E87ACB',gray:'#8E8E93',sage:'#9BB59F',tan:'#C2A88A'};
+const DEF=['purple','indigo','teal','sky','lavender','tan','sage','yellow'];
+const ICONS={Development:['folder','terminal','code','braces','git-branch','bug','hammer','wrench','cpu','database','server','cloud','package','flask-conical','rocket','shield'],Objects:['book','briefcase','house','building-2','shopping-cart','globe','camera','music','heart-pulse','stethoscope','graduation-cap','gamepad-2'],Symbols:['star','heart','anchor','ship','flame','leaf','flag','sparkles','sun','moon','zap','lock','key']};
+let PS={};try{PS=JSON.parse(localStorage.getItem('lotse-proj-style')||'{}')}catch(e){}
+const pstyle=n=>{if(PS[n])return PS[n];let h=0;for(const ch of n)h=(h*31+ch.charCodeAt(0))>>>0;return {c:DEF[h%DEF.length],i:'folder'}};
+const savePS=()=>{try{localStorage.setItem('lotse-proj-style',JSON.stringify(PS))}catch(e){}};
+const folder=(n,sz=16,click=true)=>{const st=pstyle(n);return `<span class="tile" ${click?`role="button" tabindex="0" aria-label="Change icon and color for ${n}" onclick="event.stopPropagation();openIcon('${n}',this)"`:'aria-hidden="true"'} style="width:${sz}px;height:${sz}px;background:${SW[st.c]}"><i data-lucide="${st.i}"></i></span>`};
+const rank={perm:4,fail:3,run:2,done:1,idle:0};
+let cur='a1',need=false;
+const NEED=['perm','fail'];
+const needs=s=>NEED.includes(s.st)||s.sub.some(x=>NEED.includes(x[1]));
+function toggleNeed(){need=!need;if(need){const f=P.flatMap(p=>p.s).filter(needs).sort((a,b)=>rank[b.st]-rank[a.st])[0];if(f)cur=f.id}render()}
+function roll(p){if(!p.s.length)return 'idle';return p.s.map(x=>x.st).sort((a,b)=>rank[b]-rank[a])[0]}
+function render(){
+ tickSig=sideSig();
+ const tree=document.getElementById('tree');tree.innerHTML='';
+ const n=P.flatMap(p=>p.s).filter(needs).length,nb=document.getElementById('needBtn');
+ nb.textContent=need?'▲ Showing '+n+' that need you · Show all':'▲ '+n+' need you';nb.setAttribute('aria-pressed',need);
+ if(need){const c=document.createElement('div');c.className='mx-1 mb-2 flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px]';c.style.background='color-mix(in srgb,var(--orange) 14%,transparent)';c.innerHTML=`<span class="o">▲</span><span class="flex-1">Needs you (${n})</span><button class="b" onclick="toggleNeed()">Show all</button>`;tree.appendChild(c)}
+ P.forEach((p,i)=>{
+  const vis=need?p.s.filter(needs):p.s;if(need&&!vis.length)return;
+  const open=need||p.open;
+  const h=document.createElement('button');h.className='group/p w-full flex items-center gap-1.5 pl-1 pr-2 py-1.5 rounded-md text-left hover:bg-black/5 dark:hover:bg-white/5';
+  const cnt=st=>p.s.filter(x=>x.st===st||x.sub.some(y=>y[1]===st)).length,rs=roll(p),nP=cnt('perm'),nF=cnt('fail');
+  const sum=open?'':(nP?`<span class="inline-flex items-center gap-0.5 text-[11px] tabular-nums o">${G.perm}${nP>1?nP:''}</span>`:'')+(nF?`<span class="inline-flex items-center gap-0.5 text-[11px] tabular-nums r">${G.fail}${nF>1?nF:''}</span>`:'')+(!nP&&!nF&&rs!=='idle'?G[rs]:'');
+  h.setAttribute('aria-expanded',open);h.innerHTML=`<svg class="w-3 h-3 shrink-0 transition-transform opacity-0 group-hover/p:opacity-60 group-focus-visible/p:opacity-60" style="transform:rotate(${open?90:0}deg)" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg>${folder(p.n)}<span class="font-medium flex-1 min-w-0 truncate ml-0.5" title="${p.n}">${p.n}</span>${gitBadge(p)}${pnBadge(p.n)}<span class="flex items-center gap-1.5">${sum}</span>`;
+  h.onclick=()=>{p.open=!p.open;render()};h.oncontextmenu=e=>{e.preventDefault();openCtx(p.n,e.clientX,e.clientY)};tree.appendChild(h);
+  if(!open)return;
+  if(!vis.length){const e=document.createElement('div');e.className='pl-[38px] py-1 text-[12px]';e.style.color='var(--dim)';e.innerHTML=`No sessions · <button class="b" onclick="openNew()">New session</button>`;tree.appendChild(e)}
+  vis.forEach(s=>{
+   const c=document.createElement('div');c.tabIndex=0;c.setAttribute('role','button');c.dataset.sid=s.id;c.className='group card cursor-pointer text-left ml-4 mr-1 rounded-md px-2 py-1.5 hover:bg-black/5 dark:hover:bg-white/5 outline-none focus-visible:ring-2';c.style.cssText='width:calc(100% - 1.25rem);--tw-ring-color:var(--blue)';
+   c.setAttribute('aria-current',s.id===cur);
+   const showSubs=s.id===cur||s.sub.some(x=>NEED.includes(x[1])),nRun=s.sub.filter(x=>x[1]==='run').length;
+   const subSum=!showSubs&&s.sub.length?`<div class="pl-[22px] text-[11px]" style="color:var(--dim)">${s.sub.length} sub-agent${s.sub.length>1?'s':''}${nRun?' · '+nRun+' running':''}</div>`:'';
+   c.innerHTML=`<div class="flex items-center gap-2">${G[s.st]}<span class="truncate flex-1 min-w-0" title="${s.title||s.k}">${s.title||s.k}</span>${s.unread&&s.id!==cur?'<span class="w-2 h-2 rounded-full shrink-0" style="background:var(--blue)" aria-label="Unread"></span>':''}<span class="text-[11px] tabular-nums shrink-0 ${s.st==='fail'?'group-hover:hidden group-focus-within:hidden':''}" style="color:var(--dim)" title="${s.st==='run'?'Running '+fmt(s.el||0)+' · details in Usage & time (⇧⌘U)':'Last activity '+s.time+' · details in Usage & time (⇧⌘U)'}">${s.st==='run'?fmtC(s.el):s.time}</span>${s.st==='fail'?`<button onclick="event.stopPropagation();act('${s.id}','run')" class="hidden group-hover:inline-flex group-focus-within:inline-flex items-center gap-1 h-[18px] -my-0.5 px-1.5 rounded text-[11px] bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15 shrink-0" title="Retry (opens the session's last command)"><i data-lucide="rotate-ccw" class="gi"></i>Retry</button>`:''}</div>${p.git===false?`<div class="pl-[22px] text-[11px]" style="color:var(--dim)">${s.k}</div>`:gitLine(p,s,`<span class="shrink-0">${s.k}</span><span class="opacity-40 mx-0.5">·</span>`)}`+(s.st==='perm'?`<div class="flex gap-1 pl-[22px] mt-1.5" role="group" aria-label="Permission"><button onclick="event.stopPropagation();act('${s.id}','run')" class="h-[22px] px-2.5 rounded-md text-[11px] font-medium transition-colors text-white hover:brightness-110" style="background:var(--blue)">Allow</button><button onclick="event.stopPropagation();act('${s.id}','run')" class="h-[22px] px-2.5 rounded-md text-[11px] font-medium transition-colors bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15">Always</button><button onclick="event.stopPropagation();act('${s.id}','idle')" class="h-[22px] px-2.5 rounded-md text-[11px] font-medium transition-colors bg-black/5 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15">Deny</button></div>`:'')+subSum+(showSubs?s.sub:[]).map(x=>`<div class="sub flex items-center gap-2 pl-[22px] text-[12px] mt-0.5" style="color:var(--dim)">${G[x[1]]}<span class="truncate min-w-0">${x[0]}</span></div>`).join('');
+   c.draggable=true;c.ondragstart=e=>{e.dataTransfer.setData('text/lotse-session',s.id);e.dataTransfer.effectAllowed='copy'};c.oncontextmenu=e=>{e.preventDefault();e.stopPropagation();openCardCtx(s.id,e.clientX,e.clientY)};c.onclick=e=>{s.unread=false;if(e.altKey){splitWith(s.id);return}edF=null;cur=s.id;render()};c.onkeydown=e=>{if(e.key==='Enter'){cur=s.id;render()}if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();const L=[...document.querySelectorAll('#tree .card')],n=L[L.indexOf(c)+(e.key==='ArrowDown'?1:-1)];if(n){cur=n.dataset.sid;render();document.querySelector(`#tree .card[data-sid="${cur}"]`)?.focus()}}};tree.appendChild(c);
+  });
+ });
+ const proj=P.find(p=>p.s.some(s=>s.id===cur));const sess=proj.s.find(s=>s.id===cur);
+ document.getElementById('tabs').innerHTML=proj.s.map(s=>`<button onclick="cur='${s.id}';render()" class="mono-none flex items-center gap-2 px-3 h-8 rounded-t-md text-[12px] border border-b-0 ${s.id===cur?'':'opacity-60'}" style="border-color:${s.id===cur?'var(--line)':'transparent'};background:${s.id===cur?'var(--term)':'transparent'}">${G[s.st]}<span class="max-w-[200px] truncate">${s.title||s.k}</span><span class="d inline-flex items-center gap-1">${folder(proj.n,13,false)}${proj.n}</span></button>`).join('');
+ renderPanes();renderFooterGit();
+ if(panel)showPanel(panel);
+ window.lucide&&lucide.createIcons();
+}
+// sidebar resize/hide
+const side=document.getElementById('side');let w=260;try{w=+localStorage.getItem('lotse-side')||260}catch(e){}side.style.width=w+'px';
+document.getElementById('grip').onpointerdown=e=>{e.preventDefault();e.target.setPointerCapture?.(e.pointerId);document.body.style.userSelect='none';document.body.style.cursor='col-resize';const x0=e.clientX,w0=side.offsetWidth;const mv=ev=>{w=Math.min(420,Math.max(200,w0+ev.clientX-x0));side.style.width=w+'px'};const up=()=>{document.body.style.userSelect='';document.body.style.cursor='';removeEventListener('pointermove',mv);removeEventListener('pointerup',up);try{localStorage.setItem('lotse-side',w)}catch(e){}};addEventListener('pointermove',mv);addEventListener('pointerup',up)};
+function toggleSide(){const h=side.classList.toggle('hidden');document.getElementById('grip').classList.toggle('hidden',h);document.getElementById('showSide').classList.toggle('hidden',!h)}
+// right panel
+const TR=[['you','Fix the flaky invoice rounding test and make totals use banker\'s rounding','14:02'],['claude','I\'ll start by finding the rounding logic and the failing test.','14:02'],['tool','Task(explore-repo) → Found 3 call sites in src/invoice/totals.ts','14:02'],['tool','Read(src/invoice/totals.ts) → 212 lines','14:03'],['tool','Update(src/invoice/totals.ts) → +2 −1','14:04'],['perm','Allowed Bash(npm test -- totals) · by you via notification','14:05'],['tool','Task(test-runner) → running','14:05']];
+function trMd(){return '# billing-api · Claude Code\n\nBranch: lotse/fix-rounding · Model: Opus 5.5\n\n'+TR.map(([w,t,h])=>w==='you'?`**You** (${h})\n\n${t}\n`:w==='claude'?`**Claude** (${h})\n\n${t}\n`:`- \`${t}\` (${h})`).join('\n')}
+function dl(name,type,body){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([body],{type}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+function exportTr(k){const base='billing-api-claude-code-2026-11-02';if(k==='md')dl(base+'.md','text/markdown',trMd());if(k==='json')dl(base+'.jsonl','application/json',TR.map(([role,text,time])=>JSON.stringify({role,text,time})).join('\n'));if(k==='txt')dl(base+'-terminal.txt','text/plain',document.getElementById('term').innerText)}
+let panel=null;const PN={
+ transcript:()=>trPanel(),
+ session:()=>sessionPanel(),
+ changes:()=>changesPanel(),
+ files:()=>filesPanel(),
+ usage:()=>usagePanel()};
+function showPanel(k){const el=document.getElementById('panel');el.innerHTML=PN[k]();window.lucide&&lucide.createIcons();el.classList.remove('hidden');document.querySelectorAll('[data-p]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.p===k))}
+function togglePanel(k){if(panel===k){panel=null;document.getElementById('panel').classList.add('hidden');document.querySelectorAll('[data-p]').forEach(b=>b.setAttribute('aria-pressed',false))}else{panel=k;showPanel(k)}}
+document.querySelectorAll('[data-p]').forEach(b=>b.onclick=()=>togglePanel(b.dataset.p));
+addEventListener('keydown',e=>{if(e.metaKey&&e.shiftKey){const m={KeyD:'changes',KeyF:'files',KeyU:'usage',KeyI:'session',KeyT:'transcript'}[e.code];if(m){e.preventDefault();togglePanel(m)}}if(e.metaKey&&e.ctrlKey&&e.code==='KeyS'){e.preventDefault();toggleSide()}});
+const fmtC=t=>t<60?'<1m':t<3600?Math.floor(t/60)+'m':Math.floor(t/3600)+'h '+Math.floor(t%3600/60)+'m';
+const fmt=t=>t>=60?Math.floor(t/60)+'m '+String(t%60).padStart(2,'0')+'s':t+'s';
+let tickSig='';const sideSig=()=>P.flatMap(p=>p.s).filter(s=>s.st==='run').map(s=>s.id+fmtC(s.el||0)).join();
+setInterval(()=>{P.flatMap(p=>p.s).forEach(s=>{if(s.st==='run')s.el=(s.el||0)+1});if(dragging)return;const t=document.getElementById('tree');if(sideSig()!==tickSig&&!t.matches(':hover')&&!t.querySelector(':focus'))render();else if(panel==='session')showPanel(panel)},1000);
+T.permOk=T.perm.split('<span class="o">╭')[0]+'<span class="b">●</span> <b>Bash</b>(npx playwright test e2e/patients)\n  <span class="d">⎿  Running… 12 passed, 3 pending</span>\n\n<span class="b">✻ Testing…</span> <span class="d">(esc to interrupt)</span>';
+T.permNo=T.perm.split('<span class="o">╭')[0]+'<span class="d">⎿  User denied Bash(npx playwright test e2e/patients)</span>\n\n<span class="d">❯</span> <span style="background:var(--txt)"> </span>';
+function act(id,st){const s=P.flatMap(p=>p.s).find(x=>x.id===id);if(s.t==='perm')s.t=st==='run'?'permOk':'permNo';s.st=st;s.sub.forEach(x=>{if(x[1]==='perm')x[1]=st==='run'?'run':'idle'});if(st==='run')s.el=0;if(need&&!P.flatMap(p=>p.s).some(needs))need=false;hideNote();render()}
+function nextNeed(){const L=P.flatMap(p=>p.s).filter(needs);if(!L.length)return;const i=L.findIndex(s=>s.id===cur);cur=L[(i+1)%L.length].id;render()}
+let dnd=false;function toggleDnd(){dnd=!dnd;const b=document.getElementById('dnd');b.innerHTML=dnd?'<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" style="display:inline;vertical-align:-2px"><path d="M3.5 10V6.5a3 3 0 0 1 6 0V10l1 1.2h-8z"/><path d="M5.5 12.2a1 1 0 0 0 2 0"/><path d="M2 2l10 10"/></svg> Paused':'<svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" style="display:inline;vertical-align:-2px"><path d="M3.5 10V6.5a3 3 0 0 1 6 0V10l1 1.2h-8z"/><path d="M5.5 12.2a1 1 0 0 0 2 0"/></svg>';b.setAttribute('aria-pressed',dnd)}
+function closeAll(){['pal','newS','keys','set','addDlg','diff'].forEach(i=>document.getElementById(i).classList.add('hidden'))}
+const CMD={};
+function cmdHint(n){const d={Terminal:'$SHELL -l','Claude Code':'claude',Codex:'codex',OpenCode:'opencode'}[n];let v=CMD[n]||d;try{v=localStorage.getItem('lotse-cmd-'+n)||v}catch(e){}document.getElementById('cmdHint').innerHTML='Runs <span style="color:var(--txt)">'+v.replace(/</g,'&lt;')+'</span> · <button class="b" onclick="openSet()">Change…</button>'}
+function saveCmd(i){CMD[i.dataset.cmd]=i.value;try{localStorage.setItem('lotse-cmd-'+i.dataset.cmd,i.value)}catch(e){}}
+function setSec(k){document.querySelectorAll('[data-pane]').forEach(p=>p.classList.toggle('hidden',p.dataset.pane!==k));document.querySelectorAll('[data-sec]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.sec===k))}
+function openSet(k){closeAll();setSec(typeof k==='string'?k:'Agents');setTheme(window.themePref||'auto');document.querySelectorAll('[data-cmd]').forEach(i=>{try{const v=localStorage.getItem('lotse-cmd-'+i.dataset.cmd);if(v!==null)i.value=v}catch(e){if(CMD[i.dataset.cmd])i.value=CMD[i.dataset.cmd]}});document.getElementById('set').classList.remove('hidden')}
+function openKeys(){closeAll();document.getElementById('keys').classList.remove('hidden')}
+function openNew(){closeAll();document.querySelectorAll('.ag').forEach((x,i)=>x.setAttribute('aria-pressed',i===0));['fp','fpL','wtBranch'].forEach(i=>document.getElementById(i).classList.add('hidden'));document.getElementById('wt').checked=false;cmdHint('Terminal');const sel=document.getElementById('nsProj');sel.innerHTML=P.map(p=>`<option>${p.n}</option>`).join('');const pr=P.find(p=>p.s.some(s=>s.id===cur));sel.value=pr.n;document.getElementById('newS').classList.remove('hidden')}
+document.querySelectorAll('.ag').forEach(b=>b.onclick=()=>{document.querySelectorAll('.ag').forEach(x=>x.setAttribute('aria-pressed',x===b));const t=b.textContent==='Terminal';cmdHint(b.textContent);['fp','fpL'].forEach(i=>document.getElementById(i).classList.toggle('hidden',t))});
+let palSel=0;
+function palItems(q){q=q.toLowerCase();const S=P.flatMap(p=>p.s.map(s=>({l:`${s.title||s.k} · ${p.n}`,h:s.k+' · '+s.b,g:G[s.st],r:rank[s.st],f:()=>{cur=s.id;render()}})));const C=[{l:'Next session that needs you',h:'⌘J',g:'▲',r:-1,f:nextNeed},{l:'Add a Project…',h:'⇧⌘O',g:'+',r:-1,f:addProject},{l:'New session…',h:'⌘T',g:'+',r:-1,f:openNew},{l:'Split Right',h:'⌘D',g:'◫',r:-1,f:()=>splitWith()},{l:'Open Full Diff',h:'⌥⌘D',g:'±',r:-1,f:openDiff},{l:'Show Changes',h:'⇧⌘D',g:'±',r:-1,f:()=>togglePanel('changes')},{l:'Settings…',h:'⌘,',g:'⚙︎',r:-1,f:openSet},{l:'Pause notifications',h:'⌥⌘N',g:'○',r:-1,f:toggleDnd}];return [...S.sort((a,b)=>b.r-a.r),...C].filter(i=>(i.l+' '+i.h).toLowerCase().includes(q))}
+function palRender(){const L=palItems(document.getElementById('palIn').value);palSel=Math.min(palSel,Math.max(0,L.length-1));document.getElementById('palList').innerHTML=L.map((i,k)=>`<div data-k="${k}" class="flex items-center gap-3 px-4 py-2 cursor-pointer" style="${k===palSel?'background:var(--sel)':''}"><span class="w-4 text-center">${i.g}</span><span class="flex-1 truncate">${i.l}</span><span class="mono text-[11px]" style="color:var(--dim)">${i.h}</span></div>`).join('')||'<div class="px-4 py-3" style="color:var(--dim)">No matches</div>';document.querySelectorAll('#palList [data-k]').forEach(d=>d.onclick=()=>{closeAll();L[+d.dataset.k].f()});return L}
+function openPal(){closeAll();const el=document.getElementById('pal');el.classList.remove('hidden');const i=document.getElementById('palIn');i.value='';palSel=0;palRender();i.focus()}
+document.getElementById('palIn').addEventListener('input',()=>{palSel=0;palRender()});
+document.getElementById('palIn').addEventListener('keydown',e=>{const L=palItems(e.target.value);if(e.key==='ArrowDown'){palSel=Math.min(palSel+1,L.length-1);palRender();e.preventDefault()}if(e.key==='ArrowUp'){palSel=Math.max(palSel-1,0);palRender();e.preventDefault()}if(e.key==='Enter'&&L[palSel]){closeAll();L[palSel].f()}});
+addEventListener('keydown',e=>{if(e.key==='Escape'){closeAll();if(edMax){edMax=null;render()}}if(!e.metaKey)return;if(e.code==='KeyS'&&edF){e.preventDefault();edSave();return}if(e.code==='Enter'&&e.altKey&&edF){e.preventDefault();edToggleMax(edF);return}if(e.code==='KeyK'&&!e.shiftKey){e.preventDefault();openPal()}if(e.code==='KeyD'&&!e.shiftKey&&!e.altKey){e.preventDefault();splitWith()}if(e.code==='KeyW'&&panes.length>1){e.preventDefault();closePane(focusI)}if((e.code==='BracketLeft'||e.code==='BracketRight')&&panes.length>1){e.preventDefault();focusI=(focusI+(e.code==='BracketRight'?1:panes.length-1))%panes.length;const id=panes[focusI];if(isEd(id)){edF=id;cur=ED[id].sid}else{edF=null;cur=id}edMax=null;render()}if(e.altKey&&e.code==='KeyD'){e.preventDefault();openDiff();return}if(e.code==='KeyJ'){e.preventDefault();nextNeed()}if(e.code==='KeyT'&&!e.shiftKey){e.preventDefault();openNew()}if(e.shiftKey&&e.code==='KeyO'){e.preventDefault();addProject()}if(e.code==='Comma'){e.preventDefault();openSet()}if(e.code==='Slash'){e.preventDefault();openKeys()}if(e.altKey&&e.code==='KeyN'){e.preventDefault();toggleDnd()}const d=/^Digit([1-9])$/.exec(e.code);if(d&&!e.shiftKey&&!e.altKey){const pr=P.find(p=>p.s.some(s=>s.id===cur));const s=pr.s[+d[1]-1];if(s){e.preventDefault();cur=s.id;render()}}});
+const EV=[['perm','Needs permission','▲','o'],['fail','Failed','✕','r'],['done','Done','✓','g'],['sub','Sub-agent done','✓','g']];
+const GN={perm:true,fail:true,done:true,sub:false};
+let PNOT={};try{PNOT=JSON.parse(localStorage.getItem('lotse-proj-notif')||'{}')}catch(e){}
+const saveNot=()=>{try{localStorage.setItem('lotse-proj-notif',JSON.stringify(PNOT))}catch(e){}};
+const pnOf=n=>PNOT[n]||{mode:'global'};
+const notifies=(n,ev)=>{const c=pnOf(n);if(c.mode==='mute')return false;if(c.mode==='custom')return !!c[ev];return GN[ev]};
+const bellOff='<svg width="12" height="12" viewBox="0 0 13 13" fill="none" stroke="currentColor" stroke-width="1.3" aria-label="Notifications muted"><path d="M3.5 10V6.5a3 3 0 0 1 6 0V10l1 1.2h-8z"/><path d="M1.5 1.5l10 10"/></svg>';
+function pnBadge(n){const m=pnOf(n).mode;return m==='mute'?`<span class="d" title="Notifications muted">${bellOff}</span>`:m==='custom'?'<span class="d text-[10px]" title="Custom notifications">●</span>':''}
+let ctxP=null;
+const mi=(label,act,{key='',chk=false,dis=false,sub=false,danger=false}={})=>`<div role="menuitem${chk!==false?'checkbox':''}" ${chk!==false?`aria-checked="${!!chk}"`:''} tabindex="-1" ${dis?'aria-disabled="true"':''} onclick="${dis||sub?'':act}" ${sub?`onmouseenter="${act}"`:'onmouseenter="hideSub()"'} class="flex items-center gap-2 px-2 py-1 rounded-md ${dis?'opacity-40':'cursor-default hover:text-white hover:bg-[color:var(--blue)]'} ${danger?'r':''}"><span class="w-3 text-center">${chk?'✓':''}</span><span class="flex-1">${label}</span><span class="opacity-60 text-[12px]">${sub?'›':key}</span></div>`;
+const sep='<div class="my-1 mx-2 border-t" style="border-color:var(--line)"></div>';
+function openCtx(n,x,y){ctxP=n;closeIcon();const b=document.getElementById('ctxBox');
+ b.innerHTML=`<div class="px-3 pt-1 pb-1.5 text-[11px] font-semibold" style="color:var(--dim)">${n}</div>`+mi('New Session…',"closeCtx();openNew()",{key:'⌘T'})+sep+mi('Notifications',"showSub()",{sub:true})+mi('Change Icon & Color…',"const n=ctxP;closeCtx();openIcon(n,[...document.querySelectorAll('#tree .tile')].find(t=>t.getAttribute('aria-label').endsWith(' '+n)))")+sep+mi('Reveal in Finder',"closeCtx()",{key:'⌥⌘R'})+mi('Copy Path',"closeCtx()",{key:'⌥⌘C'})+mi('Rename…',"closeCtx()")+sep+mi('Remove from Lotse…',"closeCtx()",{danger:true});
+ document.getElementById('ctx').classList.remove('hidden');b.style.left=Math.min(x,innerWidth-250)+'px';b.style.top=Math.min(y,innerHeight-b.offsetHeight-8)+'px';hideSub()}
+function showSub(){const c=pnOf(ctxP),b=document.getElementById('ctxBox'),s=document.getElementById('ctxSub');const custom=c.mode==='custom';
+ s.innerHTML=mi('Use global defaults',"setNot('mode','global')",{chk:c.mode==='global'})+mi('Custom for this project',"setNot('mode','custom')",{chk:custom})+EV.map(([k,l,g,cl])=>mi(`<span class="${cl}">${g}</span> ${l}`,`setNot('${k}')`,{chk:custom?!!c[k]:GN[k],dis:!custom})).join('')+sep+mi('Mute this project',"setNot('mode','mute')",{chk:c.mode==='mute'})+sep+`<div class="px-3 py-1 text-[11px]" style="color:var(--dim)">Global defaults: Settings › Notifications</div>`;
+ s.classList.remove('hidden');const r=b.getBoundingClientRect();const right=r.right+262<innerWidth;s.style.left=(right?r.right+2:r.left-262)+'px';s.style.top=Math.min(r.top+52,innerHeight-s.offsetHeight-8)+'px'}
+function hideSub(){document.getElementById('ctxSub').classList.add('hidden')}
+function setNot(k,v){const c={...pnOf(ctxP)};if(k==='mode'){c.mode=v;if(v==='custom')EV.forEach(([e])=>{if(c[e]===undefined)c[e]=GN[e]})}else{c[k]=!c[k]}PNOT[ctxP]=c;saveNot();render();showSub()}
+function closeCtx(){document.getElementById('ctx').classList.add('hidden');hideSub()}
+addEventListener('keydown',e=>{if(e.key==='Escape')closeCtx()});
+function addProject(){openAdd()}
+function openAdd(){closeAll();addView('home');document.getElementById('addDlg').classList.remove('hidden')}
+function addView(v){document.querySelectorAll('[data-av]').forEach(x=>x.classList.toggle('hidden',x.dataset.av!==v));document.getElementById('addTitle').textContent={home:'Add a project',path:'Browse folder',clone:'Clone from URL',create:'Create new project'}[v];if(v==='path')document.getElementById('addRecent').innerHTML='<div class="text-[11px] font-sans mb-1" style="color:var(--dim)">Recent</div>'+['~/Repos/research','~/Repos/incubator/jira','~/Repos/harnex'].map(p=>`<button onclick="document.getElementById('addPath').value='${p}'" class="block w-full text-left px-2 py-1 rounded hover:bg-[color:var(--sel)]">${p}</button>`).join('');const i=document.querySelector(`[data-av="${v}"] input`);if(i)setTimeout(()=>i.focus(),0);window.lucide&&lucide.createIcons()}
+async function browseFolder(){if(window.showDirectoryPicker){try{const d=await showDirectoryPicker();closeAll();newProject(d.name,'~/…/'+d.name);return}catch(e){if(e.name==='AbortError')return}}addView('path')}
+function confirmPath(){const v=document.getElementById('addPath').value.trim();closeAll();newProject(v,v)}
+function confirmClone(){const u=document.getElementById('cloneUrl').value.trim();if(!u)return;const n=u.replace(/\.git$/,'').split(/[\/:]/).pop();closeAll();toast('Cloning '+n+'…');setTimeout(()=>newProject(n,document.getElementById('cloneDir').value+'/'+n),700)}
+function confirmCreate(){const n=document.getElementById('newName').value.trim();if(!n)return;const g=document.getElementById('newGit').checked;closeAll();newProject(n,document.getElementById('newDir').value+'/'+n);const p=P.find(x=>x.n===n);if(p){p.git=g;render()}}
+document.getElementById('addDlg').addEventListener('keydown',e=>{if(e.key!=='Enter')return;const v=[...document.querySelectorAll('[data-av]')].find(x=>!x.classList.contains('hidden')).dataset.av;({path:confirmPath,clone:confirmClone,create:confirmCreate})[v]?.()});
+function newProject(name,path){name=name.replace(/\/+$/,'').split('/').pop();if(!name)return;if(P.some(p=>p.n===name)){toast(name+' is already in Lotse');return}P.push({n:name,path,git:true,open:true,s:[]});render();toast('Added '+name);openNew();document.getElementById('nsProj').value=name}
+function dropFolder(e){e.preventDefault();if([...e.dataTransfer.types].includes('text/lotse-session')){e.currentTarget.style.outline='';return}e.currentTarget.style.outline='';const it=[...(e.dataTransfer.items||[])].map(i=>i.webkitGetAsEntry&&i.webkitGetAsEntry()).filter(x=>x&&x.isDirectory);if(it.length)it.forEach(d=>newProject(d.name,'~/…/'+d.name));else toast('Drop a folder to add it as a project')}
+function toast(t){let el=document.getElementById('toast');if(!el){el=document.createElement('div');el.id='toast';el.className='fixed bottom-10 left-1/2 -translate-x-1/2 px-3 py-1.5 rounded-lg text-[12px] shadow-lg z-50 transition-opacity';el.style.cssText='background:var(--txt);color:var(--win)';document.body.appendChild(el)}el.textContent=t;el.style.opacity=1;clearTimeout(el._t);el._t=setTimeout(()=>el.style.opacity=0,1800)}
+const gi=(name,t)=>`<i data-lucide="${name}" class="gi" aria-hidden="true"></i>`;
+function gitBadge(p){return p.git===false?`<span class="gi-wrap d" title="Not a git repository" aria-label="Not a git repository"><svg class="gi" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="6" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 8.5v7M18 10.5c0 4-6 3-11 6"/><path d="M3 3l18 18"/></svg></span>`:''}
+function gitLine(p,s,pre=''){if(p.git===false)return `<div class="flex items-center gap-1 pl-[22px] text-[11px]" style="color:var(--dim)">${pre}<i data-lucide="folder" class="gi"></i><span>No git</span></div>`;
+ const icon=s.wt?'folder-git-2':'git-branch',tip=s.wt?`Isolated worktree · ~/.lotse/worktrees/${p.n}/${s.b.replace('lotse/','')}`:'Main checkout';
+ return `<div class="flex items-center gap-1 pl-[22px] text-[11px] min-w-0" style="color:var(--dim)" title="${tip}">${pre}<i data-lucide="${icon}" class="gi"></i><span class="mono truncate min-w-0" title="${s.b}">${s.b.replace(/^lotse\//,'')}</span>${s.ahead?`<span class="shrink-0 tabular-nums" title="${s.ahead} commits ahead">↑${s.ahead}</span>`:''}${s.dirty?`<span class="shrink-0 tabular-nums" title="${s.dirty} uncommitted changes">±${s.dirty}</span>`:''}</div>`}
+let panes=['a1'],paneW={},focusI=0,dragging=false;
+const sById=id=>P.flatMap(p=>p.s).find(x=>x.id===id),pOf=id=>P.find(p=>p.s.some(x=>x.id===id));
+function syncPanes(){panes=panes.filter(id=>isEd(id)?ED[id]:sById(id));if(!panes.length)panes=[cur];if(edMax&&!panes.includes(edMax))edMax=null;
+ if(edF&&panes.includes(edF)&&ED[edF].sid===cur){focusI=panes.indexOf(edF);return}edF=null;
+ const i=panes.indexOf(cur);if(i>=0){focusI=i;return}const t=isEd(panes[focusI])?panes.findIndex(x=>!isEd(x)):focusI;if(t<0){panes.unshift(cur);focusI=0}else{panes[t]=cur;focusI=t}}
+function renderPanes(){syncPanes();const box=document.getElementById('panes');const sc={};box.querySelectorAll('.pane').forEach(p=>{const t=p.querySelector('.term,.edbody');if(t)sc[p.dataset.id]=t.scrollTop;const b=p.querySelector('.edbody');if(b&&ED[p.dataset.id]&&!ED[p.dataset.id].diff)edKeep[p.dataset.id]=b});box.querySelectorAll('.pane,.pdiv').forEach(x=>x.remove());const hint=document.getElementById('dropHint');const multi=panes.length>1&&!edMax;
+ const shown=edMax?[edMax]:panes;
+ panes.forEach((id,i)=>{if(!shown.includes(id))return;
+  if(isEd(id)){if(i>0&&!edMax){const d=document.createElement('div');d.className='pdiv w-px shrink-0 cursor-col-resize relative';d.style.background='var(--line)';d.innerHTML='<span class="absolute inset-y-0 -left-1.5 -right-1.5"></span>';d.setAttribute('role','separator');d.setAttribute('aria-label','Resize panes');d.onpointerdown=e=>dragDiv(e,i);box.insertBefore(d,hint)}
+   const el=document.createElement('section');el.dataset.id=id;el.className='pane flex flex-col min-w-0';el.style.flex=(edMax?1:(paneW[id]||1))+' 1 0';el.style.opacity=i!==focusI?.62:1;el.onmousedown=()=>{if(focusI!==i||edF!==id){focusI=i;edF=id;cur=ED[id].sid;render()}};
+   el.innerHTML=edPane(id,i);box.insertBefore(el,hint);const k=edKeep[id];if(k&&!ED[id].diff)el.querySelector('.edbody').replaceWith(k);delete edKeep[id];const b=el.querySelector('.edbody');if(sc[id])b.scrollTop=sc[id];return}
+  const s=sById(id),p=pOf(id);
+  if(i>0){const d=document.createElement('div');d.className='pdiv w-px shrink-0 cursor-col-resize relative';d.style.background='var(--line)';d.innerHTML='<span class="absolute inset-y-0 -left-1.5 -right-1.5"></span>';d.setAttribute('role','separator');d.setAttribute('aria-label','Resize panes');d.onpointerdown=e=>dragDiv(e,i);box.insertBefore(d,hint)}
+  const el=document.createElement('section');el.dataset.id=id;el.className='pane flex flex-col min-w-0';el.style.flex=(paneW[id]||1)+' 1 0';el.style.opacity=multi&&i!==focusI?.62:1;el.onmousedown=()=>{if(focusI!==i||edF){edF=null;cur=id;render()}};
+  el.innerHTML=(multi?`<div class="h-7 shrink-0 flex items-center gap-2 px-3 text-[12px] border-b" style="border-color:var(--line);${i===focusI?'box-shadow:inset 0 2px 0 var(--blue)':''}">${folder(p.n,13,false)}<span class="truncate">${s.title||s.k} <span style="color:var(--dim)">· ${p.n}</span></span>${G[s.st]}<button class="ml-auto ico !w-5 !h-5" onclick="event.stopPropagation();closePane(${i})" aria-label="Close pane" title="Close pane ⌘W">✕</button></div>`:'')+`<div ${i===focusI?'id="term"':''} class="term mono flex-1 overflow-auto px-5 py-4 whitespace-pre" aria-label="Terminal ${p.n} ${s.k}">${T[s.t]}</div>`;
+  box.insertBefore(el,hint);if(sc[id])el.querySelector('.term').scrollTop=sc[id]})}
+function dragDiv(e,i){e.preventDefault();dragging=true;const box=document.getElementById('panes'),els=[...box.querySelectorAll('.pane')],a=els[i-1],b=els[i];const x0=e.clientX,wa=a.offsetWidth,wb=b.offsetWidth,tot=wa+wb,ga=paneW[panes[i-1]]||1,gb=paneW[panes[i]]||1,g=ga+gb;
+ const mv=ev=>{const na=Math.min(tot-220,Math.max(220,wa+ev.clientX-x0));paneW[panes[i-1]]=g*na/tot;paneW[panes[i]]=g*(tot-na)/tot;a.style.flex=paneW[panes[i-1]]+' 1 0';b.style.flex=paneW[panes[i]]+' 1 0'};
+ const up=()=>{dragging=false;removeEventListener('pointermove',mv);removeEventListener('pointerup',up)};addEventListener('pointermove',mv);addEventListener('pointerup',up)}
+function splitWith(id){if(!id){const L=P.flatMap(p=>p.s).filter(x=>!panes.includes(x.id)).sort((a,b)=>rank[b.st]-rank[a.st]);if(!L.length){toast('All sessions are already open');return}id=L[0].id}
+ if(panes.includes(id)){cur=id;render();return}if(panes.length>=4){toast('Up to 4 panes side by side');return}panes.splice(focusI+1,0,id);focusI++;cur=id;render()}
+function closePane(i){if(panes.length<2)return;if(panes[i]===edMax)edMax=null;if(isEd(panes[i])&&ED[panes[i]].dirty)toast('Unsaved edits to '+ED[panes[i]].p.split('/').pop()+' kept in memory');panes.splice(i,1);delete paneW[panes[i]];focusI=Math.min(focusI>=i?Math.max(0,focusI-1):focusI,panes.length-1);const id=panes[focusI];if(isEd(id)){edF=id;cur=ED[id].sid}else{edF=null;cur=id}render()}
+function paneDragOver(e){if(![...e.dataTransfer.types].includes('text/lotse-session'))return;e.preventDefault();document.getElementById('dropHint').classList.remove('hidden')}
+function paneDragLeave(e){if(!e.currentTarget.contains(e.relatedTarget))document.getElementById('dropHint').classList.add('hidden')}
+function paneDrop(e){document.getElementById('dropHint').classList.add('hidden');const id=e.dataTransfer.getData('text/lotse-session');if(id){e.preventDefault();splitWith(id)}}
+function openCardCtx(id,x,y){ctxP=null;const b=document.getElementById('ctxBox');b.innerHTML=mi('Open',`closeCtx();cur='${id}';render()`)+mi('Open in Split Right',`closeCtx();splitWith('${id}')`,{key:'⌥-click'})+sep+mi('Show Transcript',`closeCtx();cur='${id}';render();if(panel!=='transcript')togglePanel('transcript')`,{key:'⇧⌘T'})+mi('Show Changes',`closeCtx();cur='${id}';render();if(panel!=='changes')togglePanel('changes')`,{key:'⇧⌘D'})+sep+mi('Stop Session',"closeCtx()",{danger:true});document.getElementById('ctx').classList.remove('hidden');b.style.left=Math.min(x,innerWidth-250)+'px';b.style.top=Math.min(y,innerHeight-b.offsetHeight-8)+'px';hideSub()}
+const DIFF=[
+ {f:'src/invoice/totals.ts',st:'M',h:[['@@ -38,7 +38,8 @@ export function invoiceTotal(lines: Line[])'],[' ',38,38,'  const sum = lines.reduce((a, l) => a + l.qty * l.price, 0)'],[' ',39,39,'  if (sum === 0) return 0'],[' ',40,40,''],['-',41,null,'  return Math.round(sum * 100) / 100'],['+',null,41,'  return roundHalfEven(sum, 2)'],['+',null,42,"  // banker's rounding avoids 0.005 drift"],[' ',42,43,'}']]},
+ {f:'src/invoice/round.ts',st:'A',h:[['@@ -0,0 +1,9 @@'],['+',null,1,'export function roundHalfEven(n: number, dp: number) {'],['+',null,2,'  const f = 10 ** dp'],['+',null,3,'  const x = n * f'],['+',null,4,'  const r = Math.round(x)'],['+',null,5,'  const tie = Math.abs(x % 1) === 0.5'],['+',null,6,'  return (tie && r % 2 !== 0 ? r - 1 : r) / f'],['+',null,7,'}']]},
+ {f:'test/totals.spec.ts',st:'M',h:[['@@ -12,6 +12,10 @@ describe(\'invoiceTotal\')'],[' ',12,12,"  it('sums lines', () => {"],['-',13,null,'    expect(invoiceTotal(lines)).toBe(10.01)'],['+',null,13,'    expect(invoiceTotal(lines)).toBe(10.0)'],[' ',14,14,'  })'],['+',null,15,"  it('rounds half to even', () => {"],['+',null,16,'    expect(roundHalfEven(2.675, 2)).toBe(2.68)'],['+',null,17,'  })']]}];
+let dm='split',dFile=-1,DC={};
+const esc=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function openDiff(i){closeAll();dFile=Number.isInteger(i)?i:-1;const s=sById(cur),p=pOf(cur);document.getElementById('diffTitle').innerHTML=`${folder(p.n,14,false)} <span class="align-middle">${p.n} · ${s.k}</span>`;document.getElementById('diffMeta').innerHTML=`<div class="flex items-center gap-1 mono"><i data-lucide="folder-git-2" class="gi"></i>${s.b||'main'}</div><div class="mt-0.5">vs <span class="mono">main</span> · ↑${s.ahead||0} · ${DIFF.length} files · <span class="g">+${DIFF.reduce((a,d)=>a+d.h.filter(l=>l[0]==='+').length,0)}</span> <span class="r">−${DIFF.reduce((a,d)=>a+d.h.filter(l=>l[0]==='-').length,0)}</span></div><div class="mt-1"><span class="px-1.5 py-0.5 rounded text-[10px]" style="background:var(--line)">PR #184 · Draft</span></div>`;document.getElementById('diff').classList.remove('hidden');setDm(dm)}
+function setDm(m){dm=m;document.querySelectorAll('[data-dm]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.dm===m));renderDiff()}
+function renderDiff(){const cc=Object.values(DC).length;document.getElementById('cCount').textContent=cc?'('+cc+')':'';
+ document.getElementById('diffFiles').innerHTML=`<button onclick="dFile=-1;renderDiff()" class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left mb-1" style="${dFile<0?'background:var(--sel)':''}"><span class="w-3"></span><span class="flex-1">All files</span><span class="d tabular-nums">${DIFF.length}</span></button>`+DIFF.map((d,i)=>{const a=d.h.filter(l=>l[0]==='+').length,r=d.h.filter(l=>l[0]==='-').length;return `<button onclick="dFile=${i};renderDiff();document.getElementById('diffBody').scrollTop=0" class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left" style="${i===dFile?'background:var(--sel)':''}"><span class="w-3 text-[10px] font-semibold ${d.st==='A'?'g':'o'}">${d.st}</span><span class="truncate flex-1 mono">${d.f.split('/').pop()}</span><span class="g tabular-nums">+${a}</span>${r?`<span class="r tabular-nums">−${r}</span>`:''}</button>`}).join('');
+ const cell=(n,cls,txt,bg)=>`<td class="select-none text-right pr-2 pl-3 w-10 tabular-nums" style="color:var(--tdim)">${n??''}</td><td class="pr-4 whitespace-pre ${cls}" style="${bg}">${txt}</td>`;
+ const addBg='background:color-mix(in srgb,var(--green) 13%,transparent)',delBg='background:color-mix(in srgb,var(--red) 12%,transparent)';
+ const cmt=(fi,li)=>{const k=fi+':'+li,c=DC[k];return c!==undefined?`<tr><td colspan="${dm==='split'?4:3}" class="px-4 py-2" style="background:var(--side)"><div class="font-sans text-[12px] rounded-lg ring-1 p-2 max-w-[640px]" style="--tw-ring-color:var(--line);background:var(--win)"><textarea data-ck="${k}" oninput="DC['${k}']=this.value;document.getElementById('cCount').textContent='('+Object.keys(DC).length+')'" rows="2" class="w-full bg-transparent outline-none resize-none" placeholder="Comment for the agent…">${esc(c)}</textarea><div class="flex justify-end gap-2"><button onclick="delete DC['${k}'];renderDiff()" class="text-[11px] d">Remove</button></div></div></td></tr>`:''};
+ document.getElementById('diffBody').innerHTML=DIFF.map((d,fi)=>(dFile>=0&&fi!==dFile)?'':`<div id="df${fi}"><div class="sticky top-0 z-10 px-4 py-2 font-sans text-[12px] font-medium border-b flex items-center gap-2" style="background:var(--side);border-color:var(--line)"><span class="${d.st==='A'?'g':'o'}">${d.st}</span><span class="mono">${d.f}</span></div><table class="w-full border-collapse">`+d.h.map((l,li)=>{
+  if(l.length===1)return `<tr><td colspan="${dm==='split'?4:3}" class="px-4 py-1" style="color:var(--tdim);background:color-mix(in srgb,var(--blue) 6%,transparent)">${esc(l[0])}</td></tr>`;
+  const [t,o,n,x]=l,tx=esc(x)||' ',click=`onclick="if(!('${fi}:${li}' in DC)){DC['${fi}:${li}']='';renderDiff();setTimeout(()=>document.querySelector('[data-ck=\\'${fi}:${li}\\']')?.focus(),0)}" title="Click to comment" class="group cursor-pointer hover:brightness-95"`;
+  const row=dm==='split'?(t===' '?cell(o,'',tx,'')+cell(n,'',tx,''):t==='-'?cell(o,'',`<span class="r">-</span> `+tx,delBg)+cell(null,'','',''):cell(null,'','','')+cell(n,'',`<span class="g">+</span> `+tx,addBg)):`<td class="select-none text-right pr-1 pl-3 w-10 tabular-nums" style="color:var(--tdim)">${o??''}</td>`+cell(n,'',(t===' '?'  ':t==='+'?'<span class="g">+</span> ':'<span class="r">-</span> ')+tx,t==='+'?addBg:t==='-'?delBg:'');
+  return `<tr ${click}>${row}</tr>`+cmt(fi,li)}).join('')+'</table></div>').join('');
+ window.lucide&&lucide.createIcons()}
+function sendReview(){const n=Object.values(DC).filter(v=>v.trim()).length;if(!n){toast('Click a line to add a comment first');return}DC={};closeAll();toast(n+' comment'+(n>1?'s':'')+' sent to '+sById(cur).k)}
+const noGitIco=()=>{const m=gitBadge({git:false}).match(/<svg[\s\S]*?<\/svg>/);return m?m[0]:''};
+function renderFooterGit(){const el=document.getElementById('ftGit');if(!el)return;const s=sById(cur),p=pOf(cur);if(!s||!p){el.innerHTML='';return}
+ if(p.git===false){el.innerHTML=`<span class="inline-flex items-center gap-1" title="${p.n} is not a git repository">${noGitIco()}No git</span><span class="opacity-40">·</span>`;return}
+ const wt=s.wt;el.innerHTML=`<span class="inline-flex items-center gap-1 min-w-0" title="${wt?'Isolated worktree · ~/.lotse/worktrees/'+p.n+'/'+(s.b||'').replace('lotse/',''):'Main checkout'}"><i data-lucide="${wt?'folder-git-2':'git-branch'}" class="gi"></i><span class="mono truncate max-w-[220px]">${s.b||'main'}</span></span>${wt?'<span class="px-1 rounded text-[10px]" style="background:var(--line)">worktree</span>':''}${s.ahead?`<span class="tabular-nums" title="${s.ahead} commits ahead of main">↑${s.ahead}</span>`:''}${s.dirty?`<span class="tabular-nums" title="${s.dirty} uncommitted changes">±${s.dirty}</span>`:''}<span class="opacity-40">·</span>`}
+function changesPanel(){const S=sById(cur),p=pOf(cur);
+ if(p.git===false)return `<h3 class="font-semibold mb-2">Changes</h3><div class="text-[12px] rounded-lg p-4 text-center" style="background:var(--win);color:var(--dim)">${noGitIco()}<div class="mt-2">${p.n} is not a git repository.</div><button class="mt-2 b" onclick="toast('git init in '+'${p.n}')">Initialize Git…</button></div>`;
+ const files=DIFF.map((d,i)=>({...d,i,a:d.h.filter(l=>l[0]==='+').length,r:d.h.filter(l=>l[0]==='-').length}));
+ const A=files.reduce((x,y)=>x+y.a,0),R=files.reduce((x,y)=>x+y.r,0);
+ const bar=(a,r)=>{const t=a+r||1,g=Math.round(a/t*5),rd=Math.min(5-g,Math.round(r/t*5));return Array.from({length:5},(_,k)=>`<span class="w-1.5 h-1.5 rounded-[2px]" style="background:${k<g?'var(--green)':k<g+rd?'var(--red)':'var(--line)'}"></span>`).join('')};
+ const stC={A:'var(--green)',M:'var(--dim)',D:'var(--red)'};
+ const commits=[['a41c9e2','Use banker\'s rounding for invoice totals','4m'],['7be03d1','Add roundHalfEven helper','11m']];
+ return `<div class="flex items-baseline gap-2"><h3 class="font-semibold">Changes</h3><span class="text-[11px] px-1.5 rounded-full" style="background:var(--line)">${files.length}</span><span class="ml-auto text-[12px] tabular-nums"><span class="g">+${A}</span> <span class="r">−${R}</span></span></div>
+ <div class="mt-1.5 flex items-center gap-1.5 text-[12px] min-w-0" style="color:var(--dim)"><i data-lucide="${S.wt?'folder-git-2':'git-branch'}" class="gi"></i><span class="mono truncate">${S.b||'main'}</span>${S.ahead?`<span class="tabular-nums">↑${S.ahead}</span>`:''}<button onclick="toast('Opening PR #184 in browser')" class="ml-auto shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[11px] hover:brightness-95" style="background:var(--line);color:var(--txt)" title="Open pull request"><span class="w-1.5 h-1.5 rounded-full" style="background:var(--gray)"></span>PR #184 · Draft</button></div>
+ <div class="mt-4 mb-1.5 text-[11px] font-semibold uppercase tracking-wide" style="color:var(--dim)">Uncommitted</div>
+ <div class="rounded-lg overflow-hidden ring-1" style="--tw-ring-color:var(--line);background:var(--win)">${files.map((d,k)=>{const name=d.f.split('/').pop(),dir=d.f.slice(0,-name.length);return `<button onclick="openDiff(${d.i})" class="group w-full flex items-center gap-2.5 px-2.5 py-2 text-left hover:bg-[color:var(--sel)] ${k?'border-t':''}" style="border-color:var(--line)" title="Open diff of ${d.f}"><span class="w-4 h-4 shrink-0 rounded grid place-items-center text-[10px] font-semibold" style="color:${stC[d.st]};background:color-mix(in srgb,${stC[d.st]} 14%,transparent)" aria-label="${{A:'Added',M:'Modified',D:'Deleted'}[d.st]}">${d.st}</span><span class="min-w-0 flex-1"><span class="block text-[13px] truncate">${name}</span><span class="block text-[11px] truncate mono" style="color:var(--dim)">${dir||'./'}</span></span><span class="text-right shrink-0"><span class="block text-[11px] tabular-nums"><span class="g">+${d.a}</span>${d.r?` <span class="r">−${d.r}</span>`:''}</span><span class="flex gap-0.5 justify-end mt-1">${bar(d.a,d.r)}</span></span><span class="opacity-0 group-hover:opacity-60 text-[12px]">›</span></button>`}).join('')}</div>
+ <button onclick="openDiff()" class="mt-3 w-full flex items-center justify-center gap-2 py-1.5 rounded-lg text-[13px] font-medium ring-1 hover:bg-[color:var(--sel)]" style="--tw-ring-color:var(--line);background:var(--win);color:var(--blue)">Review full diff <span class="text-[11px] opacity-60">⌥⌘D</span></button>
+ <div class="mt-5 mb-1.5 text-[11px] font-semibold uppercase tracking-wide flex" style="color:var(--dim)">Commits ahead of main<span class="ml-auto font-normal normal-case">${commits.length}</span></div>
+ <div class="space-y-1.5">${commits.map(([h,m,t])=>`<div class="flex items-baseline gap-2 text-[12px]"><span class="mono text-[11px]" style="color:var(--dim)">${h}</span><span class="truncate flex-1">${m}</span><span class="text-[11px] shrink-0" style="color:var(--dim)">${t}</span></div>`).join('')}</div>`}
+const MCP={claude:[['Agent browser','connected',14],['Jfrog','connected',22],['Mcp atlassian','connected',61],['Playwright','connected',21],['Mermaid Chart','needs auth',0]],codex:[['Playwright','connected',21],['GitHub','failed',0]],open:[['Context7','connected',2]],shell:[]};
+let mcpMore=false,ctxOpen=false;
+// ---- shared panel bits
+const pHead=(t,sub,right='')=>`<div class="flex items-start gap-2 mb-3"><div class="flex-1 min-w-0"><h3 class="font-semibold">${t}</h3>${sub?`<div class="text-[11px] truncate mt-0.5" style="color:var(--dim)">${sub}</div>`:''}</div>${right}</div>`;
+const seg=(opts,val,fn)=>`<div class="inline-flex p-0.5 rounded-md bg-black/5 dark:bg-white/10 text-[11px]" role="tablist">${opts.map(([k,l])=>`<button role="tab" aria-selected="${k===val}" onclick="${fn}('${k}')" class="px-2 py-0.5 rounded ${k===val?'shadow-sm font-medium':''}" style="${k===val?'background:var(--win)':'color:var(--dim)'}">${l}</button>`).join('')}</div>`;
+const srch=(ph,val,fn,kbd)=>`<label class="flex items-center gap-1.5 rounded-md px-2 h-7 mb-3 ring-1 ring-black/5 dark:ring-white/10" style="background:var(--win)"><i data-lucide="search" class="w-3.5 h-3.5 shrink-0" style="color:var(--dim)"></i><input class="flex-1 min-w-0 bg-transparent outline-none text-[12px]" placeholder="${ph}" aria-label="${ph}" value="${val}" oninput="${fn}(this.value)">${kbd?`<kbd class="text-[10px]" style="color:var(--dim)">${kbd}</kbd>`:''}</label>`;
+const refocus=sel=>{const i=document.querySelector(sel);if(i){i.focus();i.setSelectionRange(i.value.length,i.value.length)}};
+// ---- Files
+const FTREE=[{n:'src',c:[{n:'invoice',c:[{n:'totals.ts'},{n:'round.ts'},{n:'tax.ts'}]},{n:'api',c:[{n:'routes.ts'}]},{n:'index.ts'}]},{n:'test',c:[{n:'totals.spec.ts'},{n:'round.spec.ts'}]},{n:'package.json'},{n:'tsconfig.json'},{n:'README.md'}];
+let fOpen=new Set(['src','src/invoice']),fMode='all',fSel='src/invoice/totals.ts',fQ='';
+const fIco=n=>/\.json$/.test(n)?'braces':/\.md$/.test(n)?'file-text':/\.spec\./.test(n)?'flask-conical':/\.(ts|tsx|js)$/.test(n)?'file-code':'file';
+const fChg=()=>Object.fromEntries(DIFF.map((d,i)=>[d.f,{st:d.st,i,a:d.h.filter(l=>l[0]==='+').length,r:d.h.filter(l=>l[0]==='-').length}]));
+const stBadge=st=>`<span class="w-4 text-center text-[10px] font-semibold" style="color:${st==='A'?'var(--green)':st==='D'?'var(--red)':'var(--orange)'}" title="${{A:'Added',M:'Modified',D:'Deleted'}[st]}">${st}</span>`;
+function fRows(nodes,base,d,C){return nodes.map(n=>{const p=base?base+'/'+n.n:n.n,pad=`padding-left:${6+d*14}px`;
+ if(n.c){const has=Object.keys(C).some(k=>k.startsWith(p+'/')),hit=!fQ||JSON.stringify(n).toLowerCase().includes(fQ);if((fMode==='changed'&&!has)||!hit)return '';const open=fOpen.has(p)||fMode==='changed'||!!fQ;
+  return `<button class="w-full flex items-center gap-1.5 h-[26px] pr-2 rounded-md text-left hover:bg-black/5 dark:hover:bg-white/5" style="${pad}" aria-expanded="${open}" onclick="fToggle('${p}')"><svg class="w-3 h-3 shrink-0 transition-transform opacity-50" style="transform:rotate(${open?90:0}deg)" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4.5 2.5 8 6l-3.5 3.5"/></svg><i data-lucide="${open?'folder-open':'folder'}" class="w-4 h-4 shrink-0" style="color:var(--blue)"></i><span class="truncate flex-1">${n.n}</span>${has&&!open?'<span class="w-1.5 h-1.5 rounded-full" style="background:var(--orange)" title="Contains changes"></span>':''}</button>`+(open?fRows(n.c,p,d+1,C):'')}
+ const c=C[p];if(fMode==='changed'&&!c)return '';if(fQ&&!p.toLowerCase().includes(fQ))return '';
+ return `<div role="button" tabindex="0" class="group w-full flex items-center gap-1.5 h-[26px] pr-1.5 rounded-md cursor-default hover:bg-black/5 dark:hover:bg-white/5" style="${pad};${p===fSel?'background:var(--sel)':''}" onclick="fOpenFile('${p}')" title="${p}"><span class="w-3 shrink-0"></span><i data-lucide="${fIco(n.n)}" class="w-4 h-4 shrink-0" style="color:var(--dim)"></i><span class="truncate flex-1 ${c?'font-medium':''}">${n.n}</span><span class="flex items-center gap-1.5 group-hover:hidden text-[11px] tabular-nums">${c?`<span class="g">+${c.a}</span><span class="r">−${c.r}</span>${stBadge(c.st)}`:''}</span><span class="hidden group-hover:flex items-center gap-0.5"><button class="ico !w-5 !h-5" title="Open in external editor" onclick="event.stopPropagation();toast('Opening ${n.n} in your default editor')"><i data-lucide="square-arrow-out-up-right" class="w-3.5 h-3.5"></i></button><button class="ico !w-5 !h-5" title="Copy path" onclick="event.stopPropagation();toast('Copied ${p}')"><i data-lucide="copy" class="w-3.5 h-3.5"></i></button></span></div>`}).join('')}
+function filesPanel(){const S=sById(cur),p=pOf(cur),C=p.git===false?{}:fChg(),n=JSON.stringify(FTREE).match(/"n":"[^"]+\.[a-z]+"/g).length,nc=Object.keys(C).length;
+ const root=S.wt?`~/.lotse/worktrees/${p.n}/${S.b.replace('lotse/','')}`:`~/Code/${p.n}`;
+ const rows=fRows(FTREE,'',0,C);
+ return pHead('Files',`<span class="inline-flex items-center gap-1"><i data-lucide="${S.wt?'folder-git-2':'folder'}" class="gi"></i><span class="mono">${root}</span></span>`,p.git===false?'':seg([['all','All'],['changed','Changed '+nc]],fMode,'fSetMode'))
+ +srch('Filter files',fQ,'fFilter','⌘P')
+ +`<div class="text-[13px] -mx-1">${rows||`<div class="px-2 py-6 text-center text-[12px]" style="color:var(--dim)">No files match</div>`}</div>`
+ +`<div class="mt-3 pt-2 border-t text-[11px] flex" style="border-color:var(--line);color:var(--dim)"><span class="flex-1">${n} files${nc?' · '+nc+' changed':''}</span>${nc?`<button class="b" onclick="openDiff()">Review changes</button>`:''}</div>`}
+function fToggle(p){fOpen.has(p)?fOpen.delete(p):fOpen.add(p);showPanel('files')}
+function fSetMode(m){fMode=m;showPanel('files')}
+function fFilter(v){fQ=v.toLowerCase();showPanel('files');refocus('#panel input')}
+function fOpenFile(p){fSel=p;openFile(p)}
+// ---- Transcript
+const TRX=[{w:'you',t:"Fix the flaky invoice rounding test and make totals use banker's rounding",h:'14:02'},{w:'claude',t:"I'll start by finding the rounding logic and the failing test.",h:'14:02'},{w:'tool',k:'Task',a:'explore-repo',r:'3 call sites in totals.ts',h:'14:02',st:'done',sub:1},{w:'tool',k:'Read',a:'src/invoice/totals.ts',r:'212 lines',h:'14:03',st:'done'},{w:'tool',k:'Update',a:'src/invoice/totals.ts',r:'+2 −1',h:'14:04',st:'done'},{w:'perm',k:'Bash',a:'npm test -- totals',r:'Allowed by you · notification',h:'14:05'},{w:'claude',t:'Totals now round half-even. Running the totals suite to confirm.',h:'14:05'},{w:'tool',k:'Task',a:'test-runner',r:'running',h:'14:05',st:'run',sub:1}];
+const TICO={Task:'bot',Read:'file-text',Update:'pencil',Edit:'pencil',Bash:'square-terminal',Grep:'search'};
+let trF='all',trQ='';
+function trPanel(){const S=sById(cur),p=pOf(cur),cnt=w=>TRX.filter(x=>x.w===w).length;
+ const keep=x=>(trF==='all'||(trF==='msg'&&(x.w==='you'||x.w==='claude'))||(trF==='tool'&&x.w==='tool')||(trF==='perm'&&x.w==='perm'))&&(!trQ||JSON.stringify(x).toLowerCase().includes(trQ));
+ const L=TRX.filter(keep);let html='',grp=[];
+ const flush=()=>{if(!grp.length)return;html+=`<div class="rounded-lg ring-1 ring-black/5 dark:ring-white/10 divide-y overflow-hidden" style="background:var(--win);--tw-divide-opacity:1;border-color:var(--line)">${grp.map(x=>`<div class="flex items-center gap-2 px-2.5 h-8 text-[12px] min-w-0" style="border-color:var(--line)" title="${x.h}"><i data-lucide="${TICO[x.k]||'wrench'}" class="w-3.5 h-3.5 shrink-0" style="color:var(--dim)"></i><span class="font-medium shrink-0">${x.sub?'Agent':x.k}</span><span class="mono text-[11px] truncate flex-1" style="color:var(--dim)">${x.a}</span><span class="text-[11px] tabular-nums shrink-0" style="color:var(--dim)">${x.st==='run'?'':x.r}</span>${G[x.st]}</div>`).join('')}</div>`;grp=[]};
+ L.forEach(x=>{if(x.w==='tool'){grp.push(x);return}flush();
+  html+=x.w==='you'?`<div class="flex flex-col items-end"><div class="text-[11px] mb-1" style="color:var(--dim)">You · ${x.h}</div><div class="max-w-[88%] rounded-2xl rounded-tr-md px-3 py-2" style="background:var(--sel)">${x.t}</div></div>`
+  :x.w==='claude'?`<div><div class="text-[11px] mb-1 flex items-center gap-1" style="color:var(--dim)"><span class="w-1.5 h-1.5 rounded-full" style="background:var(--c-tan,#c8a27a)"></span>${S.k==='Claude Code'?'Claude':S.k} · ${x.h}</div><div class="leading-relaxed">${x.t}</div></div>`
+  :`<div class="flex items-start gap-2 rounded-lg px-2.5 py-2" style="background:color-mix(in srgb,var(--orange) 10%,transparent)">${G.perm}<div class="min-w-0 flex-1"><div class="flex text-[12px]"><span class="font-medium flex-1">Permission allowed</span><span class="text-[11px]" style="color:var(--dim)">${x.h}</span></div><div class="mono text-[11px] truncate">${x.k}(${x.a})</div><div class="text-[11px]" style="color:var(--dim)">${x.r}</div></div></div>`});flush();
+ const exp=`<details class="relative"><summary class="list-none cursor-default flex items-center gap-1 text-[12px] px-2 h-7 rounded-md hover:bg-black/5 dark:hover:bg-white/10"><i data-lucide="share" class="w-3.5 h-3.5"></i>Export</summary><div class="absolute right-0 mt-1 w-[220px] rounded-lg shadow-xl ring-1 ring-black/10 p-1 text-[12px] z-10" style="background:var(--win)"><button onclick="exportTr('md')" class="w-full text-left px-2 py-1 rounded hover:bg-[color:var(--sel)]">Markdown (.md)</button><button onclick="exportTr('json')" class="w-full text-left px-2 py-1 rounded hover:bg-[color:var(--sel)]">JSON Lines (.jsonl)</button><button onclick="exportTr('txt')" class="w-full text-left px-2 py-1 rounded hover:bg-[color:var(--sel)]">Terminal text (.txt)</button><div class="px-2 pt-1.5 pb-1 text-[11px]" style="color:var(--dim)">Saved locally. Secrets redacted.</div></div></details>`;
+ return `<div class="flex flex-col h-full -mb-4">`+pHead('Transcript',`${S.k} · Opus 5.5 · started 14:02`,exp)+srch('Search transcript',trQ,'trSearch','⌘F')
+ +`<div class="mb-3">${seg([['all','All'],['msg','Messages '+(cnt('you')+cnt('claude'))],['tool','Tools '+cnt('tool')],['perm','Approvals '+cnt('perm')]],trF,'trSet')}</div>`
+ +`<div class="flex-1 space-y-3 text-[13px]">${html||`<div class="py-6 text-center text-[12px]" style="color:var(--dim)">No matches</div>`}</div>`
+ +(S.st==='run'?`<div class="sticky bottom-0 -mx-4 mt-3 px-4 py-2 flex items-center gap-2 text-[12px] border-t" style="background:var(--side);border-color:var(--line)">${G.run}<span class="flex-1 truncate">Working · test-runner</span><button class="b" onclick="toast('Jumped to latest')">Latest ↓</button></div>`:'')+`</div>`}
+function trSet(k){trF=k;showPanel('transcript')}
+function trSearch(v){trQ=v.toLowerCase();showPanel('transcript');refocus('#panel input')}
+// ---- Usage & time
+function usagePanel(){const S=sById(cur),p=pOf(cur),T=41;const pct=m=>(m/T*100).toFixed(2)+'%';
+ const lanes=[['lead',[[0,3,'run'],[3,7,'perm'],[7,41,'run']],'41m','$0.82'],['explore-repo',[[0.5,9,'done']],'8m','$0.19'],['test-runner',[[23,41,'run']],'18m','$0.13']];
+ const col={run:'var(--blue)',perm:'var(--orange)',done:'var(--green)',fail:'var(--red)'},lab={run:'Working',perm:'Waiting on you',done:'Done',fail:'Failed'};
+ const tile=(l,v,sub,c)=>`<div class="rounded-lg px-2.5 py-2 ring-1 ring-black/5 dark:ring-white/10" style="background:var(--win)"><div class="text-[11px]" style="color:var(--dim)">${l}</div><div class="text-[17px] font-semibold tabular-nums mt-0.5" ${c?`style="color:${c}"`:''}>${v}</div><div class="text-[10px]" style="color:var(--dim)">${sub}</div></div>`;
+ const h4=(t,r='')=>`<div class="flex items-baseline mt-5 mb-2"><h4 class="text-[11px] font-semibold uppercase tracking-wide flex-1" style="color:var(--dim)">${t}</h4><span class="text-[11px]" style="color:var(--dim)">${r}</span></div>`;
+ const bar=(v,max,c)=>`<div class="h-1.5 rounded-full bg-black/5 dark:bg-white/10 overflow-hidden"><div class="h-full rounded-full" style="width:${v/max*100}%;background:${c}"></div></div>`;
+ return pHead('Usage & time',`${S.title||S.k} · ${S.k} · Opus 5.5`)
+ +`<div class="grid grid-cols-3 gap-2">${tile('Session','41m','since 14:02')}${tile('Working','37m','agent active')}${tile('Waiting','4m','on you','var(--orange)')}</div>`
+ +`<div class="mt-2 flex h-1.5 rounded-full overflow-hidden" title="Working 37m · Waiting on you 4m"><div style="width:${pct(37)};background:var(--blue)"></div><div style="width:${pct(4)};background:var(--orange)"></div></div>`
+ +h4('Timeline','14:02 – now')
+ +`<div class="relative text-[11px]">${lanes.map(([n,segs,d,c])=>`<div class="flex items-center gap-2 h-7"><span class="w-[84px] truncate shrink-0">${n}</span><div class="relative flex-1 h-2.5 rounded-full overflow-hidden bg-black/5 dark:bg-white/10">${segs.map(([a,b,k])=>`<div class="absolute top-0 h-full" style="left:${pct(a)};width:${pct(b-a)};background:${col[k]}" title="${lab[k]} · ${b-a}m"></div>`).join('')}</div><span class="w-[70px] text-right tabular-nums shrink-0" style="color:var(--dim)">${d} · ${c}</span></div>`).join('')}
+  <div class="flex ml-[92px] mr-[78px] justify-between text-[10px] tabular-nums mt-0.5" style="color:var(--dim)"><span>14:02</span><span>14:16</span><span>14:29</span><span>now</span></div></div>`
+ +`<div class="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px]" style="color:var(--dim)">${['run','perm','done'].map(k=>`<span class="inline-flex items-center gap-1"><span class="w-2 h-2 rounded-full" style="background:${col[k]}"></span>${lab[k]}</span>`).join('')}</div>`
+ +h4('Tokens','96k · $1.14')
+ +`<div class="flex h-2 rounded-full overflow-hidden gap-px"><div style="width:63.5%;background:var(--blue)" title="Input 61k"></div><div style="width:27%;background:var(--c-teal,#5ac8be)" title="Cache read 26k"></div><div style="width:9.5%;background:var(--c-lavender,#b4a7e5)" title="Output 9k"></div></div>`
+ +`<div class="grid grid-cols-3 mt-2 text-[11px]">${[['Input','61k','var(--blue)'],['Cache read','26k','var(--c-teal,#5ac8be)'],['Output','9k','var(--c-lavender,#b4a7e5)']].map(([l,v,c])=>`<div><span class="inline-flex items-center gap-1" style="color:var(--dim)"><span class="w-2 h-2 rounded-full" style="background:${c}"></span>${l}</span><div class="tabular-nums font-medium">${v}</div></div>`).join('')}</div>`
+ +h4('Spend today')
+ +`<div class="space-y-2.5 text-[12px]">${[['This session',1.14],[p.n,2.31],['All projects',4.18]].map(([l,v])=>`<div><div class="flex mb-1"><span class="flex-1 truncate">${l}</span><span class="tabular-nums">$${v.toFixed(2)}</span></div>${bar(v,4.18,'var(--gray)')}</div>`).join('')}</div>`
+ +`<div class="mt-4 text-[11px]" style="color:var(--dim)">Costs are estimates from local transcripts. Nothing leaves this Mac.</div>`}
+// ---- Editor panes (id 'f:<path>'), open beside the agent terminal
+const isEd=id=>typeof id==='string'&&id.startsWith('f:');
+let ED={},edF=null,edMax=null;
+const SRC={'src/invoice/totals.ts':`import { Line, Invoice } from './types'
+import { roundHalfEven } from './round'
+import { taxFor } from './tax'
+
+export interface Totals {
+  net: number
+  tax: number
+  gross: number
+}
+
+/** Sum of a single line before tax. */
+export function lineTotal(l: Line): number {
+  return l.qty * l.price
+}
+
+export function totals(inv: Invoice): Totals {
+  const net = invoiceTotal(inv.lines)
+  const tax = roundHalfEven(taxFor(inv.country, net), 2)
+  return { net, tax, gross: roundHalfEven(net + tax, 2) }
+}
+
+export function applyDiscount(t: Totals, pct: number): Totals {
+  if (pct <= 0) return t
+  const f = 1 - pct / 100
+  return {
+    net: roundHalfEven(t.net * f, 2),
+    tax: roundHalfEven(t.tax * f, 2),
+    gross: roundHalfEven(t.gross * f, 2),
+  }
+}
+
+/**
+ * Invoice total in the invoice currency.
+ * Half-to-even so repeated sums never drift.
+ */
+// TODO: move currency handling to money.ts
+export function invoiceTotal(lines: Line[]) {
+  const sum = lines.reduce((a, l) => a + l.qty * l.price, 0)
+  if (sum === 0) return 0
+
+  return roundHalfEven(sum, 2)
+  // banker's rounding avoids 0.005 drift
+}`,
+'test/totals.spec.ts':`import { invoiceTotal } from '../src/invoice/totals'
+import { roundHalfEven } from '../src/invoice/round'
+
+const lines = [
+  { qty: 3, price: 3.335 },
+  { qty: 1, price: 0 },
+]
+
+// Regression: flaky on CI because of float drift
+
+describe('invoiceTotal', () => {
+  it('sums lines', () => {
+    expect(invoiceTotal(lines)).toBe(10.0)
+  })
+  it('rounds half to even', () => {
+    expect(roundHalfEven(2.675, 2)).toBe(2.68)
+  })
+})`,
+'package.json':`{
+  "name": "billing-api",
+  "version": "2.14.0",
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc -p ."
+  }
+}`,
+'README.md':`# billing-api
+
+Invoice totals, tax and discounts.`};
+SRC['src/invoice/round.ts']=DIFF[1].h.filter(l=>l[0]==='+').map(l=>l[3]).join('\n');
+const srcOf=p=>SRC[p]||`// ${p}\n\nexport {}`;
+const langOf=p=>/\.tsx?$/.test(p)?'TypeScript':/\.json$/.test(p)?'JSON':/\.md$/.test(p)?'Markdown':'Plain text';
+const escH=t=>t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+function hl(t){const re=/(\/\/.*$|^\s*\/\*\*.*$|^\s*\*.*$)|('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")|\b(import|from|export|function|const|return|if|interface|describe|it|expect|number)\b|\b(\d+(?:\.\d+)?)\b/g;let o='',i=0,m;
+ while((m=re.exec(t))){o+=escH(t.slice(i,m.index));const c=m[1]?'tc':m[2]?'ts':m[3]?'tk':'tn';o+=`<span class="${c}">${escH(m[0])}</span>`;i=re.lastIndex;if(!m[0].length)re.lastIndex++}return o+escH(t.slice(i))}
+function edDiffMap(p){const d=DIFF.find(x=>x.f===p);if(!d)return null;const add=new Set(),before={};let pend=[];
+ d.h.forEach(e=>{if(e[0]==='-'){pend.push(e[3]);return}if(e[0]===' '||e[0]==='+'){if(pend.length){before[e[2]]=pend;pend=[]}if(e[0]==='+')add.add(e[2])}});
+ return {add,before,a:d.h.filter(l=>l[0]==='+').length,r:d.h.filter(l=>l[0]==='-').length}}
+function edBody(id){const e=ED[id],p=e.p,D=edDiffMap(p),L=srcOf(p).split('\n');
+ const row=(n,txt,kind)=>`<div class="flex ${kind==='add'?'ed-add':kind==='del'?'ed-del':''}"><span class="ed-ln" contenteditable="false">${n}</span><span class="ed-mk" contenteditable="false">${kind==='add'?'+':kind==='del'?'−':''}</span><span class="flex-1 pr-4">${hl(txt)||'&#8203;'}</span></div>`;
+ let h='';L.forEach((t,k)=>{const n=k+1;if(D&&e.diff&&D.before[n])D.before[n].forEach(r=>h+=row('',r,'del'));h+=row(n,t,D&&D.add.has(n)?'add':'')});
+ return `<div class="edbody mono flex-1 overflow-auto py-2 text-[12.5px] leading-[1.6] outline-none whitespace-pre" style="background:var(--term)" ${e.diff?'':'contenteditable="true" spellcheck="false"'} oninput="edDirty('${id}')" aria-label="Editor ${p}">${h}</div>`}
+function edPane(id,i,multi){const e=ED[id],p=e.p,s=sById(e.sid),D=edDiffMap(p),name=p.split('/').pop(),foc=i===focusI;
+ return `<div class="h-7 shrink-0 flex items-center gap-1.5 pl-3 pr-1.5 text-[12px] border-b whitespace-nowrap overflow-hidden" style="border-color:var(--line);${foc?'box-shadow:inset 0 2px 0 var(--blue)':''}"><i data-lucide="${fIco(name)}" class="w-3.5 h-3.5 shrink-0" style="color:var(--dim)"></i><span class="font-medium shrink-0">${name}</span><span id="dirty-${id}" class="w-1.5 h-1.5 rounded-full shrink-0 ${e.dirty?'':'hidden'}" style="background:var(--txt)" title="Unsaved changes"></span><span class="truncate min-w-0 text-[11px]" style="color:var(--dim)" title="${pOf(e.sid).n}/${p}">${pOf(e.sid).n}/${p.split('/').slice(0,-1).join('/')}</span><span class="flex-1"></span>`
+ +(D?`<button class="h-5 px-1.5 rounded text-[11px] inline-flex items-center gap-1 ${e.diff?'':'hover:bg-black/5 dark:hover:bg-white/10'}" style="${e.diff?'background:var(--sel)':''}" onclick="event.stopPropagation();edToggleDiff('${id}')" title="Show what the agent removed" aria-pressed="${e.diff}"><i data-lucide="git-compare" class="w-3.5 h-3.5"></i>Diff</button>`:'')
+ +`<button class="ico !w-5 !h-5" onclick="event.stopPropagation();edToggleMax('${id}')" title="${edMax?'Restore':'Expand'} ⌥⌘↩" aria-label="${edMax?'Restore':'Expand'} editor"><i data-lucide="${edMax?'minimize-2':'maximize-2'}" class="w-3.5 h-3.5"></i></button><button class="ico !w-5 !h-5" onclick="event.stopPropagation();closePane(${i})" aria-label="Close editor" title="Close ⌘W">✕</button></div>`
+ +(D?`<div class="shrink-0 flex items-center gap-2 px-3 h-7 text-[11px] border-b whitespace-nowrap overflow-hidden" style="border-color:var(--line);color:var(--dim);background:color-mix(in srgb,var(--blue) 6%,transparent)">${G[s.st]}<span class="truncate">Changed by ${s.k} in “${s.title||s.k}”</span><span class="g tabular-nums">+${D.a}</span><span class="r tabular-nums">−${D.r}</span><span class="flex-1"></span><button class="b" onclick="event.stopPropagation();openDiff(${DIFF.findIndex(x=>x.f===p)})">Review ⌥⌘D</button></div>`:'')
+ +edBody(id)
+ +`<div class="h-6 shrink-0 flex items-center gap-3 px-3 text-[11px] border-t whitespace-nowrap overflow-hidden" style="border-color:var(--line);color:var(--dim)"><span>${langOf(p)}</span><span>Spaces: 2</span><span>UTF-8 · LF</span><span class="flex-1"></span><span id="state-${id}" class="truncate min-w-0">${e.diff?'Read-only while diff is shown':e.dirty?'Edited · ⌘S to save':'Saved'}</span></div>`}
+function openFile(p){const id='f:'+p;if(!ED[id])ED[id]={p,sid:cur,dirty:false,diff:false};edMax=null;
+ if(!panes.includes(id)){if(panes.length>=4){const j=panes.map(isEd).lastIndexOf(true);if(j<0){toast('Up to 4 panes side by side');return}panes[j]=id}else{const t=isEd(panes[focusI])?focusI:Math.max(0,panes.indexOf(cur));panes.splice(t+1,0,id)}}
+ edF=id;focusI=panes.indexOf(id);render();const pn=document.querySelector(`#panes .pane[data-id="${id}"]`),b=pn&&pn.querySelector('.edbody'),r=b&&b.querySelector('.ed-add');if(r)b.scrollTop+=r.getBoundingClientRect().top-b.getBoundingClientRect().top-b.clientHeight/3}
+function edDirty(id){if(ED[id].dirty)return;ED[id].dirty=true;document.getElementById('dirty-'+id)?.classList.remove('hidden');const s=document.getElementById('state-'+id);if(s)s.textContent='Edited · ⌘S to save'}
+function edSave(){const id=edF;if(!id)return false;const e=ED[id];e.dirty=false;document.getElementById('dirty-'+id)?.classList.add('hidden');const s=document.getElementById('state-'+id);if(s)s.textContent='Saved';toast('Saved '+e.p.split('/').pop());return true}
+function edToggleDiff(id){ED[id].diff=!ED[id].diff;edF=id;focusI=panes.indexOf(id);delete edKeep[id];render()}
+function edToggleMax(id){edMax=edMax?null:id;edF=id;focusI=panes.indexOf(id);render()}
+let edKeep={};
+function sessionPanel(){const S=sById(cur),p=pOf(cur),kind=S.t==='codex'?'codex':S.t==='open'?'open':S.t==='shell'?'shell':'claude';
+ const sec=(t,body,extra='')=>`<div class="py-3 border-t first:border-t-0 first:pt-0" style="border-color:var(--line)"><div class="flex items-center mb-2 text-[12px] font-medium">${t}<span class="ml-auto font-normal" style="color:var(--dim)">${extra}</span></div>${body}</div>`;
+ const row=(ic,txt,right='')=>`<div class="flex items-center gap-2.5 py-1 text-[13px] min-w-0"><i data-lucide="${ic}" class="w-4 h-4 shrink-0" style="color:var(--dim)"></i><span class="truncate flex-1">${txt}</span>${right}</div>`;
+ const stTxt={run:'In progress',perm:'Needs permission',fail:'Failed',done:'Done',idle:'Idle'}[S.st];
+ const head=`<div class="flex items-center gap-2.5 mb-4"><span class="tile" style="width:28px;height:28px;border-radius:7px;background:${SW[pstyle(p.n).c]}"><i data-lucide="${pstyle(p.n).i}"></i></span><div class="min-w-0 flex-1"><div class="font-semibold truncate">${S.k}${kind==='claude'?' <span class="font-normal text-[12px]" style="color:var(--dim)">2.1.309</span>':''}</div><div class="text-[12px] flex items-center gap-1.5" style="color:var(--dim)">${G[S.st]} ${stTxt}${S.st==='run'?' · '+fmt(S.el||0):''}${kind!=='shell'?' · Opus 5.5':''}</div></div></div>`;
+ const env=sec('Environment',row('laptop','This computer')+row('folder',`${p.n} <span style="color:var(--dim)">· ~/Repos</span>`)+(p.git===false?row('folder','No git'):row(S.wt?'folder-git-2':'git-branch',`<span class="mono text-[12px]">${S.b||'main'}</span>`,`<span class="text-[12px] tabular-nums" style="color:var(--dim)">${S.ahead?'↑'+S.ahead+' ':''}${S.dirty?'±'+S.dirty:''}</span>`))+(S.wt?`<div class="pl-[26px] text-[11px] mono truncate" style="color:var(--dim)" title="~/.lotse/worktrees/${p.n}/${(S.b||'').replace('lotse/','')}">worktree · ~/.lotse/worktrees/${p.n}/…</div>`:'')+row('radio',`Detected via <span style="color:var(--dim)">${{claude:'Hooks',codex:'OSC 7501',open:'Plugin',shell:'Process'}[kind]}</span>`));
+ const pct=kind==='shell'?null:38;
+ const ctx=pct===null?'':`<div class="py-3 border-t" style="border-color:var(--line)"><button onclick="ctxOpen=!ctxOpen;showPanel('session')" class="w-full flex items-center gap-2 text-[13px]"><span>Context</span><span class="text-[10px]" style="color:var(--dim)">${ctxOpen?'▾':'▸'}</span><span class="ml-auto tabular-nums text-[12px]" style="color:var(--dim)">${pct}%</span><span class="w-10 h-1.5 rounded-full overflow-hidden" style="background:var(--line)"><span class="block h-full rounded-full" style="width:${pct}%;background:var(--blue)"></span></span></button>${ctxOpen?`<div class="mt-2 grid grid-cols-[1fr_auto] gap-y-1 text-[12px]" style="color:var(--dim)"><span>Tokens in window</span><span class="tabular-nums">76k / 200k</span><span>Cache</span><span class="tabular-nums">62k read</span><span>Session cost</span><span class="tabular-nums">$1.14</span></div>`:''}</div>`;
+ const subs=S.sub.length?sec('Sub-agents',S.sub.map(([n,st])=>`<div class="flex items-center gap-2.5 py-1 text-[13px]">${G[st]}<span class="flex-1 truncate">${n}</span><span class="text-[12px] tabular-nums" style="color:var(--dim)">${st==='run'?'1m 12s':st==='perm'?'waiting':'48s'}</span></div>`).join(''),S.sub.length):'';
+ const dot={connected:'var(--green)','needs auth':'var(--orange)',failed:'var(--red)'};
+ const L=MCP[kind],shown=mcpMore?L:L.slice(0,3);
+ const mcp=kind==='shell'?'':sec('Connectors <span class="ml-1.5 text-[11px] font-normal" style="color:var(--dim)">MCP</span>',L.length?shown.map(([n,st,t])=>`<div class="flex items-center gap-2.5 py-1 text-[13px]" title="${n} · ${st}${t?' · '+t+' tools':''}"><span class="w-5 h-5 shrink-0 rounded-md grid place-items-center text-[11px] ring-1" style="--tw-ring-color:var(--line);background:var(--win);color:var(--dim)">${n[0]}</span><span class="flex-1 truncate">${n}</span>${st==='connected'?`<span class="text-[11px] tabular-nums" style="color:var(--dim)">${t} tools</span>`:`<span class="text-[11px]" style="color:${dot[st]}">${st==='needs auth'?'Sign in…':'Failed · Retry'}</span>`}<span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:${dot[st]}" aria-label="${st}"></span></div>`).join('')+(L.length>3?`<button onclick="mcpMore=!mcpMore;showPanel('session')" class="mt-1 text-[12px]" style="color:var(--dim)">${mcpMore?'Show less':'Show '+(L.length-3)+' more'}</button>`:''):`<div class="text-[12px]" style="color:var(--dim)">No MCP servers configured.</div>`,`<button onclick="toast('Opens ${{claude:'.mcp.json / ~/.claude.json',codex:'~/.codex/config.toml',open:'opencode.json'}[kind]}')" class="text-[11px] b">Manage</button>`);
+ const bg=kind==='claude'?sec('Background tasks',`<div class="flex items-center gap-2.5 py-1 text-[13px]"><i data-lucide="square-terminal" class="w-4 h-4 shrink-0" style="color:var(--dim)"></i><span class="flex-1 truncate mono text-[12px]">npm run dev</span><span class="text-[12px]" style="color:var(--dim)">12m</span><button class="w-4 h-4 rounded-sm" style="background:var(--dim)" aria-label="Stop task" title="Stop" onclick="toast('Stopped npm run dev')"></button></div>`,'1'):'';
+ return head+'<div>'+env+ctx+subs+mcp+bg+'</div>'}
+let icoP=null;
+function openIcon(n,el){icoP=n;const r=el.getBoundingClientRect(),box=document.getElementById('icoBox');box.style.left=Math.min(r.left,innerWidth-350)+'px';box.style.top=Math.min(r.bottom+6,innerHeight-460)+'px';document.getElementById('icoQ').value='';document.getElementById('icoPop').classList.remove('hidden');icoRender();document.getElementById('icoQ').focus()}
+function closeIcon(){document.getElementById('icoPop').classList.add('hidden');icoP=null}
+function setPS(k,v){const st={...pstyle(icoP)};st[k]=v;PS[icoP]=st;savePS();render();icoRender()}
+function icoRender(){if(!icoP)return;const st=pstyle(icoP);
+ document.getElementById('icoSw').innerHTML=Object.entries(SW).map(([k,v])=>`<button onclick="setPS('c','${k}')" class="w-7 h-7 rounded-full grid place-items-center text-white text-[13px] ring-offset-2" style="background:${v};${k===st.c?'box-shadow:0 0 0 2px var(--win),0 0 0 4px '+v:''}" aria-label="${k}" aria-pressed="${k===st.c}">${k===st.c?'✓':''}</button>`).join('');
+ const q=document.getElementById('icoQ').value.toLowerCase().trim();
+ document.getElementById('icoGrid').innerHTML=Object.entries(ICONS).map(([cat,L])=>{const m=L.filter(i=>!q||i.includes(q)||cat.toLowerCase().includes(q));return m.length?`<div class="px-4 pt-3 pb-1 text-[11px] font-semibold uppercase tracking-wide" style="color:var(--dim)">${cat}</div><div class="grid grid-cols-8 gap-1 px-3">${m.map(i=>`<button onclick="setPS('i','${i}')" class="pic h-9 rounded-lg grid place-items-center hover:bg-black/5 dark:hover:bg-white/10" style="${i===st.i?'background:var(--sel);color:var(--blue)':''}" aria-label="${i}" title="${i}"><i data-lucide="${i}"></i></button>`).join('')}</div>`:''}).join('')||'<div class="px-4 py-6 text-center text-[13px]" style="color:var(--dim)">No symbols</div>';
+ window.lucide&&lucide.createIcons()}
+document.getElementById('icoQ').addEventListener('input',icoRender);
+addEventListener('keydown',e=>{if(e.key==='Escape')closeIcon()});
+function hideNote(){document.getElementById('note').style.transform='translateX(120%)'}
+setTimeout(()=>{if(!dnd&&notifies('praxis-web','perm'))document.getElementById('note').style.transform='translateX(0)'},2500);
+render();
+</script>
+</body>
+</html>

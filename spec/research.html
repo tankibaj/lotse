@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lotse Research</title>
+<script src="https://cdn.tailwindcss.com/3.4.16"></script>
+<script>
+  tailwind.config = { darkMode: 'class' };
+  (function () {
+    let pref = 'auto';
+    try { pref = localStorage.getItem('lotse-research-theme') || 'auto'; } catch (e) {}
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    window.__applyTheme = function (p) {
+      pref = p;
+      try { localStorage.setItem('lotse-research-theme', p); } catch (e) {}
+      document.documentElement.classList.toggle('dark', p === 'dark' || (p === 'auto' && mq.matches));
+      document.querySelectorAll('[data-theme-btn]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.themeBtn === p)));
+    };
+    mq.addEventListener('change', () => pref === 'auto' && window.__applyTheme('auto'));
+    window.__applyTheme(pref);
+    document.addEventListener('DOMContentLoaded', () => window.__applyTheme(pref));
+  })();
+</script>
+<style>
+  :root { --blue:#007AFF; --orange:#FF9500; --red:#FF3B30; --green:#34C759; }
+  .dark { --blue:#0A84FF; --orange:#FF9F0A; --red:#FF453A; --green:#30D158; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  code, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  [aria-pressed="true"] { background: rgb(255 255 255 / .9); box-shadow: 0 1px 2px rgb(0 0 0 / .15); }
+  .dark [aria-pressed="true"] { background: rgb(255 255 255 / .15); }
+  th, td { vertical-align: top; }
+</style>
+</head>
+<body class="bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 antialiased">
+<header class="sticky top-0 z-10 border-b border-zinc-200 dark:border-zinc-800 bg-zinc-50/80 dark:bg-zinc-950/80 backdrop-blur">
+  <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+    <span class="font-semibold">Lotse · research</span>
+    <nav class="hidden md:flex gap-4 text-sm text-zinc-500 dark:text-zinc-400 ml-4">
+      <a href="#verdict" class="hover:text-zinc-900 dark:hover:text-white">Verdict</a>
+      <a href="#compare" class="hover:text-zinc-900 dark:hover:text-white">Compare</a>
+      <a href="#security" class="hover:text-zinc-900 dark:hover:text-white">Security</a>
+      <a href="#take" class="hover:text-zinc-900 dark:hover:text-white">Take / skip</a>
+      <a href="#sidebar" class="hover:text-zinc-900 dark:hover:text-white">Sidebar</a>
+      <a href="#panels" class="hover:text-zinc-900 dark:hover:text-white">Panels</a>
+      <a href="#scope" class="hover:text-zinc-900 dark:hover:text-white">Scope</a>
+      <a href="#lang" class="hover:text-zinc-900 dark:hover:text-white">Language</a>
+      <a href="mock.html" class="hover:text-zinc-900 dark:hover:text-white">Mock →</a>
+    </nav>
+    <div class="ml-auto inline-flex rounded-lg bg-zinc-200/70 dark:bg-zinc-800 p-0.5 text-xs" role="group" aria-label="Theme">
+      <button data-theme-btn="light" onclick="__applyTheme('light')" class="px-2.5 py-1 rounded-md">Light</button>
+      <button data-theme-btn="dark" onclick="__applyTheme('dark')" class="px-2.5 py-1 rounded-md">Dark</button>
+      <button data-theme-btn="auto" onclick="__applyTheme('auto')" class="px-2.5 py-1 rounded-md">Auto</button>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-4 py-10 space-y-14 leading-relaxed">
+
+<section id="verdict">
+  <p class="text-sm text-zinc-500 dark:text-zinc-400">Research · 1 Nov 2026 · source: local clones of stablyai/orca (v1.4.214) and herdrdev/herdr (v0.9.5)</p>
+  <h1 class="text-3xl font-bold tracking-tight mt-1">Build a Rust daemon with Orca's detection model and herdr's discipline</h1>
+  <p class="mt-3 text-sm rounded-lg border-l-4 border-[color:var(--blue)] bg-white dark:bg-zinc-900 px-3 py-2"><b>Design rule: terminal first.</b> Lotse is a terminal app like iTerm2, with projects and agent awareness like Orca. The main view is the full-size agent CLI (Claude Code, Codex or OpenCode). Changes, files, usage and session details are right-panel views that stay hidden until you open them from icons, as in the Claude Code desktop app: Session ⇧⌘I, Changes ⇧⌘D, Files ⇧⌘F, Transcript ⇧⌘T, Usage ⇧⌘U. Full diff (⌥⌘D) and Settings (⌘,) take over the whole window, with Esc to go back. The reference mock is <a class="underline" href="mock.html">mocks-v3/00-quick-main.html</a>.</p>
+  <div class="mt-5 grid md:grid-cols-3 gap-3 text-sm">
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-900">
+      <div class="font-semibold">From Orca</div>
+      <p class="mt-1 text-zinc-600 dark:text-zinc-300">Hook-first status detection, a sub-agent roster, the notification model, the UI layout and the pairing crypto. MIT licensed.</p>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-900">
+      <div class="font-semibold">From herdr</div>
+      <p class="mt-1 text-zinc-600 dark:text-zinc-300">A Rust server/client split, 0600 Unix sockets, TOML detection manifests, process-group identity and the test discipline. Apache-2.0 licensed.</p>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-900">
+      <div class="font-semibold">Stack (approved)</div>
+      <p class="mt-1 text-zinc-600 dark:text-zinc-300">A Rust core daemon with a Tauri 2 shell (React, Tailwind, xterm.js). The same web UI later serves the LAN mobile client.</p>
+    </div>
+  </div>
+</section>
+
+<section id="compare">
+  <h2 class="text-xl font-semibold">Capabilities and how they work</h2>
+  <div class="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+  <table class="w-full text-sm">
+    <thead class="bg-zinc-100 dark:bg-zinc-900 text-left">
+      <tr><th class="p-3 w-40"></th><th class="p-3">Orca</th><th class="p-3">herdr</th></tr>
+    </thead>
+    <tbody class="divide-y divide-zinc-200 dark:divide-zinc-800">
+      <tr><td class="p-3 font-medium">What it is</td><td class="p-3">An Electron IDE for running parallel agents across git worktrees. It bundles an editor, a browser, diffs and a mobile app.</td><td class="p-3">A TUI terminal multiplexer for agents that runs inside your existing terminal, like tmux with agent awareness.</td></tr>
+      <tr><td class="p-3 font-medium">Stack</td><td class="p-3">Electron, React 19, Tailwind 4, zustand, xterm.js 6, node-pty. Expo mobile app. Hono cloud services.</td><td class="p-3">Rust: ratatui, crossterm, tokio, portable-pty, and libghostty-vt (Zig) for terminal emulation.</td></tr>
+      <tr><td class="p-3 font-medium">Process model</td><td class="p-3">A PTY daemon process keeps sessions alive across app restarts. The renderer talks to main over IPC (~870 handlers). A WebSocket RPC on :6768 serves mobile and the CLI.</td><td class="p-3">A headless server renders to an in-memory buffer. Clients attach over <code>herdr-client.sock</code> (binary) and <code>herdr.sock</code> (JSON API). Detach and reattach are supported.</td></tr>
+      <tr><td class="p-3 font-medium">Agent identity</td><td class="p-3">Per-agent hook installers (~35 agents). Process presence and descendant checks back them up.</td><td class="p-3">The foreground process group of each pane's PTY, including node-wrapped binaries.</td></tr>
+      <tr><td class="p-3 font-medium">Status detection</td><td class="p-3"><b>Hooks first.</b> Claude gets 12 events (PermissionRequest, Stop, StopFailure, SubagentStart/Stop…) POSTed to a loopback endpoint guarded by a token. The <b>OSC 7501</b> program-status protocol is the fallback, then terminal-title glyphs.</td><td class="p-3"><b>Screen scraping first.</b> TOML manifests run regex rules over regions (last N lines, OSC title). PTY activity is debounced. Full lifecycle hooks exist only for opencode, pi, kimi and a few others; Claude's hook is SessionStart only.</td></tr>
+      <tr><td class="p-3 font-medium">States</td><td class="p-3">working, blocked, waiting and done, plus a turn outcome (success, failure, cancelled, interrupted).</td><td class="p-3">Idle, Working, Blocked and Unknown. There is no separate failed state.</td></tr>
+      <tr><td class="p-3 font-medium">Sub-agents</td><td class="p-3"><b>Yes.</b> A roster from SubagentStart/Stop shows child rows. Codex children come from polling the transcript.</td><td class="p-3">Partial. "Waiting for N background agents" counts as working, with no per-child rows.</td></tr>
+      <tr><td class="p-3 font-medium">Notifications</td><td class="p-3">Per event: complete, needs input, bell. Options include suppress-when-focused, a 1.5 s quiet window, a burst cooldown, 11 sounds, per-source mutes and phone push.</td><td class="p-3">Delivery is off, in-app toast, terminal OSC 9/99, or system (terminal-notifier). It triggers on blocked and on finished in the background, and is off by default.</td></tr>
+      <tr><td class="p-3 font-medium">Sidebar</td><td class="p-3">Resizable from 220 to 500 px, toggleable, and persisted. Groups by status, repo or PR, and supports project groups.</td><td class="p-3">18 to 36 columns, with a keyboard resize mode and <code>prefix+b</code> to toggle. Sidebar rows are configured with tokens.</td></tr>
+      <tr><td class="p-3 font-medium">Remote / mobile</td><td class="p-3">QR pairing: <code>ws://lan:6768</code>, a device token and a pinned X25519 key, with E2EE inside. An optional cloud relay requires sign-in.</td><td class="p-3">SSH only, by tunnelling the socket API. There are no TCP listeners and no mobile client.</td></tr>
+      <tr><td class="p-3 font-medium">Extras</td><td class="p-3">Monaco editor, a browser with Design Mode, diff annotations, GitHub, Linear and Jira, computer use, an orchestration CLI, automations, account switching.</td><td class="p-3">An agent-to-agent CLI and API (spawn, prompt, wait-until-blocked), plugins, session restore and agent resume, Kitty graphics, Windows support.</td></tr>
+      <tr><td class="p-3 font-medium">Maturity</td><td class="p-3">112k stars, <b>4,191 open issues</b> (1,228 bugs). Very large surface, fast churn.</td><td class="p-3">47k stars, 378 open issues (126 bugs). 4,200+ tests, CI on three OSes.</td></tr>
+      <tr><td class="p-3 font-medium">Use cases</td><td class="p-3">Fan one prompt out to N agents in worktrees and merge the best result. Review diffs visually. Approve from your phone.</td><td class="p-3">Keep many agents in long-lived panes, over SSH included. Spot which one is blocked. Let agents orchestrate each other.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="security">
+  <h2 class="text-xl font-semibold">Security and telemetry: what the code shows</h2>
+  <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">Your claim is <b>partially confirmed</b>. Orca sends telemetry to the US by default, but it does not ship logs.</p>
+  <ul class="mt-3 space-y-2 text-sm list-disc pl-5">
+    <li><b>PostHog is hard-coded to the US cloud</b> at <code>us.i.posthog.com</code> (<code>src/main/telemetry/posthog-transport.ts:82</code>). Fresh installs default to <code>optedIn: true</code> (<code>loaded-cohort-migrations.ts:110-115</code>), and no first-run consent step exists in the onboarding code. For existing users, dismissing the banner counts as consent.</li>
+    <li><b>What it sends:</b> usage events limited by a zod schema (104 events). Each carries the app version, OS, a random install ID and agent token counts. The code excludes prompts, paths and terminal output. Crash dumps are never uploaded, and diagnostic logs are sent only after you preview them and click Send.</li>
+    <li><b>Opt-out works</b> and is enforced in main. You can turn it off in Settings › Privacy or with <code>DO_NOT_TRACK</code> or <code>ORCA_TELEMETRY_DISABLED</code>. The writer key is injected only into official CI builds, so <b>a build from source sends nothing.</b></li>
+    <li><b>Other Orca risks:</b>
+      <ul class="list-[circle] pl-5 mt-1 space-y-1">
+        <li>The WebSocket on :6768 widens to <code>0.0.0.0</code> over plain <code>ws://</code> once a network device has paired. It is E2EE inside.</li>
+        <li>The renderer CSP sets only <code>img-src</code>.</li>
+        <li>The IPC surface is very large (~980 preload calls), and frames are rarely checked for the sender.</li>
+        <li>Computer use has no per-action approval.</li>
+        <li>Secrets fall back to plaintext files under <code>~/.orca</code> when safeStorage is unavailable.</li>
+        <li>It polls <code>onorca.dev</code> for nudges and changelogs, with no setting to turn that off (likely; I found none).</li>
+      </ul>
+    </li>
+    <li><b>herdr:</b> no telemetry. Its only outbound calls are an update check and a detection-manifest fetch from <code>herdr.dev</code>, both on by default and both can be turned off with <code>[update] version_check/manifest_check = false</code>.
+      <ul class="list-[circle] pl-5 mt-1">
+        <li>Fetching remote regex manifests is a supply-chain trust point.</li>
+        <li>The self-updater shells out to <code>curl</code>; signature checking was not audited.</li>
+      </ul>
+    </li>
+  </ul>
+</section>
+
+<section id="take">
+  <h2 class="text-xl font-semibold">What to take, what to skip</h2>
+  <div class="mt-4 grid md:grid-cols-2 gap-4 text-sm">
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold text-[color:var(--green)]">Take</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Hook-first detection</b> (Orca). Claude Code hooks provide PermissionRequest, Stop, StopFailure, SubagentStart/Stop and PostToolUseFailure, which give exact states including <i>failed</i>. Hooks POST to a token-guarded endpoint (use a Unix socket rather than TCP).</li>
+        <li><b>OSC 7501 compatibility</b> (Orca). Agents that emit it, including Codex and Claude, work without installers.</li>
+        <li><b>Screen-scrape fallback with TOML manifests</b> (herdr). Bundle them and let users override them locally, with no remote fetch.</li>
+        <li><b>Process-group identity</b> (herdr) to find which agent runs in a pane.</li>
+        <li><b>Sub-agent roster</b> (Orca). Show child rows, and let child work hold the lead agent "in progress".</li>
+        <li><b>Turn-outcome model</b> (Orca), which gives you <i>failed</i> as distinct from <i>done</i>.</li>
+        <li><b>Notification rules</b> (Orca and herdr): per event type, suppress for the focused pane, a 1.5 s quiet window, burst cooldown, sound per event.</li>
+        <li><b>Daemon plus client</b> (herdr and Orca). PTYs survive UI restarts, use 0600 sockets, and session writes are atomic.</li>
+        <li><b>Hot-reload TOML config</b> and <code>config check</code> (herdr).</li>
+        <li><b>The pairing design for later</b> (Orca): a QR carrying a pinned X25519 key, a device key, a per-device grant (read vs approve), and revocation.</li>
+        <li><b>UI layout</b> (Orca): workspace cards with agent rows, a resizable sidebar, and grouping by status.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold text-[color:var(--red)]">Skip</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Electron</b>: ~200 MB of RAM per window, a Chromium attack surface and the IPC sprawl.</li>
+        <li><b>Telemetry of any kind.</b> No outbound network by default; make it a selling point.</li>
+        <li><b>Cloud relay and sign-in.</b> LAN only; use Tailscale or WireGuard to reach it from elsewhere.</li>
+        <li><b>Jira and Linear integrations, automations, account switching</b>: scope creep. The browser, computer use and a full editor move to post-MVP, and only a light editor stays in the MVP.</li>
+        <li><b>Remote manifest and auto-update fetches by default</b> (herdr). Offer opt-in Sparkle with EdDSA signatures instead.</li>
+        <li><b>Plain <code>ws://</code> on 0.0.0.0</b> that widens automatically (Orca). Bind only to an explicit interface the user picked, use TLS with a pinned certificate, and keep it off by default.</li>
+        <li><b>Plaintext secret fallback.</b> Keychain only.</li>
+        <li><b>TUI and tmux prefix model</b> (herdr). You want a GUI; keyboard shortcuts should follow macOS conventions.</li>
+        <li><b>Supporting 24 to 35 agents</b> at the start. Do Claude Code, Codex and OpenCode well, and treat the rest as generic.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="sidebar">
+  <h2 class="text-xl font-semibold">Sidebar design rules</h2>
+  <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Reference: <a class="underline" href="mock.html">mocks-v3/00-quick-main.html</a>. Calm by default; colour and detail appear only where something needs you.</p>
+  <div class="mt-4 grid md:grid-cols-2 gap-4 text-sm">
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Layout and sizing</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Resizable 200–420 px</b>, default 260, width persisted. Hide and show with ⌃⌘S. Dragging captures the pointer and blocks text selection.</li>
+        <li><b>Scrolls vertically, never horizontally.</b> Search and the Projects header stay fixed; only the project list scrolls.</li>
+        <li><b>Long text truncates with "…"</b> (project, title, branch, sub-agent) and shows the full value on hover. No content may push the sidebar wider or stop a resize.</li>
+        <li><b>Project row:</b> coloured folder tile (user-picked colour and SF Symbol), name, no-git and muted-notification badges. The disclosure chevron appears only on hover or focus (Finder style).</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Status</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>One icon set, 14 px</b> (12 px for sub-agents), shape plus colour so it reads without colour: spinning ring <span class="text-[color:var(--blue)]">in progress</span>, filled triangle <span class="text-[color:var(--orange)]">needs permission</span>, filled ✕ circle <span class="text-[color:var(--red)]">failed</span>, filled ✓ circle <span class="text-[color:var(--green)]">done</span>, outline circle idle. SF Symbols in the native build.</li>
+        <li><b>Roll-up only when collapsed.</b> An expanded project shows no status (its sessions do). Collapsed: needs-you counts first (▲2, ✕1), else the top state. Idle shows nothing.</li>
+        <li><b>Project colours never use status hues</b> (no red, orange, green or system blue lookalikes in the default palette).</li>
+        <li><b>Reduce Motion</b> stops the spinner.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Session card</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Line 1:</b> status, <b>task title</b> (from the first prompt or the agent's summary, editable), unread dot, time. Never repeat the agent name as the title.</li>
+        <li><b>Line 2 (dim, 11 px):</b> agent · worktree or branch icon · branch (no <code>lotse/</code> prefix; full name in tooltip) · ↑ahead · ±dirty. Non-git projects show the agent only.</li>
+        <li><b>Time is coarse</b> in the sidebar (&lt;1m, 4m, 1h 5m) so it doesn't tick every second; seconds live in the Session panel.</li>
+        <li><b>Stable under the pointer:</b> the sidebar updates only when its visible text changes, and defers updates while the pointer or keyboard focus is in it, so hover states and buttons never flicker. Status changes patch rows in place in the real build.</li>
+        <li><b>Sub-agents fold away:</b> listed only for the selected session or when one needs you; otherwise one line, "3 sub-agents · 1 running".</li>
+        <li><b>Permission actions always visible:</b> Allow (blue, primary) / Always / Deny sit under the title whenever a session needs permission. No hover reveal: it's the moment you need them.</li>
+        <li><b>Failure action in place:</b> on hover or focus, the time swaps for a ↻ Retry button in the same row, so the card height never changes. Clicking the card opens the session and its log.</li>
+        <li><b>No layout shift:</b> hover and focus may change colour or swap content inside a row, never add rows or change card height.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Interaction</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Selection is a soft tint</b>, no border or outline. Keyboard focus shows a blue ring.</li>
+        <li><b>Keyboard:</b> ↑/↓ moves between sessions, Enter opens, ⌘J jumps to the next one that needs you.</li>
+        <li><b>"▲ n need you" filter</b> (footer) shows only sessions that need attention, with a Show all chip.</li>
+        <li><b>Right-click:</b> project menu (New session, Notifications: global / custom / mute, Change icon and colour, Reveal in Finder, Copy path, Rename, Remove) and session menu (Open, Split right, Show transcript, Show changes, Stop).</li>
+        <li><b>Drag:</b> a session onto the terminal to split; a folder onto the sidebar to add a project. ⌥-click splits.</li>
+        <li><b>Empty project:</b> "No sessions · New session" instead of a blank row.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="panels">
+  <h2 class="text-xl font-semibold">Right panel design rules</h2>
+  <p class="mt-1 text-sm text-zinc-500 dark:text-zinc-400">Hidden by default, 340 px, opened from the toolbar icons. They support the terminal; they never replace it. Reference: <a class="underline" href="mock.html">mocks-v3/00-quick-main.html</a>.</p>
+  <div class="mt-4 grid md:grid-cols-2 gap-4 text-sm">
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Shared anatomy</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Header:</b> title, a dim one-line context (agent · model · start time, or the worktree path), and at most one control on the right (toggle or Export).</li>
+        <li><b>Search or filter field</b> under the header with its shortcut shown (⌘P files, ⌘F transcript). Filters keep typing focus while results update.</li>
+        <li><b>Segmented controls</b> for views and filters, each with a count (Changed 3, Tools 4, Approvals 1).</li>
+        <li><b>Empty states</b> say what happened ("No files match", "No matches") instead of showing a blank panel.</li>
+        <li><b>Same rules as the sidebar:</b> status icons and colours, truncation with tooltips, and no layout shift on hover.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Files (⇧⌘F)</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li>Tree of the session's worktree (or main checkout), not the whole disk. Finder-style chevrons, folder and file-type icons, UI font, 26 px rows.</li>
+        <li><b>All / Changed</b> toggle. Changed files show +added −removed and an A / M / D badge; a collapsed folder with changes shows a dot.</li>
+        <li>Click any file to open it in an <b>editor pane beside the terminal</b>. Hover swaps the counts for Open in external editor and Copy path.</li>
+        <li>Footer: file count, changed count, and Review changes (full diff).</li>
+        <li>Non-git projects show the tree without the toggle or badges.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Transcript (⇧⌘T)</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li>Your prompts as right-aligned bubbles; agent replies as plain text with name and time.</li>
+        <li>Consecutive tool calls grouped into one compact card: icon, tool (sub-agent tasks show as Agent), target in mono, result, status icon. Exact time on hover.</li>
+        <li>Approvals as an orange card: what was allowed or denied, the command, who decided and from where (notification, phone, sidebar).</li>
+        <li>Filters: All / Messages / Tools / Approvals. Export (Markdown, JSON Lines, terminal text), saved locally with secrets redacted.</li>
+        <li>While the agent runs, a bar at the bottom shows what is working and a Latest ↓ jump.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <h3 class="font-semibold">Usage &amp; time (⇧⌘U)</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Session time first:</b> three tiles, Session (since start), Working (agent active) and Waiting on you (orange), with a split bar under them. This is where session time lives; sidebar cards show coarse time with a tooltip pointing here.</li>
+        <li><b>Timeline:</b> one lane per agent and sub-agent on a shared time axis (start → now). Segments use status colours (working blue, waiting orange, done green, failed red); each lane shows its duration and cost.</li>
+        <li><b>Tokens:</b> one stacked bar split into input, cache read and output, with values.</li>
+        <li><b>Spend today:</b> session, project and all projects, as comparison bars.</li>
+        <li>Costs are local estimates from transcripts and the panel says so. Nothing leaves the Mac.</li>
+      </ul>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 md:col-span-2">
+      <h3 class="font-semibold">Editor pane</h3>
+      <ul class="mt-2 space-y-1.5 list-disc pl-5">
+        <li><b>Opens as a split pane right of the agent terminal</b>, from the Files panel or a file path. It shares the split system: resizable divider, ⌘[ / ⌘] focus, ⌘W close, 4 panes max (a new file replaces the last editor when full). The terminal is never replaced.</li>
+        <li><b>Header:</b> file icon, name, unsaved dot, project/path (so it stays clear next to another project's terminal), Diff toggle for agent-changed files, Expand (⌥⌘↩, Esc restores) and Close.</li>
+        <li><b>Agent change bar</b> for changed files: who changed it, in which session, +/− counts, and Review (⌥⌘D, full diff). Added lines are tinted green with a + gutter mark; Diff also shows removed lines in red (read-only while shown).</li>
+        <li><b>Editing:</b> line numbers, syntax colours from the terminal theme and font, ⌘S saves, edits survive redraws. Opens scrolled to the first agent change.</li>
+        <li><b>Status bar:</b> language, indentation, encoding and line endings, and Saved / Edited state.</li>
+        <li>Built on CodeMirror 6; heavier work (search across files, refactors) stays in your own editor via Open in external editor.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="scope">
+  <h2 class="text-xl font-semibold">Scope: three releases</h2>
+  <p class="mt-2 text-sm text-zinc-600 dark:text-zinc-300">The naming follows common practice. <b>Alpha</b> is the pilot MVP: the smallest working foundation, dogfooded by you. <b>Beta</b> is the minimum lovable product, which makes daily use fast and pleasant. The <b>v1.x roadmap</b> covers everything after that. Each release moves on only when its exit criteria are met.</p>
+  <div class="mt-4 grid lg:grid-cols-3 gap-4 text-sm">
+    <div class="rounded-xl border-2 border-[color:var(--blue)] bg-white dark:bg-zinc-900 p-4">
+      <div class="text-xs font-semibold uppercase tracking-wide text-[color:var(--blue)]">Release 1 · Alpha</div>
+      <h3 class="font-semibold text-base">Pilot MVP</h3>
+      <p class="text-zinc-500 dark:text-zinc-400 mt-1">Goal: build it quickly, use it every day, and learn from it. Only the essentials. macOS on Apple Silicon only.</p>
+      <ol class="mt-3 space-y-1.5 list-decimal pl-5">
+        <li><b>Foundation.</b> The Tauri 2 app talks to the <code>lotsed</code> daemon over a 0600 Unix socket. The daemon owns the PTYs, so sessions survive restarting the app.</li>
+        <li><b>Add a project</b> dialog (opened with "+" or ⇧⌘O). Projects persist across restarts and can be grouped into workspaces.
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li><b>Browse folder:</b> the native macOS folder picker. It takes a single project, a git repo, or a folder holding several repos, in which case Lotse offers to add each one.</li>
+            <li><b>Clone from URL:</b> an HTTPS or SSH URL and a destination folder, cloned with your own <code>git</code> and credentials.</li>
+            <li><b>Create new project:</b> a name and location, with an optional <code>git init</code>.</li>
+            <li>Or drag a folder from Finder onto the sidebar.</li>
+          </ul>
+          After adding, the New Session sheet opens with that project selected.
+        </li>
+        <li><b>Run an agent session.</b> Open a terminal tab in a project with <b>Claude Code CLI</b>, <b>Codex CLI</b>, <b>OpenCode CLI</b> or a plain shell. Uses xterm.js with WebGL.</li>
+        <li><b>Sidebar.</b> Workspace › Project › Agent › Sub-agent. Show or hide it (⌃⌘S), resize it from 200 to 420 px, and the width persists.</li>
+        <li><b>Status detection.</b>
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>Claude Code: hooks, covering sub-agents, PermissionRequest and StopFailure.</li>
+            <li>Codex: OSC 7501 plus a screen fallback.</li>
+            <li>OpenCode: a plugin.</li>
+          </ul>
+        </li>
+        <li><b>Status display.</b> In progress, needs permission, failed, done, idle and unknown, each with a colour and a glyph. The most urgent state rolls up to collapsed projects and the workspace, and the Dock badge counts agents that need you. Session cards lead with a <b>task title</b> (from the first prompt, editable) rather than the agent name, and sub-agents fold into a summary line unless selected or blocked.</li>
+        <li><b>Basic macOS notifications.</b> One global on/off toggle per event: needs permission, failed, done.</li>
+        <li><b>Appearance.</b> Light, Dark or Auto. Interface font and terminal font each have their own family and size settings. ⌘+ / ⌘− change the terminal font size.</li>
+        <li><b>Launch commands you can override</b> in Settings › Agents (⌘,).
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>Terminal defaults to <code>$SHELL -l</code>, Claude Code to <code>claude</code>, Codex to <code>codex</code>, OpenCode to <code>opencode</code>.</li>
+            <li>You can add flags or a wrapper, and Reset puts the default back.</li>
+            <li>Settings shows the detected version or "not found on PATH".</li>
+            <li>The new-session sheet shows the command it will run.</li>
+          </ul>
+        </li>
+        <li><b>Project colour and icon</b>, picked like in Apple Shortcuts.
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>15 colour swatches and a searchable symbol grid, opened by clicking the project's icon.</li>
+            <li>Saved per project.</li>
+            <li>The default is a colour derived from the project name that avoids the status colours.</li>
+            <li>The real app renders <b>SF Symbols</b> through a native Swift helper (<code>NSImage(systemSymbolName:)</code>). Apple's license allows SF Symbols only in apps for Apple platforms, which this is, but check the terms before shipping exported SVGs. The mock uses Lucide as a stand-in.</li>
+          </ul>
+        </li>
+        <li><b>New session sheet</b> (⌘T or the tab bar's "+"):
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>You pick project, then Terminal (the default), Claude Code, Codex or OpenCode.</li>
+            <li>An isolated git worktree is optional and off by default; the branch field appears only when you tick it.</li>
+            <li>The first-prompt field appears only for agents.</li>
+            <li>The sheet shows the command it will run.</li>
+          </ul>
+        </li>
+        <li><b>Git at a glance.</b>
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li><b>Session cards:</b> a worktree or branch icon, the branch name, ↑ commits ahead and ± uncommitted changes.</li>
+            <li><b>Status bar:</b> the same for the focused session, with a "worktree" tag.</li>
+            <li><b>Non-git folders:</b> a crossed-out branch icon and "No git", in both the sidebar and the status bar.</li>
+          </ul>
+        </li>
+        <li><b>Project right-click menu:</b> New Session, Notifications ›, Change Icon &amp; Color, Reveal in Finder, Copy Path, Rename, Remove from Lotse.</li>
+        <li><b>Session right-click menu:</b> Open, Open in Split Right, Show Transcript, Show Changes, Stop Session.</li>
+        <li><b>Status bar.</b>
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>"▲ N need you", which filters the sidebar when clicked.</li>
+            <li>Git info for the focused session.</li>
+            <li>Daemon status and session count.</li>
+            <li>A bell to pause notifications.</li>
+            <li>LAN state.</li>
+            <li>Today's tokens and cost.</li>
+          </ul>
+        </li>
+        <li><b>Settings as a full page</b> (⌘, or the gear next to the sidebar toggle).
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>Sections: Agents (launch commands), Notifications, Appearance (theme, interface font, terminal font), Remote, Privacy, Shortcuts.</li>
+            <li>The theme switch lives here, not in the main window.</li>
+          </ul>
+        </li>
+        <li><b>Speed basics.</b> All of this is keyboard-first and kept out of sight until needed.
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>⌘K jumps to any session or command.</li>
+            <li>⌘J goes to the next session that needs you.</li>
+            <li>⌘1–9 switch tabs, ⌘T opens the new session sheet, and ⌘/ lists the shortcuts.</li>
+            <li>Clicking "▲ N need you" filters the sidebar to only those sessions.</li>
+            <li>An unread dot marks sessions that finished in the background, and running sessions show a coarse elapsed time in minutes (seconds live in Usage &amp; time).</li>
+            <li>Failed sessions swap their time for Retry on hover, in the same row.</li>
+            <li>A bell pauses notifications (⌥⌘N).</li>
+          </ul>
+        </li>
+        <li><b>Security baseline.</b> Zero telemetry, no network ports, hook endpoints guarded by a token, hooks that can be uninstalled, keychain only for secrets.</li>
+      </ol>
+      <div class="mt-3 rounded-lg bg-zinc-100 dark:bg-zinc-800 p-3 text-xs">
+        <b>Exit criteria:</b>
+        <ul class="list-disc pl-4 mt-1 space-y-1">
+          <li>You use it as your daily driver for 2 weeks, across 3 or more projects and all 3 agents.</li>
+          <li>Status matches reality at least 95% of the time.</li>
+          <li>No session is lost when the app restarts.</li>
+          <li>Feedback is logged as issues.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <div class="text-xs font-semibold uppercase tracking-wide text-[color:var(--orange)]">Release 2 · Beta</div>
+      <h3 class="font-semibold text-base">MLP: minimum lovable product</h3>
+      <p class="text-zinc-500 dark:text-zinc-400 mt-1">Goal: make the daily workflow effective and productive. Prioritise from the Alpha feedback.</p>
+      <ol class="mt-3 space-y-1.5 list-decimal pl-5">
+        <li><b>Approve or deny from a notification</b>, using macOS alert-style notifications with <b>Allow / Deny</b> stacked on the right; "Always allow" sits in the notification's Options menu. You can also approve inline: the session card shows Allow / Always / Deny whenever it needs permission (no hover needed), or use the "need you" filter. This uses <code>PermissionRequest</code> returning <code>decision.behavior</code>; command hooks wait up to 600 s by default. It may need a Swift notification helper.</li>
+        <li><b>Approve from the phone.</b> A minimal LAN API that is off by default and bound to an interface you choose. Pair with a QR code and a pinned key. Each device gets a view or approve grant. The phone UI is a PWA showing the attention list.</li>
+        <li><b>A git worktree per agent.</b> The <b>Changes panel</b> shows:
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>a file count and the total +/−;</li>
+            <li>the branch, with a clickable PR pill;</li>
+            <li>uncommitted files with a status badge, +/− counts and a small change bar (clicking one opens the full diff for that file);</li>
+            <li>a "Review full diff" button;</li>
+            <li>the list of commits ahead of main.</li>
+          </ul>
+          In full diff mode, clicking a file shows only that file, and "All files" shows everything. Each agent row shows branch, ahead/behind, dirty count, diff stat and PR status (read-only, via <code>gh</code> or <code>glab</code>).</li>
+        <li><b>Side by side projects.</b> Columns can be hidden, collapsed to a rail, or resized. Layouts are saved per display: a G9 49" fits 4 to 6 columns, a MacBook 1 to 2.</li>
+        <li><b>Usage &amp; time panel</b> (⇧⌘U): session time (total, working, waiting on you), a sub-agent timeline on a time axis, tokens split into input / cache read / output, and spend today (session, project, all). Parsed from the transcript JSONL; history stored in SQLite.</li>
+        <li><b>Files panel</b> (⇧⌘F): the session's worktree tree, All / Changed toggle, filter (⌘P), +/− and status per changed file; clicking a file opens it in an editor pane beside the terminal.</li>
+        <li><b>A light editor and diff.</b> CodeMirror 6 with <code>@codemirror/merge</code> to edit, save and review agent changes. Files open as an <b>editor split pane</b> next to the agent terminal (same pane system, max 4), never replacing it; ⌥⌘↩ expands it to the full window. <b>Full diff mode</b> (⌥⌘D, or "Open full diff" in the Changes panel) is a full-window review: a changed-files list, a side-by-side or unified diff, and comments on individual lines. "Send review to agent" sends the comments as one prompt to that session. Copy patch is also available.</li>
+        <li><b>A full notification matrix.</b> Per-project overrides live under the project's right-click › Notifications: use global defaults, custom per event, or mute the project. A crossed-out bell or a dot marks the project in the sidebar. Per-project overrides, a sound per event, suppress when focused, and a 1.5 s quiet window.</li>
+        <li>A command palette (⌘K), a keyboard shortcut for every action, and iTerm2-style splits with a status bar on each pane. You can open up to 4 sessions side by side from any project in four ways: ⌘D, ⌥-clicking a session, dragging a session card onto the terminal, or right-clicking › Open in Split Right. Dividers resize, ⌘[ and ⌘] move focus, and ⌘W closes a pane.</li>
+        <li>A Settings › Agents pane showing hook and plugin install status and the detected CLI version.</li>
+        <li><b>Session panel</b> (⇧⌘I): every session in one place.
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>Header: agent, version, status, elapsed time and model.</li>
+            <li>Environment: machine, project, branch or worktree, and detection source.</li>
+            <li>Context: a usage bar that expands to show tokens, cache and cost.</li>
+            <li>Sub-agents with their durations, and background tasks with a Stop button.</li>
+            <li><b>Connectors (MCP):</b> each agent's configured MCP servers with status (connected and tool count, needs sign-in, or failed with Retry). Read-only, with Manage opening the agent's own config: <code>.mcp.json</code> or <code>~/.claude.json</code> for Claude Code, <code>~/.codex/config.toml</code> for Codex, <code>opencode.json</code> for OpenCode. Live status comes from each CLI where it exposes it (unverified per CLI).</li>
+          </ul>
+        </li>
+        <li><b>Transcript view and export</b> (⇧⌘T, right panel): a readable, searchable conversation (⌘F) with All / Messages / Tools / Approvals filters, tool calls grouped into compact cards, approvals marked, and a live "Working" bar with Latest ↓.
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>Sources:
+              <ul class="list-[square] pl-5 mt-1 space-y-1">
+                <li>Claude Code: the JSONL at the hook's <code>transcript_path</code>.</li>
+                <li>Codex: <code>~/.codex/sessions</code> rollouts.</li>
+                <li>OpenCode: its local session store (unverified).</li>
+                <li>Any CLI: terminal scrollback.</li>
+              </ul>
+            </li>
+            <li>Export to Markdown, JSON Lines or terminal text. Files are saved locally with secrets redacted.</li>
+          </ul>
+        </li>
+        <li><b>Voice dictation.</b>
+          <ul class="list-[circle] pl-5 mt-1 space-y-1">
+            <li>macOS Dictation types straight into the focused terminal. Use your own Dictation shortcut, set in System Settings › Keyboard › Dictation › Shortcut (the mic key or a modifier pressed twice). Do not hard-code a key.</li>
+            <li>A <b>prompt composer</b> (⌘⇧Return), a native-feeling text field that sends to the agent on Return, is the reliable fallback. It also gives multi-line editing.
+              <ul class="list-[square] pl-5 mt-1 space-y-1">
+                <li>System Dictation works in it as well.</li>
+                <li>Its mic button uses on-device Apple Speech (a small Swift plugin), so audio never leaves the Mac. A web view cannot start system Dictation from code.</li>
+              </ul>
+              <div class="mt-2 rounded-lg bg-zinc-100 dark:bg-zinc-800 p-3 text-xs space-y-1.5">
+                <div><b>How the mic button works:</b> the Tauri web UI calls a small native Swift plugin built on Apple's Speech framework, which turns speech into text on the Mac and streams it into the composer.</div>
+                <div><b>Flow:</b> click the mic, speak, watch the text appear live, edit it, then press Return to send to Claude Code, Codex or OpenCode.</div>
+                <div><b>Privacy:</b> recognition runs only on the device. It works offline and no audio leaves the Mac, in line with the zero-telemetry rule.</div>
+                <div><b>Permissions:</b> macOS asks once for Microphone and Speech Recognition access.</div>
+                <div><b>Effort:</b> about 2 to 4 days.</div>
+                <div><b>Languages:</b> English and German are expected on-device. Check against macOS 27 and 28 (unverified).</div>
+              </div>
+            </li>
+            <li>Spike early: whether xterm.js inside WKWebView accepts Dictation is unverified.</li>
+          </ul>
+        </li>
+      </ol>
+      <div class="mt-3 rounded-lg bg-zinc-100 dark:bg-zinc-800 p-3 text-xs">
+        <b>Exit criteria:</b>
+        <ul class="list-disc pl-4 mt-1 space-y-1">
+          <li>Median time from a permission prompt to your decision is under 30 s, including when you are away from the Mac.</li>
+          <li>You can review and merge agent work without leaving Lotse.</li>
+        </ul>
+      </div>
+    </div>
+    <div class="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+      <div class="text-xs font-semibold uppercase tracking-wide text-zinc-500">Release 3+ · v1.x</div>
+      <h3 class="font-semibold text-base">Roadmap (post-MVP)</h3>
+      <p class="text-zinc-500 dark:text-zinc-400 mt-1">Goal: breadth and polish, ordered by demand.</p>
+      <ol class="mt-3 space-y-1.5 list-decimal pl-5">
+        <li>A full mobile client: native iOS, or a complete PWA with terminal view and input. Multi-device management.</li>
+        <li>A full editor: LSP, project search, multiple tabs, refactoring.</li>
+        <li>An embedded browser for previewing what an agent built.</li>
+        <li>Computer use, with per-action approval and an app allowlist.</li>
+        <li>SSH remote hosts, by tunnelling the daemon socket.</li>
+        <li>More agents through user-editable TOML detection manifests.</li>
+        <li>A CLI and API for agent-to-agent orchestration (spawn, prompt, wait-until-blocked).</li>
+        <li>Cost budgets and alerts, and history export.</li>
+        <li>A menu-bar extra and widgets.</li>
+        <li>Opt-in signed updates (Sparkle with EdDSA).</li>
+        <li>A Linux build.</li>
+      </ol>
+    </div>
+  </div>
+</section>
+
+<section id="lang">
+  <h2 class="text-xl font-semibold">Language and stack candidates</h2>
+  <div class="mt-4 overflow-x-auto rounded-xl border border-zinc-200 dark:border-zinc-800">
+  <table class="w-full text-sm">
+    <thead class="bg-zinc-100 dark:bg-zinc-900 text-left"><tr><th class="p-3">Option</th><th class="p-3">Pros</th><th class="p-3">Cons</th><th class="p-3">Fit</th></tr></thead>
+    <tbody class="divide-y divide-zinc-200 dark:divide-zinc-800">
+      <tr class="bg-[color:var(--green)]/5"><td class="p-3 font-medium">Rust core + Tauri 2 (React, Tailwind, xterm.js)</td><td class="p-3">Uses the system WKWebView, so no bundled Chromium (~10–20 MB). The Rust backend and the web UI are reused for the mobile PWA. Orca-style UI is easy to build. The capability-based IPC allowlist is small.</td><td class="p-3">Not truly native: Liquid Glass and vibrancy are only approximated. Notification actions on desktop may be limited (unverified), so plan a small Swift helper if needed.</td><td class="p-3"><b>Approved</b></td></tr>
+      <tr><td class="p-3 font-medium">Rust core + SwiftUI shell (UniFFI)</td><td class="p-3">Most native: HIG, Liquid Glass and UNUserNotification actions. Ghostty uses the same pattern (Zig core plus a Swift app). libghostty or SwiftTerm handle the terminal.</td><td class="p-3">macOS only. Two languages, so the UI is written twice (desktop and mobile web). Slower to iterate.</td><td class="p-3">Choose this if you only ever target macOS and native feel matters most.</td></tr>
+      <tr><td class="p-3 font-medium">Pure Rust GUI (GPUI, iced, egui, Slint)</td><td class="p-3">One language and fast rendering. GPUI powers Zed, including its terminal built on alacritty_terminal.</td><td class="p-3">GPUI is pre-1.0 with thin documentation. egui and iced do not look native, and accessibility and VoiceOver are weak. Nothing to reuse for mobile.</td><td class="p-3">Not now</td></tr>
+      <tr><td class="p-3 font-medium">Go + Wails</td><td class="p-3">Simple concurrency, fast builds, and a webview UI like Tauri.</td><td class="p-3">Weaker PTY and terminal-emulation crates than Rust. You asked for Rust.</td><td class="p-3">Viable fallback</td></tr>
+      <tr><td class="p-3 font-medium">Electron / TypeScript</td><td class="p-3">Fastest to build, and Orca's code could be forked.</td><td class="p-3">The weight and attack surface you are trying to escape.</td><td class="p-3">No</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="mt-4 text-sm rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4">
+    <b>Suggested crates for the core:</b>
+    <ul class="mt-2 space-y-1 list-disc pl-5">
+      <li>PTY: <code>portable-pty</code></li>
+      <li>Headless screen state for scraping: <code>alacritty_terminal</code>, or <code>libghostty-vt</code> as herdr uses</li>
+      <li>Runtime and API: <code>tokio</code>, with <code>axum</code> later for the LAN API</li>
+      <li>Persistence: <code>serde</code> with <code>toml</code>, or <code>rusqlite</code> for history</li>
+      <li>Process-group inspection: <code>nix</code> and <code>libproc</code></li>
+      <li>Secrets: <code>keyring</code></li>
+      <li>Notifications: <code>tauri-plugin-notification</code>, or a Swift helper calling UNUserNotificationCenter</li>
+    </ul>
+  </div>
+</section>
+
+</main>
+</body>
+</html>
