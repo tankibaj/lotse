@@ -7,13 +7,13 @@ Orchestrator ledger and the truth after compaction. Plan: [ALPHA_PLAN.md](ALPHA_
 | WP | Title | State | Phase · progress | ETA | Session time | Cost | Handoffs / bounce-backs | Verified | Mock parity | Merge |
 |---|---|---|---|---|---|---|---|---|---|---|
 | WP0 | Foundation and contracts | merged | done · 9/9 | 02:12 | 81m | $5.10 | 0 / 1 | CI set on main green (cargo 23 pass/3 ign; vitest 24; lint/typecheck/build ✓) | match (accepted: page window frame, Beta right toolbar; placeholders by design) | 9d8374e |
-| WP1 | Daemon core | running | launched 03:10 · `wp1-daemon` | ≤04:40 | | | | | | |
+| WP1 | Daemon core | merged | done | 03:55 | 45m | $7.02 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 144 pass) | non-UI; socket 0700/0600, token ct_eq, no-TCP lsof test present | e1b9a32 |
 | WP2 | Status engine + Claude detection | merged | done | 03:30 | ~22m | $4.22 | 0 / 1 | Rust CI on worktree + full CI set on main green (detect 17+3, hook 30+4, proto 22, lotsed 1; vitest 24) | match from mock source (non-UI; no screenshots: Playwright MCP blocks file://) | 50acff6 |
 | WP3 | App shell, sidebar, status bar | merged | done (2 runs) | 03:41 | 31m | $7.38 | 0 / 3 | main: vitest 97→183 after WP4, lint/typecheck/build ✓; playwright 13/13 (worktree), 39/39 combined on main after e2e fix | match after fix (agent label whole, branch truncates); accepted deviations in report | 1128fd8 |
 | WP4 | Terminal panes | merged | done | 03:40 | 30m | $7.01 | 0 / 0 | full CI set on main green (vitest 16 files/183); playwright 39/39 combined on main | match (accepted: real xterm wraps long lines where the mock clips) | 73c8345 |
-| WP5 | Sheets, Settings, palette | running | launched 03:35 · `wp5-sheets` | ≤05:05 | | | | | | |
+| WP5 | Sheets, Settings, palette | merged | done | ~03:57 | 22m | $5.67 | 0 / 1 | full CI set on main green (vitest 301); playwright 39/39 + 12/12 combined after dev-handle fix | match (spot-checked new-session sheet); accepted: Shortcuts close ✕, focus ring, Remote disabled | 8bdf87d |
 | WP6 | Codex + OpenCode detection | running | launched 03:46 · `wp6-codex-opencode` | ≤05:16 | | | | | | |
-| WP7 | Git, notifications, native | running | launched 03:46 · `wp7-git-notify` | ≤05:16 | | | | | | |
+| WP7 | Git, notifications, native | merged | done | ~03:56 | 10m | $1.79 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 164) | non-UI match; `notify.rs` not compiled until WP8 adds `pub mod notify;` | a1ca9cd |
 | WP8 | Integration | pending | | | | | | | | |
 | WP9 | Hardening + Alpha build | pending | | | | | | | | |
 
@@ -23,19 +23,20 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Metric | Value | Notes |
 |---|---|---|
-| Session time (Alpha total) | 2h 44m | wall-clock of all runs; per WP in the table |
-| Merges into `main` | 4 | |
-| Failed changes | 1 | merge needed a fix or revert |
-| Change failure rate | 25 % | failed ÷ merges; target ≤ 15 % |
+| Session time (Alpha total) | 4h 01m | wall-clock of all runs; per WP in the table |
+| Merges into `main` | 7 | |
+| Failed changes | 2 | merge needed a fix or revert |
+| Change failure rate | 29 % | failed ÷ merges; target ≤ 15 % |
 | Escaped bugs | 0 | found after merge; see table below |
 | Handoffs / bounce-backs | 1 / 2 | |
-| Cost (Alpha total) | $24.33 | |
+| Cost (Alpha total) | $38.81 | |
 
 ## Escaped bugs
 
 | Found | By | Origin WP | Severity | Description | Fix commit |
 |---|---|---|---|---|---|
 | 03:44 | orchestrator (combined e2e on main) | WP3 | low (test-only) | `wp3-sidebar.spec.ts` used page-wide `getByText('billing-api')`; WP4 tabs also show project names → strict-mode failure (11/39). Scoped to `sidebar-region`. | see Log 03:45 |
+| 04:03 | orchestrator (combined e2e on main) | WP3/WP5 | low (dev-only) | both set `window.__lotse = {…}` and WP5 overwrote WP3's `client` → 30-project e2e failed. Merged handles. | `fix(app): merge dev-only window.__lotse handles…` |
 
 ## Handoffs and bounce-backs
 
@@ -82,3 +83,7 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 03:44 · Combined Playwright on main (WP3+WP4, port 1421): 11/39 failed — WP3 spec locator collided with WP4 tab labels (test-only). Fixed by orchestrator (`test(sidebar): scope e2e project locator…`), rerun 39/39, pushed. Counted as 1 failed change. Note: Playwright is not in the CI set; orchestrator will run combined e2e on main after every UI merge.
 - 2026-11-02 03:45 · WP4 requests: WP3 cards need `data-session-id`, `text/lotse-session` drag payload (WP3 already sets it), "Open in Split Right" → `openInSplit(id)` from `app/src/panes` (WP3 shows it disabled; needs `commands.ts` `splitSession` — orchestrator follow-up after wave 2); link opening needs `@tauri-apps/plugin-opener` (new dep + capability) → WP8; WebGL at 2x Retina **Unverified**; `panes/useSessions.ts` duplicates `lib/state` → consolidate in WP8.
 - 2026-11-02 03:46 · WP6 + WP7 launched (`harnex quick`, $15/90 min): WP6 `lotse-wt/wp6-codex-opencode` `feature/wp6-codex-opencode` run `_orch/runs/wp6-codex-opencode-0346` port 1421 · WP7 `lotse-wt/wp7-git-notify` `feature/wp7-git-notify` run `_orch/runs/wp7-git-notify-0346` port 1422. Brief extras: `_orch/wave2-extra.md`. Running: WP1, WP5, WP6, WP7. Next after all wave-2 merges: shared-file follow-ups (commands.ts additions, proto comment), then WP8.
+- 2026-11-02 03:55 · WP1 done exit 0, $7.02, session fa35c9de. Owns respected (`crates/lotsed/**`). Spot-read `secure.rs` (dir 0700, files 0600, token `ct_eq`); done-when tests present (full flow, client restart, modes, `lsof` no-TCP). Merged → `e1b9a32`. Main CI: vitest 1/183 failed once, then 9/9 reruns green incl. under load → logged as flake (name not captured), pushed. Daemon socket/token = security-relevant → suggest `/code-review`.
+- 2026-11-02 03:58 · WP7 done exit 0, $1.79, session 586c7089. Owns respected; git tests on temp repos via `create_worktree_in` (never real `~/.lotse`). Merged → `a1ca9cd`, full CI on main green (vitest flake hit once more, reruns green), pushed. Unverified: banner/sound/badge visuals, Swift helper never compiled (`swiftc` not allowed).
+- 2026-11-02 04:00 · WP5 done exit 0, $5.67, session 06e8b8ad. Owns respected; stray `parity/wp5/probe.png` excluded. Merged → `8bdf87d`, full CI on main green (vitest 301). Combined Playwright: WP3 30-project test failed (`__lotse` handle overwritten by WP5) → orchestrator fix, 39/39 + 12/12, pushed. Worktrees/branches for WP1, WP5, WP7 removed.
+- 2026-11-02 04:05 · WP8 brief prepared (`_orch/wp8-extra.md`: widened owns + 12-item integration backlog from WP1–WP7 requests). Launch after WP6 merges (plan: WP8 serial). Only WP6 running.
