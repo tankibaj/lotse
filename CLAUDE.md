@@ -23,6 +23,13 @@ cd app && npm run lint && npm run typecheck && npx vitest run && npm run build
 ```
 CI (`.github/workflows/ci.yml`, macos-14) runs exactly these.
 
+Alpha build and audits (not in CI):
+```sh
+sh scripts/build-app.sh               # release lotsed + lotse-hook + .app (target/release/bundle/macos/Lotse.app), ad-hoc sign, smoke test
+node scripts/licenses.mjs             # licence summary of runtime deps (THIRD_PARTY_NOTICES.md); flags MPL, exit 1 only on GPL/AGPL
+cargo audit; cd app && npm audit --omit=dev
+```
+
 ## Run the app against the MockClient
 ```sh
 cd app && npm run dev                 # http://127.0.0.1:1420, VITE_PORT or `-- --port N` to change

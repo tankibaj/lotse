@@ -177,3 +177,36 @@ fn integration_install_status_uninstall_round_trip() {
     cmd.args(["integration", "claude", "explode"]);
     assert!(!run_with_stdin(cmd, b"").status.success());
 }
+
+#[test]
+fn opencode_plugin_install_and_uninstall_leave_foreign_files_alone() {
+    let home = tempfile::tempdir().unwrap();
+    let data = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let plugins = xdg.path().join("opencode/plugins");
+    let integration = |action: &str| -> Output {
+        let mut cmd = hook(home.path(), data.path());
+        cmd.env("XDG_CONFIG_HOME", xdg.path())
+            .args(["integration", "opencode", action]);
+        run_with_stdin(cmd, b"")
+    };
+    let say = |out: &Output| String::from_utf8_lossy(&out.stdout).trim().to_owned();
+
+    assert_eq!(say(&integration("status")), "not installed");
+    let out = integration("install");
+    assert!(out.status.success());
+    assert!(plugins.join("lotse-status.js").is_file());
+    assert_eq!(say(&integration("status")), "installed");
+    assert_eq!(say(&integration("uninstall")), "plugin removed");
+    assert!(!plugins.join("lotse-status.js").exists());
+
+    // a file of the same name that is not ours: never overwritten, never removed
+    let foreign = "// somebody else's plugin\n";
+    std::fs::write(plugins.join("lotse-status.js"), foreign).unwrap();
+    let _ = integration("install");
+    let _ = integration("uninstall");
+    assert_eq!(
+        std::fs::read_to_string(plugins.join("lotse-status.js")).unwrap(),
+        foreign
+    );
+}

@@ -123,6 +123,9 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
     // Tool output can be huge and no adapter reads it: leave it out of the frame.
     if let Some(fields) = payload.as_object_mut() {
         fields.remove("tool_response");
+        if cfg.agent == AgentKind::ClaudeCode {
+            minimize_claude(fields);
+        }
     }
     let request = Request::HookEvent {
         agent: cfg.agent,
@@ -131,6 +134,33 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
     };
     deliver(cfg, request)?;
     Ok(Outcome::Sent)
+}
+
+/// Fields of a Claude Code hook payload that carry conversation text; the adapter never reads them.
+const CLAUDE_TEXT_FIELDS: [&str; 3] = ["prompt", "last_assistant_message", "message"];
+
+/// The `tool_input` keys the adapter turns into a card summary (`summarize_input` in
+/// `lotse-detect/src/claude.rs`). Everything else in a tool input (file contents, edits) stays behind.
+const CLAUDE_TOOL_INPUT_KEYS: [&str; 8] = [
+    "command",
+    "file_path",
+    "notebook_path",
+    "path",
+    "url",
+    "pattern",
+    "query",
+    "description",
+];
+
+/// Data minimisation: the daemon gets what status detection reads, not the user's prompts, replies
+/// or the contents of files the agent writes.
+fn minimize_claude(fields: &mut serde_json::Map<String, serde_json::Value>) {
+    for key in CLAUDE_TEXT_FIELDS {
+        fields.remove(key);
+    }
+    if let Some(serde_json::Value::Object(input)) = fields.get_mut("tool_input") {
+        input.retain(|k, _| CLAUDE_TOOL_INPUT_KEYS.contains(&k.as_str()));
+    }
 }
 
 /// Run the exchange on a worker thread so even a connect that hangs cannot outlive the deadline.
@@ -310,6 +340,29 @@ mod tests {
                     "tool_input": {"command": "ls"},
                 }),
             }
+        );
+        d.handle.join().unwrap();
+    }
+
+    #[test]
+    fn claude_payloads_leave_conversation_text_and_file_contents_behind() {
+        let d = fake_daemon(Mode::Accept, "t");
+        let payload = br#"{"hook_event_name":"UserPromptSubmit","prompt":"my secret plan","last_assistant_message":"reply text","message":"note","transcript_path":"/t.jsonl","tool_name":"Write","tool_use_id":"tu1","tool_input":{"file_path":"/a/b.rs","content":"fn secret() {}","old_string":"x","new_string":"y"}}"#;
+        run(&cfg(&d, Some("a1")), &payload[..]).unwrap();
+        let (_, req) = d.received.recv().unwrap();
+        let Request::HookEvent { payload, .. } = req.request else {
+            panic!("expected a hook event");
+        };
+        // what the adapter reads stays: event, tool, ids and the summary key of the input
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "hook_event_name": "UserPromptSubmit",
+                "transcript_path": "/t.jsonl",
+                "tool_name": "Write",
+                "tool_use_id": "tu1",
+                "tool_input": {"file_path": "/a/b.rs"},
+            })
         );
         d.handle.join().unwrap();
     }
