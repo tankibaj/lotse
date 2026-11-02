@@ -12,9 +12,9 @@ Orchestrator ledger and the truth after compaction. Plan: [ALPHA_PLAN.md](ALPHA_
 | WP3 | App shell, sidebar, status bar | merged | done (2 runs) | 03:41 | 31m | $7.38 | 0 / 3 | main: vitest 97→183 after WP4, lint/typecheck/build ✓; playwright 13/13 (worktree), 39/39 combined on main after e2e fix | match after fix (agent label whole, branch truncates); accepted deviations in report | 1128fd8 |
 | WP4 | Terminal panes | merged | done | 03:40 | 30m | $7.01 | 0 / 0 | full CI set on main green (vitest 16 files/183); playwright 39/39 combined on main | match (accepted: real xterm wraps long lines where the mock clips) | 73c8345 |
 | WP5 | Sheets, Settings, palette | merged | done | ~03:57 | 22m | $5.67 | 0 / 1 | full CI set on main green (vitest 301); playwright 39/39 + 12/12 combined after dev-handle fix | match (spot-checked new-session sheet); accepted: Shortcuts close ✕, focus ring, Remote disabled | 8bdf87d |
-| WP6 | Codex + OpenCode detection | running | launched 03:46 · `wp6-codex-opencode` | ≤05:16 | | | | | | |
+| WP6 | Codex + OpenCode detection | merged | done | 04:15 | 29m | $6.19 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 208, vitest 301) | non-UI match from mock data; accepted: Codex `Fail` only on "Reconnect failed"/non-zero exit; no PNGs | cc8ad31 |
 | WP7 | Git, notifications, native | merged | done | ~03:56 | 10m | $1.79 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 164) | non-UI match; `notify.rs` not compiled until WP8 adds `pub mod notify;` | a1ca9cd |
-| WP8 | Integration | pending | | | | | | | | |
+| WP8 | Integration | running | launched 04:18 · `wp8-integration` | ≤05:48 | | | | | | |
 | WP9 | Hardening + Alpha build | pending | | | | | | | | |
 
 States: pending · running · review · merged · blocked. Branch, worktree and run dir live in each `status/WPn.md`.
@@ -23,13 +23,13 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Metric | Value | Notes |
 |---|---|---|
-| Session time (Alpha total) | 4h 01m | wall-clock of all runs; per WP in the table |
-| Merges into `main` | 7 | |
+| Session time (Alpha total) | 4h 30m | wall-clock of all runs; per WP in the table |
+| Merges into `main` | 8 | |
 | Failed changes | 2 | merge needed a fix or revert |
-| Change failure rate | 29 % | failed ÷ merges; target ≤ 15 % |
+| Change failure rate | 25 % | failed ÷ merges; target ≤ 15 % |
 | Escaped bugs | 0 | found after merge; see table below |
 | Handoffs / bounce-backs | 1 / 2 | |
-| Cost (Alpha total) | $38.81 | |
+| Cost (Alpha total) | $45.00 | |
 
 ## Escaped bugs
 
@@ -87,3 +87,5 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 03:58 · WP7 done exit 0, $1.79, session 586c7089. Owns respected; git tests on temp repos via `create_worktree_in` (never real `~/.lotse`). Merged → `a1ca9cd`, full CI on main green (vitest flake hit once more, reruns green), pushed. Unverified: banner/sound/badge visuals, Swift helper never compiled (`swiftc` not allowed).
 - 2026-11-02 04:00 · WP5 done exit 0, $5.67, session 06e8b8ad. Owns respected; stray `parity/wp5/probe.png` excluded. Merged → `8bdf87d`, full CI on main green (vitest 301). Combined Playwright: WP3 30-project test failed (`__lotse` handle overwritten by WP5) → orchestrator fix, 39/39 + 12/12, pushed. Worktrees/branches for WP1, WP5, WP7 removed.
 - 2026-11-02 04:05 · WP8 brief prepared (`_orch/wp8-extra.md`: widened owns + 12-item integration backlog from WP1–WP7 requests). Launch after WP6 merges (plan: WP8 serial). Only WP6 running.
+- 2026-11-02 04:16 · WP6 done exit 0, $6.19, session 5f02477c. Owns respected. It copied 6 real Codex PTY recordings from Orca (MIT, Lovecast Inc.) into `integrations/manifests/fixtures/recorded/`; scanned: no secrets, usernames anonymised. Orchestrator added `LICENSE-orca` beside them. `codex.toml`/`opencode.toml` derive from herdr (Apache-2.0) → license/NOTICE check for WP9. Merged → `cc8ad31`, full CI on main green, pushed, worktree + branch removed. Unverified: OSC 7501 spec, OpenCode plugin API/events (authored fixtures), Codex > 0.160.
+- 2026-11-02 04:18 · WP8 launched (serial, `harnex`, $15/90 min): `lotse-wt/wp8-integration` `feature/wp8-integration` run `_orch/runs/wp8-integration-0418` port 1421 (sheets e2e 1424). Brief extras `_orch/wp8-extra.md`: widened owns (lotsed, lotse-hook env contract, commands.ts, UI wiring, plugin-opener deps) + 13-item backlog. Extra allow `Bash(npm install:*)` for `@tauri-apps/plugin-opener`. WP8 touches auth/token contract, Tauri capabilities/CSP and deps → `/code-review` before Alpha.
