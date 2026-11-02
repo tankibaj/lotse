@@ -27,6 +27,15 @@ describe('Shell', () => {
     expect(screen.getByRole('contentinfo')).toHaveTextContent('LAN Off');
   });
 
+  it('both title bars drag the window from any non-button spot (title text, empty tab strip)', () => {
+    const { container } = mount();
+    const bars = container.querySelectorAll('[data-tauri-drag-region]');
+    expect(bars).toHaveLength(2);
+    // a bare attribute only drags on the bar itself; "deep" covers its children, buttons still click
+    bars.forEach((bar) => expect(bar).toHaveAttribute('data-tauri-drag-region', 'deep'));
+    expect(bars[1]?.querySelector('[data-slot="tabs"]')).not.toBeNull();
+  });
+
   it('the settings and search buttons raise UI commands without knowing who listens', async () => {
     const settings = vi.fn();
     const palette = vi.fn();

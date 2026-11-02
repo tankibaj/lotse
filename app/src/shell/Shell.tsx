@@ -98,7 +98,7 @@ export function Shell() {
               aria-label="Sidebar"
               data-testid="sidebar-region"
             >
-              <div className="flex h-11 shrink-0 items-center gap-2 px-3" data-tauri-drag-region>
+              <div className="flex h-11 shrink-0 items-center gap-2 px-3" data-tauri-drag-region="deep">
                 <WindowControls />
                 <span className="ml-2 font-semibold">Lotse</span>
                 <button
@@ -138,7 +138,7 @@ export function Shell() {
           </>
         )}
         <main className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-11 shrink-0 items-end gap-1 border-b px-2" data-tauri-drag-region>
+          <div className="flex h-11 shrink-0 items-end gap-1 border-b px-2" data-tauri-drag-region="deep">
             {hidden && (
               <button className={`${iconButton} mb-2`} aria-label="Show sidebar" onClick={toggleSidebar}>
                 ☰
