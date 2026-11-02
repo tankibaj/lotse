@@ -35,7 +35,7 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Found | By | Origin WP | Severity | Description | Fix commit |
 |---|---|---|---|---|---|
-| 2026-11-02 09:50 | orchestrator (GitHub Actions) | WP8 | low (test-only; GitHub CI red on `main` since the WP8 merge, never checked: runbook verified CI locally only) | `lotsed` test `a_client_that_stops_reading_…` used a fixed 5 s sleep; on the slower macos-14 runner the 200 MB flood hadn't filled the 64 MiB queue → no disconnect. Now waits for a completion marker. | see log |
+| 2026-11-02 09:50 | orchestrator (GitHub Actions) | WP8 | low (test-only; GitHub CI red on `main` since the WP8 merge, never checked: runbook verified CI locally only) | `lotsed` test `a_client_that_stops_reading_…` used a fixed 5 s sleep; on the slower macos-14 runner the 200 MB flood hadn't filled the 64 MiB queue → no disconnect. Now waits for a completion marker. | 2376306 |
 | 03:44 | orchestrator (combined e2e on main) | WP3 | low (test-only) | `wp3-sidebar.spec.ts` used page-wide `getByText('billing-api')`; WP4 tabs also show project names → strict-mode failure (11/39). Scoped to `sidebar-region`. | see Log 03:45 |
 | 04:03 | orchestrator (combined e2e on main) | WP3/WP5 | low (dev-only) | both set `window.__lotse = {…}` and WP5 overwrote WP3's `client` → 30-project e2e failed. Merged handles. | `fix(app): merge dev-only window.__lotse handles…` |
 
@@ -101,3 +101,4 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 08:35 · Fallback wake-up: alive file stale, nothing to do — WP0–WP9 merged, no open runs or worktrees, main == origin/main (db9ad93). Awaiting Naim at Checkpoint 4.
 - 2026-11-02 09:35 · Fallback wake-up: alive file stale, nothing to do — WP0–WP9 merged, no open runs or worktrees, main == origin/main (db9ad93). Awaiting Naim at Checkpoint 4.
 - 2026-11-02 09:50 · Main session back after the usage pause: the fallback task ran WP0–WP9 end to end. Found GitHub Actions red on `main` since the WP8 merge (local CI set was green); fixed the timing-dependent test; counted as failed change + escaped bug (CFR 30 %). Runbook gap: check `gh run list` after each push.
+- 2026-11-02 · GitHub Actions green on `main` again (run 41415399101, `2376306`).
