@@ -1,0 +1,19 @@
+{
+  "description": "OpenCode without the Lotse plugin (screen fallback): idle, a turn, a permission request, approval, the end of the turn.",
+  "provenance": "Authored, not recorded: no OpenCode transcript was available offline. The screen text (the progress bar, 'esc interrupt', '△ Permission required', 'Allow once / Allow always / Reject') follows herdr's opencode manifest and Orca's OpenCode permission fixtures (agent-prompt-submission-runtime.test.ts). Unverified against a live OpenCode; re-record before relying on it.",
+  "agent": "opencode",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    { "at": 0, "out": "\u001b[?1049h\u001b[2J\u001b[10;3HAsk anything...\u001b[24;3Htab agents   ctrl+p commands", "expect": "idle", "source": "screen" },
+    { "at": 2000, "out": "\u001b[3;3Hfix the failing test\u001b[22;3H■■■⬝⬝⬝⬝⬝  esc interrupt", "expect": "run", "source": "screen" },
+    { "at": 3000, "out": "\u001b[22;3H■■■■⬝⬝⬝⬝  esc interrupt", "expect": "run" },
+    { "at": 5000, "out": "\u001b[22;3H\u001b[K\u001b[12;3H┃  △ Permission required\u001b[13;3H┃  bash: npm test\u001b[14;3H┃  Allow once   Allow always   Reject", "expect": "perm", "perm": { "tool": "permission", "summary": "Waiting for your input" } },
+    { "at": 8000, "out": "\u001b[12;1H\u001b[J\u001b[22;3H■■■■■⬝⬝⬝  esc interrupt\u001b[24;3Htab agents   ctrl+p commands", "expect": "run" },
+    { "at": 12000, "out": "\u001b[22;1H\u001b[K\u001b[5;3HFixed: the assertion now compares ids.", "expect": "run" },
+    { "at": 13500, "tick": true, "expect": "done", "source": "screen" },
+    { "at": 19000, "process": { "fg": "git", "code": null }, "expect": "done", "note": "a tool in the foreground is not the agent quitting" },
+    { "at": 20000, "process": { "fg": "/opt/homebrew/bin/opencode", "code": null }, "expect": "done" },
+    { "at": 21000, "process": { "fg": "-zsh", "code": null }, "expect": "idle", "source": "process", "note": "a shell took the foreground: the agent quit" }
+  ]
+}

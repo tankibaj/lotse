@@ -1,0 +1,22 @@
+{
+  "description": "One turn with a permission request: created, busy, a bash permission asked and answered, idle. Conversation text never leaves OpenCode.",
+  "provenance": "Authored, not recorded: the event names and fields follow Orca's OpenCode status plugin (src/main/opencode/status-plugin-*-source.ts); not checked against a live OpenCode or its docs (see crates/lotse-detect/src/opencode.rs).",
+  "events": [
+    { "type": "session.created", "properties": { "info": { "id": "ses_1", "title": "New session" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "busy" } } },
+    { "type": "message.part.updated", "properties": { "part": { "type": "text", "text": "secret conversation text" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "busy" } } },
+    { "type": "permission.asked", "properties": { "id": "per_1", "sessionID": "ses_1", "permission": "bash", "patterns": ["npm test"] } },
+    { "type": "permission.replied", "properties": { "sessionID": "ses_1", "requestID": "per_1", "reply": "once" } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "idle" } } },
+    { "type": "session.idle", "properties": { "sessionID": "ses_1" } }
+  ],
+  "payloads": [
+    { "payload": { "hook_event_name": "SessionCreated", "session_id": "ses_1", "title": "New session" }, "expect": "idle" },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "busy" }, "expect": "run" },
+    { "payload": { "hook_event_name": "PermissionAsked", "session_id": "ses_1", "request_id": "per_1", "tool": "bash", "summary": "npm test" }, "expect": "perm", "perm": { "tool": "bash", "summary": "npm test" } },
+    { "payload": { "hook_event_name": "PermissionReplied", "session_id": "ses_1", "request_id": "per_1" }, "expect": "run" },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "idle" }, "expect": "done" },
+    { "payload": { "hook_event_name": "SessionIdle", "session_id": "ses_1" }, "expect": "done" }
+  ]
+}

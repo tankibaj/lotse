@@ -1,0 +1,17 @@
+{
+  "description": "A Codex turn that gives up (cannot reach the endpoint) shows fail and keeps it at rest; the next turn starts clean; an interrupt is not a failure; a non-zero exit is.",
+  "provenance": "Authored, not recorded. The 'Reconnect failed' line is the one herdr's codex manifest names; the interrupt line ('■ Conversation interrupted') is from Orca's codex tests. Unverified against a live failing Codex.",
+  "agent": "codex",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    { "at": 0, "out": "\u001b[2J\u001b[4;1H› run the migration\u001b[6;1H• Working (30s • esc to interrupt)\u001b[20;1H› Ask Codex to do anything\u001b[22;3H? for shortcuts", "expect": "run" },
+    { "at": 2000, "out": "\u001b[6;1H\u001b[K• Reconnect failed — check the endpoint, then relaunch (35s)", "expect": "fail", "source": "screen" },
+    { "at": 9000, "tick": true, "expect": "fail", "note": "the result stays at rest" },
+    { "at": 10000, "out": "\u001b[2J\u001b[4;1H› try again\u001b[6;1H• Working (0s • esc to interrupt)\u001b[20;1H› Ask Codex to do anything", "expect": "run" },
+    { "at": 12000, "out": "\u001b[6;1H\u001b[K■ Conversation interrupted - tell the model what to do differently.", "expect": "run", "note": "an interrupt is rest, not a failure" },
+    { "at": 13500, "tick": true, "expect": "done" },
+    { "at": 14000, "out": "\u001b[6;1H\u001b[K• Working (0s • esc to interrupt)", "expect": "run" },
+    { "at": 20000, "process": { "fg": null, "code": 1 }, "expect": "fail", "source": "process", "note": "the agent crashed" }
+  ]
+}

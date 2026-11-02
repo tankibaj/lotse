@@ -1,0 +1,20 @@
+{
+  "description": "A program that reports with OSC 7501 while its screen says something else: the report wins; a split sequence waits for its end; a query is surfaced for the daemon to answer.",
+  "provenance": "Authored, not recorded. The grammar follows Orca's reader (src/shared/program-status/protocol.ts). No Codex release in Orca's recordings emits OSC 7501 (checked 0.157-0.160), so this is the protocol, not a recorded Codex run.",
+  "agent": "codex",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    { "at": 0, "out": "\u001b[2J\u001b]7501;state=idle:app=codex\u001b\\\u001b[22;1H› Ask Codex to do anything", "expect": "idle", "source": "osc7501" },
+    { "at": 500, "out": "\u001b]7501;?\u001b\\", "expect": "idle", "queries": 1 },
+    { "at": 1000, "out": "\u001b]7501;state=working:app=codex\u0007\u001b[8;1H• Working (0s • esc to interrupt)", "expect": "run", "source": "osc7501" },
+    { "at": 3000, "out": "\u001b[8;1H\u001b[K\u001b]7501;state=blocked:kind=permission:app=codex:msg=UnVuIG5wbSB0ZXN0\u001b\\", "expect": "perm", "source": "osc7501", "perm": { "tool": "permission", "summary": "Run npm test" }, "note": "the screen now reads idle; the report is the stronger source" },
+    { "at": 3100, "out": "\u001b]75", "expect": "perm", "note": "half a sequence" },
+    { "at": 3200, "out": "01;state=working\u001b\\", "expect": "run", "source": "osc7501", "note": "the other half arrives" },
+    { "at": 4000, "out": "\u001b]7501;state=working:id=sub/1:title=RXhwbG9yZQ==\u001b\\", "expect": "run", "sub_agents": [{ "id": "sub/1", "name": "Explore", "status": "run" }] },
+    { "at": 5000, "out": "\u001b]7501;state=done\u0007", "expect": "run", "note": "the lead is done but a sub-agent still runs" },
+    { "at": 5500, "out": "\u001b]7501;state=done:id=sub/1\u0007", "expect": "done", "source": "osc7501", "sub_agents": [{ "id": "sub/1", "name": "Explore", "status": "done" }] },
+    { "at": 6000, "out": "\u001b]7501;state=idle\u0007", "expect": "done", "note": "idle keeps the unseen result" },
+    { "at": 7000, "process": { "fg": null, "code": 0 }, "expect": "idle", "source": "process" }
+  ]
+}

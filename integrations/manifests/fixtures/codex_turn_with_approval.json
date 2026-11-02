@@ -1,0 +1,20 @@
+{
+  "description": "One Codex turn: startup, prompt, working, a command approval, approved, the answer, rest, a second turn, the process ends.",
+  "provenance": "Authored, not recorded: the paint sequence (alternate screen, cursor positioning, erase-in-line) and the screen text follow Orca's recorded Codex 0.158.0 transcripts (src/main/runtime/__fixtures__/codex-0-158-0-approval.txt and -timed-turn.txt in /Users/naim/Repos/research/orca). The recordings themselves are committed under recorded/ and replayed by `recorded_codex_transcripts_replay_to_the_expected_status_sequence`.",
+  "agent": "codex",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    { "at": 0, "out": "\u001b[?1049h\u001b[2J\u001b[2;3H>_ OpenAI Codex (v0.158.0)\u001b[3;3H~/repo\u001b[22;1H› Ask Codex to do anything\u001b[24;3H? for shortcuts", "expect": "idle", "source": "screen" },
+    { "at": 2000, "out": "\u001b[5;1H› fix the failing test\u001b[8;1H• Working (0s • esc to interrupt)", "expect": "run", "source": "screen" },
+    { "at": 3000, "out": "\u001b[8;1H\u001b[K• Working (1s • esc to interrupt)", "expect": "run" },
+    { "at": 5000, "out": "\u001b[8;1H\u001b[K\u001b[22;1H\u001b[K\u001b[24;1H\u001b[K\u001b[10;1H• Running npm test\u001b[12;3HWould you like to run the following command?\u001b[14;3HReason: run the tests to confirm the fix\u001b[16;3H$ npm test\u001b[18;1H› 1. Yes, proceed (y)\u001b[19;3H2. Yes, and don't ask again for commands that start with `npm test` (p)\u001b[20;3H3. No, and tell Codex what to do differently (esc)\u001b[22;3HPress enter to confirm or esc to cancel", "expect": "perm", "perm": { "tool": "command", "summary": "npm test" } },
+    { "at": 8000, "out": "\u001b[10;1H\u001b[J\u001b[8;1H• Working (4s • esc to interrupt)\u001b[22;1H› Ask Codex to do anything\u001b[24;3H? for shortcuts", "expect": "run" },
+    { "at": 12000, "out": "\u001b[8;1H\u001b[K• Fixed the assertion in tests/api.test.ts; all 12 tests pass.", "expect": "run", "note": "the working row is gone, but a turn does not end on one quiet frame" },
+    { "at": 13000, "tick": true, "expect": "run" },
+    { "at": 13500, "tick": true, "expect": "done", "source": "screen" },
+    { "at": 20000, "tick": true, "expect": "done", "note": "the unseen result stays at rest" },
+    { "at": 21000, "out": "\u001b[10;1H› now add a test for it\u001b[12;1H• Working (0s • esc to interrupt)", "expect": "run" },
+    { "at": 24000, "process": { "fg": null, "code": 130 }, "expect": "idle", "source": "process", "note": "the user quit with Ctrl+C" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Codex startup dialogs (trust this folder, update available) block, then the composer shows: the session is idle, not done.",
+  "provenance": "Authored, not recorded. Dialog text follows Orca's recordings codex-0-158-0-trustprompt.txt and codex-0158-update-available-dialog.txt and herdr's codex manifest; the recordings themselves are committed under recorded/ and replayed by `recorded_codex_transcripts_replay_to_the_expected_status_sequence`.",
+  "agent": "codex",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    { "at": 0, "out": "\u001b[2J\u001b[1;1H> You are in /Users/naim/repo\u001b[3;1H  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection.\u001b[5;1H› 1. Yes, continue\u001b[6;1H  2. No, quit\u001b[8;1H  Press enter to continue", "expect": "perm", "perm": { "tool": "trust", "summary": "Waiting for your input" } },
+    { "at": 4000, "out": "\u001b[2J\u001b[2;3H>_ OpenAI Codex (v0.158.0)\u001b[22;1H› Ask Codex to do anything\u001b[24;3H? for shortcuts", "expect": "perm", "note": "held through the hold window" },
+    { "at": 5500, "tick": true, "expect": "idle", "note": "no work happened: idle, not done" },
+    { "at": 6000, "out": "\u001b[2J\u001b[2;3HUpdate available! 0.158.0 -> 0.160.0\u001b[4;3H› 1. Update now\u001b[5;3H  2. Skip\u001b[6;3H  3. Skip until next version\u001b[8;3HPress enter to continue", "expect": "perm", "perm": { "tool": "update", "summary": "Waiting for your input" } }
+  ]
+}
