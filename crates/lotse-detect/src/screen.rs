@@ -338,6 +338,7 @@ fn perm_request(verdict: Option<&Verdict>) -> PermRequest {
     PermRequest {
         tool,
         summary: summary.chars().take(SUMMARY_MAX_CHARS).collect(),
+        always: None,
     }
 }
 
@@ -495,7 +496,8 @@ mod tests {
             det[0].perm,
             Some(PermRequest {
                 tool: "command".into(),
-                summary: "rm -rf build".into()
+                summary: "rm -rf build".into(),
+                always: None,
             })
         );
         // A pager (keep) with a blocked-looking screen underneath changes nothing.
@@ -516,7 +518,8 @@ mod tests {
             det[0].perm,
             Some(PermRequest {
                 tool: "command".into(),
-                summary: DEFAULT_PERM_SUMMARY.into()
+                summary: DEFAULT_PERM_SUMMARY.into(),
+                always: None,
             })
         );
     }

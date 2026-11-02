@@ -204,6 +204,7 @@ impl OpenCodeAdapter {
                             str_field(payload, "summary").unwrap_or_default(),
                             SUMMARY_MAX_CHARS,
                         ),
+                        always: None,
                     },
                 };
                 let pending = &mut self.sessions[i].pending;
@@ -479,7 +480,8 @@ mod tests {
             det[0].perm,
             Some(PermRequest {
                 tool: "bash".into(),
-                summary: "npm test".into()
+                summary: "npm test".into(),
+                always: None,
             })
         );
         let reply =

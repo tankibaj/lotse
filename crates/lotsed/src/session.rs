@@ -7,7 +7,7 @@
 use crate::db::Db;
 use crate::detect_glue::{Detector, NotifyLimiter, Trigger, notification, process_name};
 use crate::hub::{Bytes, ClientTx, Hub};
-use crate::perm_answer::{AnswerError, answer_keys};
+use crate::perm_answer::{AnswerError, always_option, answer_keys};
 use crate::ring::Ring;
 use crate::title::{LineTracker, derive_title};
 use lotse_detect::engine::StatusUpdate;
@@ -210,6 +210,9 @@ struct Inner {
     generation: u64,
     closing: bool,
     got_output: bool,
+    /// Output (or a new request) since the prompt's options were last read for the card's
+    /// Always label (`PermRequest::always`).
+    perm_options_stale: bool,
     spec: SpawnSpec,
     /// Feeds the status engine (hooks, OSC 7501, screen, process).
     detector: Detector,
@@ -316,6 +319,7 @@ impl SessionHandle {
                 generation: 0,
                 closing: false,
                 got_output: false,
+                perm_options_stale: false,
                 spec,
             }),
         });
@@ -419,6 +423,7 @@ impl SessionHandle {
         let triggers = {
             let mut g = self.lock();
             g.got_output = true;
+            g.perm_options_stale = true;
             g.meta.last_activity = at;
             g.ring.push(data);
             g.attached.retain(|_, c| c.send_bytes(frame.clone()));
@@ -489,7 +494,9 @@ impl SessionHandle {
             }
             updates.extend(g.detector.tick(now, at));
             let quiet = g.detector.idle();
-            (self.apply(&mut g, updates), quiet)
+            let triggers = self.apply(&mut g, updates);
+            self.read_perm_options(&mut g, at);
+            (triggers, quiet)
         };
         self.activity.ticked(seen, quiet);
         self.notify(triggers);
@@ -538,9 +545,19 @@ impl SessionHandle {
         let mut triggers = Vec::new();
         let notify =
             g.detector.agent() != AgentKind::Terminal || g.meta.agent != AgentKind::Terminal;
-        for update in updates {
+        for mut update in updates {
             let prev = g.meta.status;
             let prev_perm = g.meta.perm.clone();
+            // the engine knows the request, not the prompt's options: keep what the screen said
+            if let (Some(p), Some(old)) = (update.perm.as_mut(), prev_perm.as_ref())
+                && p.tool == old.tool
+                && p.summary == old.summary
+            {
+                p.always = old.always;
+            }
+            if update.perm != prev_perm {
+                g.perm_options_stale = true;
+            }
             let status_moved = prev != update.status || prev_perm != update.perm;
             g.meta.status = update.status;
             g.meta.source = update.source;
@@ -759,6 +776,32 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// Read what Always would pick on the prompt on screen into `PermRequest::always`, once per
+    /// burst of output while the session waits on a permission; a change goes out as
+    /// `status_changed` (no notification: the request itself is the same).
+    fn read_perm_options(&self, g: &mut Inner, at: UnixMs) {
+        if g.meta.status != Status::Perm || !std::mem::take(&mut g.perm_options_stale) {
+            return;
+        }
+        let agent = prompt_agent(g);
+        let always = always_option(agent, &g.detector.screen_rows());
+        let Some(perm) = g.meta.perm.as_mut() else {
+            return;
+        };
+        if always.is_none() || perm.always == always {
+            return; // no prompt drawn yet: the next output reads again
+        }
+        perm.always = always;
+        self.ctx.hub.broadcast(Event::StatusChanged {
+            session_id: self.id.clone(),
+            status: g.meta.status,
+            source: g.meta.source,
+            perm: g.meta.perm.clone(),
+            running_since: g.meta.running_since,
+            at,
+        });
+    }
+
     /// Answer the permission prompt on screen with the keys a user would type. Only while the
     /// session is `perm` and its screen shows a prompt the agent's layout can be read from; the
     /// status is not touched, the agent's hook or the next screen sample moves it on.
@@ -767,10 +810,7 @@ impl SessionHandle {
         if g.meta.status != Status::Perm {
             return Err(SessionError::NotAtPrompt);
         }
-        let agent = match g.detector.agent() {
-            AgentKind::Terminal => g.meta.agent,
-            followed => followed,
-        };
+        let agent = prompt_agent(&g);
         let rows = g.detector.screen_rows();
         let keys = answer_keys(agent, &rows, decision).map_err(|e| match e {
             AnswerError::NoPrompt => SessionError::NotAtPrompt,
@@ -871,6 +911,14 @@ impl SessionHandle {
 
 /// Keep the group id only while survivors hold it: a freed id may be reused by any process, and
 /// closing the session must never signal that one.
+/// Whose prompt layout the screen shows: the agent the detector follows, else the launched one.
+fn prompt_agent(g: &Inner) -> AgentKind {
+    match g.detector.agent() {
+        AgentKind::Terminal => g.meta.agent,
+        followed => followed,
+    }
+}
+
 fn forget_empty_group(g: &mut Inner) {
     if g.pgid.is_some_and(|p| !group_alive(p)) {
         g.pgid = None;

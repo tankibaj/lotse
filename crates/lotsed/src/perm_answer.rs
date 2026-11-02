@@ -10,7 +10,7 @@
 //! Unverified: OpenCode's "Allow always" is a second confirm step whose keys no recording shows, so
 //! it is not answered.
 
-use lotse_proto::{AgentKind, PermDecision};
+use lotse_proto::{AgentKind, PermAlways, PermDecision};
 
 const ESC: &str = "\x1b";
 const ENTER: &str = "\r";
@@ -38,6 +38,18 @@ pub fn answer_keys(
     }
 }
 
+/// What Always would pick on the prompt on screen (the card's label); `None` when no prompt can be
+/// read there yet.
+pub fn always_option(agent: AgentKind, rows: &[String]) -> Option<PermAlways> {
+    match answer_keys(agent, rows, PermDecision::Always) {
+        Err(AnswerError::NoPrompt) => None,
+        Err(AnswerError::NoChoice) => Some(PermAlways::Unavailable),
+        Ok(_) => numbered_choices(rows)
+            .and_then(|choices| always_choice(&choices).map(|(_, kind)| kind))
+            .or(Some(PermAlways::Remember)),
+    }
+}
+
 struct Choice {
     n: u32,
     text: String,
@@ -47,10 +59,7 @@ fn numbered(rows: &[String], decision: PermDecision) -> Result<String, AnswerErr
     let choices = numbered_choices(rows).ok_or(AnswerError::NoPrompt)?;
     let pick = match decision {
         PermDecision::Allow => choices.iter().find(|c| is_plain_yes(&c.text)),
-        PermDecision::Always => choices
-            .iter()
-            .find(|c| is_always(&c.text))
-            .or_else(|| choices.iter().find(|c| is_auto_mode_switch(&c.text))),
+        PermDecision::Always => always_choice(&choices).map(|(c, _)| c),
         PermDecision::Deny => choices.iter().find(|c| is_no(&c.text)),
     };
     match (pick, decision) {
@@ -58,6 +67,14 @@ fn numbered(rows: &[String], decision: PermDecision) -> Result<String, AnswerErr
         (None, PermDecision::Deny) => Ok(ESC.to_owned()),
         (None, _) => Err(AnswerError::NoChoice),
     }
+}
+
+/// A "don't ask again" option, else the switch to auto mode.
+fn always_choice(choices: &[Choice]) -> Option<(&Choice, PermAlways)> {
+    let find = |f: fn(&str) -> bool| choices.iter().find(|c| f(&c.text));
+    find(is_always)
+        .map(|c| (c, PermAlways::Remember))
+        .or_else(|| find(is_auto_mode_switch).map(|c| (c, PermAlways::AutoMode)))
 }
 
 fn opencode(rows: &[String], decision: PermDecision) -> Result<String, AnswerError> {
@@ -304,6 +321,26 @@ mod tests {
         assert_eq!(keys(ClaudeCode, only_auto, Deny), Ok("3".into()));
         // with both, the narrower "this project" wins
         assert_eq!(keys(ClaudeCode, CLAUDE_4, Always), Ok("2".into()));
+    }
+
+    #[test]
+    fn always_option_names_what_always_would_pick() {
+        let label = |agent, s: &str| always_option(agent, &screen(s));
+        let only_auto =
+            " Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and switch to auto mode\n   3. No";
+        assert_eq!(label(ClaudeCode, CLAUDE_4), Some(PermAlways::Remember));
+        assert_eq!(label(Codex, CODEX), Some(PermAlways::Remember));
+        assert_eq!(label(ClaudeCode, only_auto), Some(PermAlways::AutoMode));
+        assert_eq!(
+            label(ClaudeCode, CLAUDE_YES_NO),
+            Some(PermAlways::Unavailable)
+        );
+        assert_eq!(
+            label(ClaudeCode, CLAUDE_EDIT),
+            Some(PermAlways::Unavailable)
+        );
+        assert_eq!(label(OpenCode, OPENCODE), Some(PermAlways::Unavailable));
+        assert_eq!(label(ClaudeCode, "$ ls"), None);
     }
 
     #[test]

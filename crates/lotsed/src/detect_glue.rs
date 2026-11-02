@@ -573,6 +573,7 @@ mod tests {
                 let req = PermRequest {
                     tool: "Bash".into(),
                     summary: format!("cmd {n}"),
+                    always: None,
                 };
                 limiter.allow(&Trigger::Perm(Some(req)), t0)
             })
@@ -772,6 +773,7 @@ mod tests {
         let perm = Trigger::Perm(Some(PermRequest {
             tool: "Bash".into(),
             summary: "npx playwright test e2e/patients".into(),
+            always: None,
         }));
         let Some(Event::Notification {
             title,

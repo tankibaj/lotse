@@ -141,6 +141,22 @@ pub struct PermRequest {
     pub tool: String,
     /// e.g. `npx playwright test e2e/patients`.
     pub summary: String,
+    /// What the card's Always button does on the prompt on screen; absent until the daemon has
+    /// read the prompt (the card then shows a plain Always). Since proto 2.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub always: Option<PermAlways>,
+}
+
+/// The option the Always button picks on the prompt on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermAlways {
+    /// "Yes, and don't ask again …" (or "… this project / this session").
+    Remember,
+    /// "Yes, and switch to auto mode": the session stops asking (card label "Auto").
+    AutoMode,
+    /// No such option: the card hides Always.
+    Unavailable,
 }
 
 /// Sidebar buttons on a permission card.

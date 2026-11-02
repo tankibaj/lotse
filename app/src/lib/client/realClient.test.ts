@@ -21,7 +21,7 @@ function fakeHost(answer: (r: Request) => Response = () => ({ kind: 'ok' })) {
           connectFails--;
           throw 'lotsed not found';
         }
-        return { proto_version: 1, daemon_version: '0.1.0' };
+        return { proto_version: 2, daemon_version: '0.1.0' };
       }
       if (command === 'daemon_request') return answer(args?.request as Request);
       return undefined;

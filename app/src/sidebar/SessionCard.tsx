@@ -8,7 +8,8 @@ import { StatusGlyph } from './StatusGlyph';
 
 // Session card, spec/research.html#sidebar. Line 1: status, title, unread dot, coarse time (Retry on
 // hover for failed sessions, same row). Line 2 (dim, 11 px): agent · branch icon · branch · ↑ahead · ±dirty.
-// Allow / Always / Deny are always visible on `perm` cards. Hover and focus never add rows.
+// Allow / Always / Deny are always visible on `perm` cards. Hover and focus never add rows. Always reads "Auto"
+// when it would switch the agent to auto mode, and is hidden when the prompt has no such option (`perm.always`).
 
 export interface SessionCardProps {
   session: Session;
@@ -180,14 +181,17 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
           >
             Allow
           </button>
-          <button
-            type="button"
-            className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors disabled:opacity-60 ${ghost}`}
-            disabled={answering}
-            onClick={decide('always')}
-          >
-            Always
-          </button>
+          {s.perm?.always !== 'unavailable' && (
+            <button
+              type="button"
+              className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors disabled:opacity-60 ${ghost}`}
+              disabled={answering}
+              onClick={decide('always')}
+              title={s.perm?.always === 'auto_mode' ? 'Yes, and switch to auto mode: this session stops asking' : undefined}
+            >
+              {s.perm?.always === 'auto_mode' ? 'Auto' : 'Always'}
+            </button>
+          )}
           <button
             type="button"
             className={`h-[22px] rounded-md px-2.5 text-[11px] font-medium transition-colors disabled:opacity-60 ${ghost}`}

@@ -460,6 +460,7 @@ fn perm_request(payload: &Value) -> PermRequest {
     PermRequest {
         tool: tool.to_owned(),
         summary: input.map(|i| summarize_input(tool, i)).unwrap_or_default(),
+        always: None,
     }
 }
 

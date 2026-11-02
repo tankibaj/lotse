@@ -246,6 +246,7 @@ mod tests {
             perm: Some(PermRequest {
                 tool: "Bash".into(),
                 summary: "ls".into(),
+                always: None,
             }),
             ..det(source, Status::Perm, at)
         }

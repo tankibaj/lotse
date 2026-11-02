@@ -222,6 +222,23 @@ describe('session cards', () => {
     expect(within(card('a1')).queryByRole('group', { name: /^Permission/ })).toBeNull();
   });
 
+  it('Always reads Auto when it switches to auto mode, and is hidden when the prompt has no such option', async () => {
+    const { client } = await ready();
+    const resolve = vi.spyOn(client, 'resolvePermission').mockResolvedValue();
+    const labels = () =>
+      within(within(card('a3')).getByRole('group', { name: /^Permission/ }))
+        .getAllByRole('button')
+        .map((b) => b.textContent);
+    act(() => client.setStatus('a3', 'perm', { tool: 'Bash', summary: 'ls', always: 'auto_mode' }));
+    expect(labels()).toEqual(['Allow', 'Auto', 'Deny']);
+    await userEvent.click(within(card('a3')).getByRole('button', { name: 'Auto' }));
+    expect(resolve).toHaveBeenCalledWith('a3', 'always');
+    act(() => client.setStatus('a3', 'perm', { tool: 'Bash', summary: 'ls', always: 'unavailable' }));
+    expect(labels()).toEqual(['Allow', 'Deny']);
+    act(() => client.setStatus('a3', 'perm', { tool: 'Bash', summary: 'ls', always: 'remember' }));
+    expect(labels()).toEqual(['Allow', 'Always', 'Deny']);
+  });
+
   it('each button sends its own decision for its own session', async () => {
     const { client } = await ready();
     const resolve = vi.spyOn(client, 'resolvePermission').mockResolvedValue();

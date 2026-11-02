@@ -6,8 +6,8 @@ mod common;
 
 use common::{Client, Daemon, WAIT};
 use lotse_proto::{
-    AgentKind, ErrorCode, Event, NewSession, NotificationKind, PermDecision, Request, Response,
-    Session, Status, SubAgent, WorktreeSpec,
+    AgentKind, ErrorCode, Event, NewSession, NotificationKind, PermAlways, PermDecision, Request,
+    Response, Session, Status, SubAgent, WorktreeSpec,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -578,6 +578,26 @@ fn resolve_permission_types_the_option_digit_the_screen_shows() {
         ask_permission(&mut c, &s);
         assert!(matches!(resolve(&mut c, &s, decision), Response::Ok));
         assert!(c.wait_output(&s.id, bytes), "{decision:?}: wanted {bytes}");
+    }
+}
+
+#[test]
+fn the_perm_request_says_what_always_would_pick_on_screen() {
+    let auto =
+        " Do you want to proceed?\\n ❯ 1. Yes\\n   2. Yes, and switch to auto mode\\n   3. No\\n";
+    for (prompt, ready, want) in [
+        (CLAUDE_PROMPT, "4. No", PermAlways::Remember),
+        (auto, "3. No", PermAlways::AutoMode),
+        (YES_NO_PROMPT, "2. No", PermAlways::Unavailable),
+    ] {
+        let d = Daemon::start();
+        let mut c = d.client();
+        let (s, _dir) = prompt_pane(&d, &mut c, prompt, ready);
+        ask_permission(&mut c, &s);
+        c.wait_event(|e| {
+            matches!(e, Event::StatusChanged { session_id, perm: Some(p), .. }
+                if *session_id == s.id && p.always == Some(want))
+        });
     }
 }
 

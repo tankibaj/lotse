@@ -21,7 +21,8 @@ pub use status::{Status, rollup};
 pub use types::*;
 
 /// Wire version. Sent in `hello` and `hello_ok`; a mismatch is `ErrorCode::VersionMismatch`.
-pub const PROTO_VERSION: u32 = 1;
+/// 2: `PermRequest::always`.
+pub const PROTO_VERSION: u32 = 2;
 
 #[cfg(test)]
 mod fixture_tests;

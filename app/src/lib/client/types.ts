@@ -1,7 +1,7 @@
-// Mirror of crates/lotse-proto (PROTO_VERSION 1). Frozen after WP0: change only with an
+// Mirror of crates/lotse-proto (PROTO_VERSION 2). Frozen after WP0: change only with an
 // orchestrator-approved proto bump. JSON fixtures in crates/lotse-proto/fixtures are the shared contract.
 
-export const PROTO_VERSION = 1;
+export const PROTO_VERSION = 2;
 
 // ids (opaque strings minted by the daemon)
 export type WorkspaceId = string;
@@ -16,6 +16,8 @@ export type AgentKind = 'terminal' | 'claude_code' | 'codex' | 'opencode';
 export type DetectSource = 'hook' | 'osc7501' | 'screen' | 'process';
 export type Theme = 'light' | 'dark' | 'auto';
 export type PermDecision = 'allow' | 'always' | 'deny';
+/** What Always picks on the prompt on screen: remember = "don't ask again", auto_mode = "switch to auto mode". */
+export type PermAlways = 'remember' | 'auto_mode' | 'unavailable';
 export type NotificationKind = 'perm' | 'fail' | 'done' | 'sub_agent_done';
 export type ErrorCode =
   | 'unauthorized'
@@ -63,6 +65,8 @@ export interface GitInfo {
 export interface PermRequest {
   tool: string;
   summary: string;
+  /** Absent until the daemon has read the prompt (proto 2). */
+  always?: PermAlways;
 }
 
 export interface Session {

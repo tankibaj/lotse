@@ -1,6 +1,6 @@
 [
-  { "type": "hello", "body": { "proto_version": 1, "token": "test-token-not-a-secret", "client": "app" } },
-  { "type": "hello_ok", "body": { "proto_version": 1, "daemon_version": "0.1.0" } },
+  { "type": "hello", "body": { "proto_version": 2, "token": "test-token-not-a-secret", "client": "app" } },
+  { "type": "hello_ok", "body": { "proto_version": 2, "daemon_version": "0.1.0" } },
   { "type": "response", "body": { "req_id": 0, "response": { "kind": "error", "data": { "code": "unauthorized", "message": "bad token" } } } },
   { "type": "response", "body": { "req_id": 0, "response": { "kind": "error", "data": { "code": "version_mismatch", "message": "daemon speaks proto 1, client sent 2" } } } }
 ]
