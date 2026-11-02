@@ -26,6 +26,17 @@ describe('New session sheet', () => {
     expect(getOverlay()).toBeNull();
   });
 
+  it('preselects the project it was opened for, not the current session\'s, and follows a newer request', async () => {
+    const { client } = mountWp5();
+    await client.getSnapshot();
+    selectSession('a1'); // billing-api (p1)
+    act(() => void emitUiCommand('openNewSession', 'p2'));
+    await screen.findByRole('dialog', { name: 'New session' });
+    await waitFor(() => expect(screen.getByLabelText('Project')).toHaveValue('p2'));
+    act(() => void emitUiCommand('openNewSession', 'p3')); // asked again for another project while it is open
+    await waitFor(() => expect(screen.getByLabelText('Project')).toHaveValue('p3'));
+  });
+
   it('shows the configured command and the first prompt for agents only', async () => {
     mountWp5();
     await open();

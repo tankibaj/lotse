@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient } from '../lib/client';
@@ -217,11 +217,24 @@ describe('"+" menu', () => {
       'Codex',
       'OpenCode',
       '—',
-      'New session…',
+      'Worktree or other project…',
       'Agent settings…',
     ]);
     expect(menu.querySelectorAll('svg')).toHaveLength(6);
     expect(screen.getByRole('button', { name: 'New session' })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('has one active item: the pointer moves the keyboard highlight, there is no separate hover colour', async () => {
+    await mount();
+    const menu = await openMenu();
+    const items = within(menu).getAllByRole('menuitem');
+    expect(items[0]).toHaveFocus(); // New Terminal, active from the keyboard
+    await userEvent.hover(items[3] as HTMLElement); // OpenCode
+    expect(items[3]).toHaveFocus();
+    expect(menu.querySelectorAll('[role="menuitem"]:focus')).toHaveLength(1);
+    await userEvent.keyboard('{ArrowUp}'); // arrows go on from where the pointer is
+    expect(items[2]).toHaveFocus();
+    for (const item of items) expect(item.className).not.toMatch(/(^|\s)hover:bg-blue/);
   });
 
   it.each([
@@ -267,12 +280,13 @@ describe('"+" menu', () => {
     off();
   });
 
-  it('"New session…" opens the sheet for the current project, "Agent settings…" opens Settings › Agents', async () => {
+  it('"Worktree or other project…" opens the sheet for the current project, "Agent settings…" opens Settings › Agents', async () => {
     await mount();
     const sheet = vi.fn();
     const off = onUiCommand('openNewSession', sheet);
     await openMenu();
-    await userEvent.click(screen.getByRole('menuitem', { name: 'New session…' }));
+    expect(screen.queryByRole('menuitem', { name: 'New session…' })).toBeNull(); // the old label read as a duplicate
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Worktree or other project…' }));
     expect(sheet).toHaveBeenCalledWith('p1');
     await openMenu();
     await userEvent.click(screen.getByRole('menuitem', { name: 'Agent settings…' }));

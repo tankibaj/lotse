@@ -23,7 +23,7 @@ test.describe('tab UX', () => {
   test('"+" opens the agent dropdown', async ({ page }, info) => {
     await page.getByRole('button', { name: 'New session', exact: true }).click();
     const menu = page.getByRole('menu', { name: 'New session' });
-    await expect(menu.getByRole('menuitem')).toHaveText([/New Terminal/, /Claude Code/, /Codex/, /OpenCode/, /New session…/, /Agent settings…/]);
+    await expect(menu.getByRole('menuitem')).toHaveText([/New Terminal/, /Claude Code/, /Codex/, /OpenCode/, /Worktree or other project…/, /Agent settings…/]);
     await expect(menu.getByRole('menuitem').first()).toBeFocused();
     await page.waitForTimeout(200);
     await page.screenshot({ path: `${OUT}/plus-menu-${info.project.name}.png`, animations: 'disabled' });

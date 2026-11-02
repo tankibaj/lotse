@@ -64,12 +64,14 @@ function Entries({ entries, onHoverItem, onPick }: {
             aria-haspopup={e.submenu ? 'menu' : undefined}
             tabIndex={-1}
             data-entry={i}
-            onMouseEnter={(ev) => onHoverItem(i, ev.currentTarget)}
+            onMouseEnter={(ev) => {
+              // One active item: the pointer moves focus, and focus alone draws the highlight (no separate :hover).
+              if (!e.disabled) ev.currentTarget.focus();
+              onHoverItem(i, ev.currentTarget);
+            }}
             onClick={() => !e.disabled && !e.submenu && onPick(e)}
             className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left outline-none ${
-              e.disabled
-                ? 'opacity-40'
-                : `cursor-default hover:bg-blue hover:text-white focus:bg-blue focus:text-white ${e.danger ? 'text-red' : ''}`
+              e.disabled ? 'opacity-40' : `cursor-default focus:bg-blue focus:text-white ${e.danger ? 'text-red' : ''}`
             }`}
           >
             <span className={e.icon ? 'grid w-4 place-items-center' : 'w-3 text-center'} aria-hidden="true">

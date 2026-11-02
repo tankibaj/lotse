@@ -10,16 +10,18 @@ export async function togglePausedNotifications(client: DaemonClient): Promise<v
 }
 
 /**
- * Start a session running `agent` (no worktree, no prompt) in the selected session's project, else the first project,
- * and select it. The "+" menu and ⌘T / ⌥⌘T use it. With no project at all it opens Add project instead.
+ * Start a session running `agent` (no worktree, no prompt) in `inProject`, else the selected session's project, else
+ * the first project, and select it. The new-session menu and ⌘T / ⌥⌘T use it. With no project at all it opens Add
+ * project instead.
  */
 export async function startSession(
   client: DaemonClient,
   workspace: { projects: readonly Project[]; sessions: readonly Session[] },
   agent: AgentKind,
+  inProject?: string,
 ): Promise<Session | null> {
   const current = workspace.sessions.find((s) => s.id === getSelectedSessionId());
-  const projectId = current?.project_id ?? workspace.projects[0]?.id;
+  const projectId = inProject ?? current?.project_id ?? workspace.projects[0]?.id;
   if (!projectId) {
     emitUiCommand('openAddProject');
     return null;

@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockClient, SUB_AGENT_SCRIPT } from '../lib/client/MockClient';
 import { onUiCommand } from '../lib/ui/commands';
-import { getSelectedSessionId } from '../lib/ui/selection';
+import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { hostBridge, setHostBridge } from '../sheets/hostBridge';
 import { StatusBar } from '../statusbar';
 import { Sidebar } from './Sidebar';
@@ -70,14 +70,29 @@ describe('tree', () => {
     expect(card('a1')).toBeInTheDocument();
   });
 
-  it('shows "No sessions · New session" for an empty project', async () => {
+  it('"No sessions · New session" opens the new-session dropdown for that project, not the current one', async () => {
     const { client } = await ready();
-    const handler = vi.fn();
-    const off = onUiCommand('openNewSession', handler);
-    await act(() => client.addProject({ path: '/x/empty', name: 'empty', color: null, icon: null }));
+    const sheet = vi.fn();
+    const off = onUiCommand('openNewSession', sheet);
+    const create = vi.spyOn(client, 'createSession');
+    const empty = await act(() => client.addProject({ path: '/x/empty', name: 'empty', color: null, icon: null }));
     expect(await screen.findByText(/No sessions/)).toBeInTheDocument();
+    expect(getSelectedSessionId()).toBe('a1'); // billing-api is current, the empty project is not
     await userEvent.click(screen.getByRole('button', { name: 'New session' }));
-    expect(handler).toHaveBeenCalledTimes(1);
+    expect(sheet).not.toHaveBeenCalled(); // a dropdown, not the modal
+    const menu = screen.getByRole('menu', { name: 'New session' });
+    expect(within(menu).getByText('empty')).toBeInTheDocument(); // headed with the project
+    expect(within(menu).getByRole('menuitem', { name: /Worktree or other project…/ })).toBeInTheDocument();
+    await userEvent.click(within(menu).getByRole('menuitem', { name: /^Codex/ }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ project_id: empty.id, agent: 'codex', worktree: null }));
+    await waitFor(() => expect(getSelectedSessionId()).not.toBe('a1'));
+
+    // "Worktree or other project…" hands the same project to the sheet
+    const other = await act(() => client.addProject({ path: '/x/empty2', name: 'empty2', color: null, icon: null }));
+    await userEvent.click(await screen.findByRole('button', { name: 'New session' })); // `empty` has a session now
+    await userEvent.click(screen.getByRole('menuitem', { name: /Worktree or other project…/ }));
+    expect(sheet).toHaveBeenCalledTimes(1);
+    expect(sheet).toHaveBeenCalledWith(other.id);
     off();
   });
 });
@@ -516,6 +531,16 @@ describe('context menus', () => {
     expect(screen.queryByRole('menu')).toBeNull();
   });
 
+  it('project menu › New Session… starts the terminal in that project even when another one is current', async () => {
+    const { client } = await ready();
+    const create = vi.spyOn(client, 'createSession');
+    act(() => void selectSession('a3')); // praxis-web
+    fireEvent.contextMenu(row(/billing-api/));
+    await userEvent.click(screen.getByRole('menuitem', { name: /New Session/ }));
+    await userEvent.click(screen.getByRole('menuitem', { name: /^New Terminal/ }));
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ project_id: 'p1', agent: 'terminal' }));
+  });
+
   it('project menu: icon & colour and New Session carry the project id; Reveal in Finder is app-only', async () => {
     await ready();
     const style = vi.fn();
@@ -528,6 +553,9 @@ describe('context menus', () => {
     expect(style).toHaveBeenCalledWith('p1');
     fireEvent.contextMenu(row(/billing-api/));
     await userEvent.click(screen.getByRole('menuitem', { name: /New Session/ }));
+    // New Session… opens the new-session dropdown for the project, in place of the menu
+    expect(screen.queryByRole('menu', { name: 'billing-api actions' })).toBeNull();
+    await userEvent.click(within(screen.getByRole('menu', { name: 'New session' })).getByRole('menuitem', { name: /Worktree or other project…/ }));
     expect(fresh).toHaveBeenCalledWith('p1');
     offs.forEach((off) => off());
 

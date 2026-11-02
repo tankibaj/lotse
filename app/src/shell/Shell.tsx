@@ -28,7 +28,10 @@ function loadWidth(): number {
   }
 }
 
-/** In the browser (dev, mock parity) draw the mock's dots; inside Tauri the native lights sit there. */
+/**
+ * In the browser (dev, mock parity) draw the mock's dots; inside Tauri the native lights sit there
+ * (`trafficLightPosition` in tauri.conf.json puts their centre on y = 22 px, x from 12 px, 52 px wide).
+ */
 function WindowControls() {
   if (inTauri()) return <span className="w-[52px] shrink-0" aria-hidden="true" />;
   return (
@@ -43,6 +46,14 @@ function WindowControls() {
 const iconButton =
   'grid h-[26px] w-7 place-items-center rounded-md text-dim hover:bg-sel';
 
+/** The sidebar glyph of both the hide and the show button. */
+const SidebarIcon = () => (
+  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+    <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
+    <path d="M6 2.5v11" />
+  </svg>
+);
+
 // The mock's panel toolbar (right end of the tab row). The panels are Beta, so the buttons are inert until they
 // land: `aria-disabled` (not `disabled`, so the "Coming soon" tooltip still shows in WebKit), no hover, no click.
 const PANELS: { name: string; keys: string; paths: string; rect?: boolean }[] = [
@@ -55,7 +66,7 @@ const PANELS: { name: string; keys: string; paths: string; rect?: boolean }[] = 
 
 function PanelToolbar() {
   return (
-    <div className="mb-2 ml-auto flex shrink-0 items-center gap-0.5" role="toolbar" aria-label="Panels">
+    <div className="ml-auto flex shrink-0 items-center gap-0.5" role="toolbar" aria-label="Panels">
       {PANELS.map((p) => (
         <button
           key={p.name}
@@ -158,10 +169,7 @@ export function Shell() {
                   title="Hide sidebar ⌃⌘S"
                   onClick={toggleSidebar}
                 >
-                  <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                    <rect x="1.5" y="2.5" width="13" height="11" rx="2" />
-                    <path d="M6 2.5v11" />
-                  </svg>
+                  <SidebarIcon />
                 </button>
               </div>
               <div data-slot="sidebar" className="flex min-h-0 flex-1 flex-col">
@@ -178,17 +186,22 @@ export function Shell() {
           </>
         )}
         <main className="flex min-w-0 flex-1 flex-col">
-          {/* Sidebar hidden: the native lights (x 12 + 3 × 20, tauri.conf.json) sit over this row, so clear them. */}
+          {/* Everything in this row is centred on y = 22 px, the traffic lights' centre line (`pt-px` offsets the 1 px
+              border). Sidebar hidden: the lights sit over the row's start, so it starts like the sidebar header
+              (controls or their spacer, then the toggle where the title would begin). Tabs stay bottom-attached. */}
           <div
-            className={`flex h-11 shrink-0 items-end gap-1 border-b ${hidden && inTauri() ? 'pr-2 pl-[78px]' : 'px-2'}`}
+            className={`flex h-11 shrink-0 items-center border-b pt-px ${hidden ? 'gap-2 px-3' : 'gap-1 px-2'}`}
             data-tauri-drag-region="deep"
           >
             {hidden && (
-              <button className={`${iconButton} mb-2`} aria-label="Show sidebar" onClick={toggleSidebar}>
-                ☰
-              </button>
+              <>
+                <WindowControls />
+                <button className={`${iconButton} ml-2`} aria-label="Show sidebar" title="Show sidebar ⌃⌘S" onClick={toggleSidebar}>
+                  <SidebarIcon />
+                </button>
+              </>
             )}
-            <div data-slot="tabs" className="flex min-w-0 flex-1 items-end gap-1">
+            <div data-slot="tabs" className="flex min-w-0 flex-1 items-center gap-1 self-stretch">
               <TabStrip />
             </div>
             <PanelToolbar />
