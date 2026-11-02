@@ -1,0 +1,124 @@
+/* Theme tokens copied from spec/mock.html (`:root` light, `.dark` dark). `auto` = follow the OS:
+   theme.ts toggles the `dark` class on <html> (same mechanism and `lotse-theme` key as the mock). */
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --c-purple: #af52de;
+  --c-indigo: #5856d6;
+  --c-pink: #ff2d55;
+  --c-teal: #30b0c7;
+  --c-mint: #00c7be;
+  --c-cyan: #32ade6;
+  --c-brown: #a2845e;
+  --c-yellow: #ffcc00;
+  --blue: #007aff;
+  --orange: #ff9500;
+  --red: #ff3b30;
+  --green: #34c759;
+  --gray: #8e8e93;
+  --win: #ffffff;
+  --side: #f5f5f7;
+  --line: #e5e5ea;
+  --txt: #1d1d1f;
+  --dim: #6e6e73;
+  --term: #ffffff;
+  --tdim: #8a8a8e;
+  --sel: rgba(0, 122, 255, 0.12);
+}
+
+.dark {
+  --c-purple: #bf5af2;
+  --c-indigo: #5e5ce6;
+  --c-pink: #ff375f;
+  --c-teal: #40c8e0;
+  --c-mint: #63e6e2;
+  --c-cyan: #64d2ff;
+  --c-brown: #ac8e68;
+  --c-yellow: #ffd60a;
+  --blue: #0a84ff;
+  --orange: #ff9f0a;
+  --red: #ff453a;
+  --green: #30d158;
+  --gray: #98989d;
+  --win: #1e1e1e;
+  --side: #252527;
+  --line: #38383a;
+  --txt: #f5f5f7;
+  --dim: #a1a1a6;
+  --term: #1e1e1e;
+  --tdim: #7c7c80;
+  --sel: rgba(10, 132, 255, 0.22);
+}
+
+/* Utilities: bg-win bg-side bg-term bg-line bg-sel text-txt text-dim text-tdim text-blue text-orange
+   text-red text-green border-line, and the project palette text-c-purple … */
+@theme inline {
+  --color-win: var(--win);
+  --color-side: var(--side);
+  --color-line: var(--line);
+  --color-txt: var(--txt);
+  --color-dim: var(--dim);
+  --color-term: var(--term);
+  --color-tdim: var(--tdim);
+  --color-sel: var(--sel);
+  --color-blue: var(--blue);
+  --color-orange: var(--orange);
+  --color-red: var(--red);
+  --color-green: var(--green);
+  --color-gray: var(--gray);
+  --color-c-purple: var(--c-purple);
+  --color-c-indigo: var(--c-indigo);
+  --color-c-pink: var(--c-pink);
+  --color-c-teal: var(--c-teal);
+  --color-c-mint: var(--c-mint);
+  --color-c-cyan: var(--c-cyan);
+  --color-c-brown: var(--c-brown);
+  --color-c-yellow: var(--c-yellow);
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* The mock's base: 13px system font, borders and rings use --line, blue focus ring. */
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    font-family: var(--font-sans);
+    font-size: 13px;
+    background: var(--win);
+    color: var(--txt);
+  }
+  *,
+  ::before,
+  ::after {
+    border-color: var(--line);
+  }
+  :focus-visible {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+  }
+  [aria-pressed='true'] {
+    background: var(--sel);
+    color: var(--blue);
+  }
+}
+
+@keyframes lotse-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.spin {
+  animation: lotse-spin 1s linear infinite;
+  display: inline-block;
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}

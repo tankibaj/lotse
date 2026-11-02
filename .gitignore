@@ -2,3 +2,15 @@ target/
 node_modules/
 dist/
 .DS_Store
+app/test-results/
+app/playwright-report/
+.playwright-mcp/
+# A global gitignore may ignore `lib/`; app/src/lib holds source (client, state, ui)
+!app/src/lib/
+# `tauri icon` also emits other platforms' icons; Lotse is macOS only
+app/src-tauri/gen/
+app/src-tauri/icons/android/
+app/src-tauri/icons/ios/
+app/src-tauri/icons/Square*.png
+app/src-tauri/icons/StoreLogo.png
+app/src-tauri/icons/icon.ico

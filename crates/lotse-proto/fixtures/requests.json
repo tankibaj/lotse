@@ -1,0 +1,42 @@
+[
+  { "type": "request", "body": { "req_id": 1, "request": { "method": "ping" } } },
+  { "type": "request", "body": { "req_id": 2, "request": { "method": "get_snapshot" } } },
+  { "type": "request", "body": { "req_id": 3, "request": { "method": "list_projects" } } },
+  { "type": "request", "body": { "req_id": 4, "request": { "method": "add_project", "params": { "path": "/Users/naim/Repos/new-thing", "name": null, "color": null, "icon": null } } } },
+  { "type": "request", "body": { "req_id": 5, "request": { "method": "update_project", "params": { "project_id": "p1", "patch": { "name": null, "color": "orange", "icon": "rocket", "notifications": { "mode": "custom", "perm": true, "fail": true, "done": false, "sub_agent_done": false } } } } } },
+  { "type": "request", "body": { "req_id": 6, "request": { "method": "update_project", "params": { "project_id": "p2", "patch": { "name": null, "color": null, "icon": null, "notifications": { "mode": "mute" } } } } } },
+  { "type": "request", "body": { "req_id": 7, "request": { "method": "remove_project", "params": { "project_id": "p5" } } } },
+  { "type": "request", "body": { "req_id": 8, "request": { "method": "list_sessions", "params": { "project_id": null } } } },
+  { "type": "request", "body": { "req_id": 9, "request": { "method": "create_session", "params": { "project_id": "p1", "agent": "claude_code", "command": null, "title": null, "worktree": { "branch": "lotse/new-task" }, "first_prompt": "Fix the flaky invoice rounding test" } } } },
+  { "type": "request", "body": { "req_id": 10, "request": { "method": "create_session", "params": { "project_id": "p5", "agent": "terminal", "command": null, "title": null, "worktree": null, "first_prompt": null } } } },
+  { "type": "request", "body": { "req_id": 11, "request": { "method": "rename_session", "params": { "session_id": "a1", "title": "Banker's rounding" } } } },
+  { "type": "request", "body": { "req_id": 12, "request": { "method": "close_session", "params": { "session_id": "a7" } } } },
+  { "type": "request", "body": { "req_id": 13, "request": { "method": "retry_session", "params": { "session_id": "a4" } } } },
+  { "type": "request", "body": { "req_id": 14, "request": { "method": "mark_read", "params": { "session_id": "a6" } } } },
+  { "type": "request", "body": { "req_id": 15, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "allow" } } } },
+  { "type": "request", "body": { "req_id": 16, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "always" } } } },
+  { "type": "request", "body": { "req_id": 17, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "deny" } } } },
+  { "type": "request", "body": { "req_id": 18, "request": { "method": "attach", "params": { "session_id": "a1", "cols": 120, "rows": 32 } } } },
+  { "type": "request", "body": { "req_id": 19, "request": { "method": "detach", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 20, "request": { "method": "send_input", "params": { "session_id": "a1", "text": "1\r" } } } },
+  { "type": "request", "body": { "req_id": 21, "request": { "method": "resize", "params": { "session_id": "a1", "cols": 100, "rows": 40 } } } },
+  { "type": "request", "body": { "req_id": 22, "request": { "method": "get_settings" } } },
+  { "type": "request", "body": { "req_id": 23, "request": { "method": "update_settings", "params": { "settings": {
+    "launch_commands": { "terminal": "$SHELL -l", "claude_code": "claude --model opus", "codex": "codex", "opencode": "opencode" },
+    "notifications": {
+      "perm": { "banner": true, "sound": true, "allow_deny": true },
+      "fail": { "banner": true, "sound": true, "allow_deny": false },
+      "done": { "banner": true, "sound": false, "allow_deny": false },
+      "sub_agent_done": { "banner": true, "sound": true, "allow_deny": false },
+      "only_when_unfocused": false,
+      "paused": true
+    },
+    "appearance": { "theme": "dark", "interface_font": "Inter", "interface_font_size": 14, "terminal_font": "JetBrains Mono", "terminal_font_size": 15 },
+    "scrollback_bytes": 8388608
+  } } } } },
+  { "type": "request", "body": { "req_id": 24, "request": { "method": "detect_launch_commands" } } },
+  { "type": "request", "body": { "req_id": 25, "request": { "method": "get_git_info", "params": { "project_id": "p1", "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 26, "request": { "method": "get_git_info", "params": { "project_id": "p5", "session_id": null } } } },
+  { "type": "request", "body": { "req_id": 27, "request": { "method": "hook_event", "params": { "agent": "claude_code", "session_id": "a3", "payload": { "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash", "cwd": "/Users/naim/Repos/praxis-web" } } } } },
+  { "type": "request", "body": { "req_id": 28, "request": { "method": "shutdown" } } }
+]
