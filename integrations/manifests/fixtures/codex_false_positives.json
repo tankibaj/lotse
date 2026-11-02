@@ -1,0 +1,19 @@
+{
+  "description": "Screens that look like work or a request but are not: quoted status rows, prose questions, the transcript viewer. Each step repaints the screen.",
+  "provenance": "Authored, not recorded. The quoted-status-row and prose-question screens are the cases Orca's tests (codex-quiet-ready-screen.test.ts) pin; the transcript viewer text is from herdr's codex manifest.",
+  "agent": "codex",
+  "cols": 100,
+  "rows": 24,
+  "steps": [
+    { "at": 0, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[2;1H   ~/repo\u001b[4;1H› what does the status row look like mid-turn?\u001b[6;1H• It reads like this:\u001b[8;3H• Working (0s • esc to interrupt)\u001b[10;3HThe timer counts up until the turn ends, and the row\u001b[11;3Hdisappears once the answer is complete.\u001b[20;1H› Ask Codex to do anything\u001b[22;3H? for shortcuts", "expect": "idle", "note": "an indented status row quoted inside an answer is not a running turn" },
+    { "at": 1000, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› tidy the README\u001b[6;1H• Done. Would you like to proceed with the changelog too?\u001b[8;1H  Reply [y/n] if so, or ask for something else.\u001b[20;1H› Ask Codex to do anything\u001b[22;3H? for shortcuts", "expect": "idle", "note": "a question in prose is not a request" },
+    { "at": 2000, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› run the tests\u001b[6;1H• Working (3s • esc to interrupt)\u001b[8;1H  └ Tip: start a fresh idea with /new\u001b[20;1H› Ask Codex to do anything\u001b[22;3H? for shortcuts", "expect": "run", "note": "a tip line below the status row still counts" },
+    { "at": 3000, "out": "\u001b[2J\u001b[1;1H  Transcript\u001b[3;1H› fix it\u001b[4;1H• Working (0s • esc to interrupt)\u001b[5;1H• Done\u001b[22;1H↑/↓ to scroll   pgup/pgdn to page   home/end to jump   esc to edit prev   q to quit", "expect": "run", "note": "the transcript viewer (Ctrl+T) changes nothing" },
+    { "at": 4000, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› run it\u001b[6;1H• Working (9s • esc to interrupt)\u001b[8;1H  Continue? [y/n]\u001b[20;1H› Ask Codex to do anything", "expect": "run", "note": "a working row beats the weak [y/n] rule" },
+    { "at": 5000, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› run it\u001b[6;1H• Working (11s • esc to interrupt)\u001b[8;1H  Continue? [y/n]\u001b[20;1H› Ask Codex to do anything", "expect": "run" },
+    { "at": 5500, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› run it\u001b[8;1H  Continue? [y/n]\u001b[20;1H› Ask Codex to do anything", "expect": "perm", "perm": { "tool": "approval", "summary": "Waiting for your input" }, "note": "the same prompt with no working row is a request" },
+    { "at": 6000, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› run the tests\u001b[6;1H• Working (5s • esc to interrupt)\u001b[20;1H› Ask Codex to do anything", "expect": "run" },
+    { "at": 7000, "out": "\u001b[2J\u001b[1;1H>_ OpenAI Codex (v0.158.0)\u001b[4;1H› run the tests\u001b[6;1H─ Worked for 14s ─\u001b[8;1H• All 12 tests pass (12s)\u001b[20;1H› Ask Codex to do anything", "expect": "run", "note": "an answer that ends in a duration is not a status row; the turn is at rest, held for a moment" },
+    { "at": 8500, "tick": true, "expect": "done", "note": "…and then it ends (a row mistaken for Working would keep Run forever)" }
+  ]
+}

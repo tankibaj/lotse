@@ -1,0 +1,136 @@
+# Codex CLI screen manifest (see crates/lotse-detect/src/screen/manifest.rs for the format).
+#
+# Derived from herdr's codex manifest (/Users/naim/Repos/research/herdr/src/detect/manifests/codex.toml,
+# Apache-2.0) and checked against Orca's recorded Codex 0.158.0 transcripts. Lotse reads the visible
+# rows only, so herdr's OSC-title rules are dropped. Unverified: Codex versions other than the
+# 0.157-0.160 range of those transcripts.
+#
+# Reading it: a blocked dialog beats a working status row, which beats everything else. A screen that
+# matches no rule counts as "at rest" (the adapter turns working -> rest into Done after `hold_ms`).
+schema = 1
+id = "codex"
+agent = "codex"
+version = "2026.11.02.1"
+hold_ms = 1500
+prompt_markers = ["›"]
+
+# The transcript viewer (Ctrl+T) shows old turns, including quoted status rows: change nothing.
+[[rules]]
+id = "transcript_viewer"
+state = "keep"
+priority = 1000
+region = "after_last_prompt_marker"
+contains = ["↑/↓ to scroll", "pgup/pgdn to", "home/end to jump", "q to quit"]
+any = [
+  { contains = ["esc to edit prev"] },
+  { contains = ["esc/← to edit prev"] },
+]
+
+[[rules]]
+id = "trust_directory"
+state = "blocked"
+priority = 950
+region = "top(20)"
+tool = "trust"
+all = [
+  { any = [
+    { regex = ['\A> You are in [^\r\n]+(?:\r?\n|$)'] },
+    { contains = ["Folder access"] },
+  ] },
+  { any = [
+    { regex = ['(?s)Do\s+you\s+trust\s+the\s+contents\s+of\s+this\s+directory\?'] },
+    { all = [
+      { contains = ["Trust this folder?", "Codex can read, edit, and run files here"] },
+      { any = [
+        { contains = ["Trust and continue"] },
+        { contains = ["enter continue"] },
+      ] },
+    ] },
+  ] },
+]
+
+[[rules]]
+id = "startup_update"
+state = "blocked"
+priority = 950
+region = "bottom(20)"
+tool = "update"
+any = [
+  { all = [
+    { contains = ["Update available!", "Update now"] },
+    { regex = ['Skip\s+until\s+next\s+version', 'Press enter to continue\s*\z'] },
+  ] },
+  { all = [
+    { regex = ['(?m)^\s*Update\s+available\s+·'] },
+    { regex = ['enter\s+continue\s+·\s+esc\s+skip\s*\z'] },
+  ] },
+]
+
+# Command approval: "Would you like to run the following command?" ... "$ <command>" ...
+# "Press enter to confirm or esc to cancel". Also the question and plugin pickers.
+[[rules]]
+id = "approval_dialog"
+state = "blocked"
+priority = 900
+region = "after_last_prompt_marker"
+tool = "command"
+summary = '(?m)^\s*\$ (.+?)\s*$'
+any = [
+  { contains = ["press enter to confirm or esc to cancel"] },
+  { contains = ["enter to submit answer"] },
+  { contains = ["enter to submit all"] },
+  { contains = ["allow command?"] },
+  { contains = ["All Results", "Filesystem Only", "Plugins"] },
+]
+
+# Older and plain prompts: a line that ends in "[y/n]", or a "Yes ... (y)" choice. Line-anchored and
+# below the working rule on purpose: prose in an answer ("Would you like to proceed?", a quoted
+# "[y/n]") must not read as a request, nor hide a running turn. (herdr also matches the phrases
+# "do you want to" / "would you like to"; those appear in ordinary answers, so they are left out.)
+[[rules]]
+id = "yes_no_prompt"
+state = "blocked"
+priority = 400
+region = "before_current_prompt_marker"
+tool = "approval"
+any = [
+  { regex = ['(?mi)\[y/n\]\s*$'] },
+  { regex = ['(?mi)^\s*(?:[›❯]\s*)?(?:\d+\.\s*)?yes[^\r\n]*\(y\)\s*$'] },
+]
+
+# The turn gave up: Codex could not reach the model endpoint (the line herdr's manifest names).
+# Unverified: other failures ("■ stream error ...", 401/429/5xx messages) are not matched on purpose,
+# since "■ Conversation interrupted" (the user pressed Esc) uses the same marker and is not a failure.
+# A crashed or non-zero exit is caught by the process source instead.
+[[rules]]
+id = "reconnect_failed"
+state = "fail"
+priority = 520
+region = "before_current_prompt_marker"
+regex = ['(?m)^(?:[•◦■][ \t]+)?Reconnect failed — check the endpoint, then relaunch \([0-9hms ]+\)\s*$']
+
+# The footer line under the composer ends in a spinner while the turn runs ("model · ~/dir · ⠧"; 0.155.1
+# also shows "· renaming... ⠙"). Codex 0.155.1 hides the "Working" row while it streams an answer, so
+# without this a long answer would read as a finished turn. The idle footer is "? for shortcuts".
+[[rules]]
+id = "footer_spinner"
+state = "working"
+priority = 480
+region = "bottom(3)"
+regex = ['(?m)\s[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]\s*$']
+
+# "• Working (11s • esc to interrupt)" directly above the composer (also with the interrupt hint
+# hidden, a different activity label that keeps the hint, a queued-input list below it, or a
+# "· detail" suffix). The row must be the last thing above the composer, so a status row quoted
+# inside an answer does not count; and a label other than "Working" needs the "to interrupt" hint,
+# so an answer that ends in a duration ("• All 12 tests pass (12s)") is not a running turn. The `any` is a cheap
+# pre-filter for the regex.
+[[rules]]
+id = "working_status_row"
+state = "working"
+priority = 500
+region = "before_current_prompt_marker"
+any = [{ contains = [" to interrupt)"] }, { contains = ["s)"] }]
+regex = ['(?m)^(?:[•◦][ \t]+)?(?:Working \((?:[0-9]+[hm] )*[0-9]+s(?: • [^\r\n]+? to interrupt)?\)|[^\s›•◦■✗✓─][^\r\n]* \((?:[0-9]+[hm] )*[0-9]+s • [^\r\n]+? to interrupt\))(?: · [^\r\n]*)?(?:\r?\n(?:[^•◦›■✗✓─\r\n][^\r\n]*|•[ \t]+(?:Queued\s+follow-up\s+inputs|Messages\s+to\s+be\s+submitted\s+after\s+next\s+tool\s+call(?:\s+\(press\s+[^\r\n]+?\s+to\s+interrupt\s+and\s+send\s+immediately\))?|Messages\s+to\s+be\s+submitted\s+at\s+end\s+of\s+turn)|›[⠁⠂⠄⠈⠐⠠⡀⢀][^\r\n]*)?)*\s*\z']
+# A failed reconnect keeps its last timer but is no longer working.
+not = [{ regex = ['(?m)^(?:[•◦][ \t]+)?Reconnect failed — check the endpoint, then relaunch \([0-9hms ]+\)$'] }]

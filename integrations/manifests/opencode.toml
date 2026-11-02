@@ -1,0 +1,45 @@
+# OpenCode screen manifest (see crates/lotse-detect/src/screen/manifest.rs for the format).
+#
+# The fallback when the Lotse OpenCode plugin (integrations/opencode) is not installed: the plugin's
+# events (source: hook) always win over this. Derived from herdr's opencode manifest
+# (/Users/naim/Repos/research/herdr/src/detect/manifests/opencode.toml, Apache-2.0).
+# Unverified: no recorded OpenCode transcript was available; the phrases are herdr's and Orca's.
+#
+# A screen that matches no rule counts as "at rest" (working -> rest becomes Done after `hold_ms`).
+schema = 1
+id = "opencode"
+agent = "opencode"
+version = "2026.11.02.1"
+hold_ms = 1500
+
+# "△ Permission required" with Allow once / Allow always / Reject, or a question picker.
+[[rules]]
+id = "permission_required"
+state = "blocked"
+priority = 300
+region = "whole"
+tool = "permission"
+any = [
+  { contains = ["△ Permission required"] },
+  { contains = ["esc dismiss"], any = [{ contains = ["enter confirm"] }, { contains = ["enter submit"] }, { contains = ["enter toggle"] }], all = [{ any = [{ contains = ["↑↓ select"] }, { contains = ["⇆ tab"] }] }] },
+]
+
+[[rules]]
+id = "interrupt_hint_working"
+state = "working"
+priority = 110
+region = "whole"
+any = [
+  { contains = ["esc to interrupt"] },
+  { contains = ["ctrl+c to interrupt"] },
+  { contains = ["press esc to interrupt"] },
+  { regex = ['(?im)^.*opencode.*esc (?:again to )?interrupt'] },
+]
+
+# The animated progress bar of a running turn.
+[[rules]]
+id = "progress_bar_working"
+state = "working"
+priority = 100
+region = "whole"
+regex = ['(■|⬝){4,}']
