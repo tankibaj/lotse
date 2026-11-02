@@ -1,0 +1,48 @@
+[
+  { "type": "response", "body": { "req_id": 7, "response": { "kind": "ok" } } },
+  { "type": "response", "body": { "req_id": 1, "response": { "kind": "pong" } } },
+  { "type": "response", "body": { "req_id": 3, "response": { "kind": "projects", "data": [
+    { "id": "p1", "workspace_id": "w1", "name": "billing-api", "path": "/Users/naim/Repos/billing-api", "color": "purple", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
+    { "id": "p5", "workspace_id": "w1", "name": "notes", "path": "/Users/naim/Documents/notes", "color": "lavender", "icon": "folder", "is_git": false, "notifications": { "mode": "mute" } }
+  ] } } },
+  { "type": "response", "body": { "req_id": 5, "response": { "kind": "project", "data": { "id": "p1", "workspace_id": "w1", "name": "billing-api", "path": "/Users/naim/Repos/billing-api", "color": "orange", "icon": "rocket", "is_git": true, "notifications": { "mode": "custom", "perm": true, "fail": true, "done": false, "sub_agent_done": false } } } } },
+  { "type": "response", "body": { "req_id": 8, "response": { "kind": "sessions", "data": [
+    {
+      "id": "a4", "project_id": "p2", "title": "Bump Angular 20", "agent": "codex", "command": "codex",
+      "status": "fail", "sub_agents": [],
+      "git": { "is_git": true, "branch": "lotse/angular-20", "ahead": 1, "dirty": 2, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/praxis-web/angular-20" },
+      "created_at": 1793600040000, "last_activity": 1793610000000, "running_since": null,
+      "unread": false, "perm": null, "source": "osc7501"
+    }
+  ] } } },
+  { "type": "response", "body": { "req_id": 9, "response": { "kind": "session", "data": {
+    "id": "a8", "project_id": "p1", "title": "Claude Code", "agent": "claude_code", "command": "claude",
+    "status": "unknown", "sub_agents": [],
+    "git": { "is_git": true, "branch": "lotse/new-task", "ahead": 0, "dirty": 0, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/new-task" },
+    "created_at": 1793610840000, "last_activity": 1793610840000, "running_since": null,
+    "unread": false, "perm": null, "source": "process"
+  } } } },
+  { "type": "response", "body": { "req_id": 18, "response": { "kind": "attached", "data": { "session_id": "a1", "cols": 120, "rows": 32, "replay_len": 52431 } } } },
+  { "type": "response", "body": { "req_id": 22, "response": { "kind": "settings", "data": {
+    "launch_commands": { "terminal": "$SHELL -l", "claude_code": "claude", "codex": "codex", "opencode": "opencode" },
+    "notifications": {
+      "perm": { "banner": true, "sound": true, "allow_deny": true },
+      "fail": { "banner": true, "sound": true, "allow_deny": false },
+      "done": { "banner": true, "sound": false, "allow_deny": false },
+      "sub_agent_done": { "banner": false, "sound": false, "allow_deny": false },
+      "only_when_unfocused": true,
+      "paused": false
+    },
+    "appearance": { "theme": "auto", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
+    "scrollback_bytes": 4194304
+  } } } },
+  { "type": "response", "body": { "req_id": 24, "response": { "kind": "launch_commands", "data": [
+    { "agent": "terminal", "default_command": "$SHELL -l", "command": "$SHELL -l", "found": true, "resolved_path": "/bin/zsh", "version": "zsh 5.9", "integration": null },
+    { "agent": "claude_code", "default_command": "claude", "command": "claude", "found": true, "resolved_path": "/opt/homebrew/bin/claude", "version": "v2.1.309", "integration": "hooks installed" },
+    { "agent": "codex", "default_command": "codex", "command": "codex", "found": true, "resolved_path": "/opt/homebrew/bin/codex", "version": "v0.98", "integration": "OSC 7501" },
+    { "agent": "opencode", "default_command": "opencode", "command": "opencode", "found": false, "resolved_path": null, "version": null, "integration": null }
+  ] } } },
+  { "type": "response", "body": { "req_id": 25, "response": { "kind": "git_info", "data": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding" } } } },
+  { "type": "response", "body": { "req_id": 26, "response": { "kind": "git_info", "data": { "is_git": false, "branch": "", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null } } } },
+  { "type": "response", "body": { "req_id": 11, "response": { "kind": "error", "data": { "code": "not_found", "message": "no session a99" } } } }
+]

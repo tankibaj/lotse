@@ -1,0 +1,92 @@
+{
+  "type": "response",
+  "body": {
+    "req_id": 1,
+    "response": {
+      "kind": "snapshot",
+      "data": {
+        "daemon": { "version": "0.1.0", "proto_version": 1, "pid": 4242, "started_at": 1793524440000 },
+        "projects": [
+          { "id": "p1", "workspace_id": "w1", "name": "billing-api", "path": "/Users/naim/Repos/billing-api", "color": "purple", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
+          { "id": "p2", "workspace_id": "w1", "name": "praxis-web", "path": "/Users/naim/Repos/praxis-web", "color": "teal", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
+          { "id": "p3", "workspace_id": "w1", "name": "infra-terraform", "path": "/Users/naim/Repos/infra-terraform", "color": "yellow", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
+          { "id": "p4", "workspace_id": "w1", "name": "dotfiles", "path": "/Users/naim/Repos/dotfiles", "color": "sage", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
+          { "id": "p5", "workspace_id": "w1", "name": "notes", "path": "/Users/naim/Documents/notes", "color": "indigo", "icon": "folder", "is_git": false, "notifications": { "mode": "global" } }
+        ],
+        "sessions": [
+          {
+            "id": "a1", "project_id": "p1", "title": "Fix invoice rounding", "agent": "claude_code", "command": "claude",
+            "status": "run",
+            "sub_agents": [
+              { "id": "a1-s1", "name": "explore-repo", "status": "done" },
+              { "id": "a1-s2", "name": "test-runner", "status": "run" }
+            ],
+            "git": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding" },
+            "created_at": 1793607240000, "last_activity": 1793610720000, "running_since": 1793610679000,
+            "unread": false, "perm": null, "source": "hook"
+          },
+          {
+            "id": "a2", "project_id": "p1", "title": "Flyway migration V42", "agent": "codex", "command": "codex",
+            "status": "idle", "sub_agents": [],
+            "git": { "is_git": true, "branch": "lotse/flyway-v42", "ahead": 0, "dirty": 0, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/flyway-v42" },
+            "created_at": 1793524440000, "last_activity": 1793607240000, "running_since": null,
+            "unread": false, "perm": null, "source": "osc7501"
+          },
+          {
+            "id": "a3", "project_id": "p2", "title": "Patient list → Signals", "agent": "claude_code", "command": "claude",
+            "status": "perm",
+            "sub_agents": [
+              { "id": "a3-s1", "name": "component-migrator", "status": "done" },
+              { "id": "a3-s2", "name": "spec-updater", "status": "done" },
+              { "id": "a3-s3", "name": "e2e-runner", "status": "perm" }
+            ],
+            "git": { "is_git": true, "branch": "lotse/patients-signals", "ahead": 5, "dirty": 12, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/praxis-web/patients-signals" },
+            "created_at": 1793603640000, "last_activity": 1793610835000, "running_since": null,
+            "unread": false, "perm": { "tool": "Bash", "summary": "npx playwright test e2e/patients" }, "source": "hook"
+          },
+          {
+            "id": "a4", "project_id": "p2", "title": "Bump Angular 20", "agent": "codex", "command": "codex",
+            "status": "fail", "sub_agents": [],
+            "git": { "is_git": true, "branch": "lotse/angular-20", "ahead": 1, "dirty": 2, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/praxis-web/angular-20" },
+            "created_at": 1793600040000, "last_activity": 1793610000000, "running_since": null,
+            "unread": false, "perm": null, "source": "osc7501"
+          },
+          {
+            "id": "a5", "project_id": "p3", "title": "RDS Postgres 17", "agent": "claude_code", "command": "claude",
+            "status": "run", "sub_agents": [],
+            "git": { "is_git": true, "branch": "lotse/rds-pg17", "ahead": 0, "dirty": 1, "worktree": false, "worktree_path": null },
+            "created_at": 1793607240000, "last_activity": 1793610540000, "running_since": 1793610535000,
+            "unread": false, "perm": null, "source": "hook"
+          },
+          {
+            "id": "a6", "project_id": "p4", "title": "Starship prompt", "agent": "opencode", "command": "opencode",
+            "status": "done", "sub_agents": [],
+            "git": { "is_git": true, "branch": "main", "ahead": 1, "dirty": 0, "worktree": false, "worktree_path": null },
+            "created_at": 1793596440000, "last_activity": 1793608920000, "running_since": null,
+            "unread": true, "perm": null, "source": "hook"
+          },
+          {
+            "id": "a7", "project_id": "p5", "title": "Scratch shell", "agent": "terminal", "command": "$SHELL -l",
+            "status": "idle", "sub_agents": [],
+            "git": { "is_git": false, "branch": "", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null },
+            "created_at": 1793524440000, "last_activity": 1793600040000, "running_since": null,
+            "unread": false, "perm": null, "source": "process"
+          }
+        ],
+        "settings": {
+          "launch_commands": { "terminal": "$SHELL -l", "claude_code": "claude", "codex": "codex", "opencode": "opencode" },
+          "notifications": {
+            "perm": { "banner": true, "sound": true, "allow_deny": true },
+            "fail": { "banner": true, "sound": true, "allow_deny": false },
+            "done": { "banner": true, "sound": false, "allow_deny": false },
+            "sub_agent_done": { "banner": false, "sound": false, "allow_deny": false },
+            "only_when_unfocused": true,
+            "paused": false
+          },
+          "appearance": { "theme": "auto", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
+          "scrollback_bytes": 4194304
+        }
+      }
+    }
+  }
+}

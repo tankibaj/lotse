@@ -1,0 +1,59 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/lotse-proto",
+    "crates/lotsed",
+    "crates/lotse-detect",
+    "crates/lotse-hook",
+    "crates/lotse-git",
+    "app/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+# Every dependency Alpha is expected to need, declared once so later WPs never touch the lockfile.
+# Crates pull them in with `dep = { workspace = true }`.
+[workspace.dependencies]
+# internal
+lotse-proto = { path = "crates/lotse-proto" }
+lotse-detect = { path = "crates/lotse-detect" }
+lotse-git = { path = "crates/lotse-git" }
+
+# Exact versions (`=`); Cargo.lock is committed. Bump deliberately, in an orchestrator-approved change.
+# async, errors, logging
+tokio = { version = "=1.54.1", features = ["full"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+thiserror = "=2.0.21"
+anyhow = "=1.0.104"
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+
+# daemon
+portable-pty = "=0.9.0"
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+alacritty_terminal = "=0.26.0"
+toml = "=1.1.8"
+dirs = "=7.0.0"
+which = "=8.0.6"
+nix = { version = "=0.31.3", features = ["process", "signal", "term", "user", "fs"] }
+regex = "=1.13.1"
+uuid = { version = "=1.29.0", features = ["v4"] }
+
+# app shell
+tauri = "=2.12.5"
+tauri-build = "=2.7.4"
+tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-notification = "=2.8.0"
+
+# dev
+tempfile = "=3.27.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
