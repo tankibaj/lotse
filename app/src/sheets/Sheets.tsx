@@ -1,4 +1,80 @@
-/** WP0 placeholder (WP5): New session and Add project sheets, shortcuts help. Listens for `openNewSession` / `openAddProject`. */
+import { useEffect } from 'react';
+import { useClient } from '../lib/client';
+import { onUiCommand } from '../lib/ui/commands';
+import { AddProjectSheet } from './AddProjectSheet';
+import { hostBridge } from './hostBridge';
+import { NewSessionSheet } from './NewSessionSheet';
+import { openOverlay, openProjectStylePicker, toggleOverlay, useOverlay } from './overlay';
+import { ProjectStylePicker } from './ProjectStylePicker';
+import { ShortcutsSheet } from './ShortcutsSheet';
+
+/** New session, Add project, project colour/icon popover and the shortcuts sheet. Listens for `openNewSession` / `openAddProject`. */
 export function Sheets() {
-  return <div hidden data-placeholder="sheets" />;
+  const client = useClient();
+  const overlay = useOverlay();
+
+  useEffect(() => {
+    const offs = [
+      onUiCommand('openNewSession', () => openOverlay({ name: 'newSession' })),
+      onUiCommand('openAddProject', () => openOverlay({ name: 'addProject' })),
+    ];
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey) return;
+      if (e.code === 'KeyT' && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        openOverlay({ name: 'newSession' });
+      } else if (e.code === 'KeyO' && e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        openOverlay({ name: 'addProject' });
+      } else if (!e.altKey && ((e.code === 'Slash' && !e.shiftKey) || e.key === '/')) {
+        // `key` too: on a German layout "/" is ⇧7
+        e.preventDefault();
+        toggleOverlay({ name: 'shortcuts' });
+      }
+    };
+    addEventListener('keydown', onKey);
+    // Dev server only: the picker is opened from the sidebar menu (WP3), so e2e needs a way in.
+    if (import.meta.env.DEV) (window as unknown as { __lotse?: object }).__lotse = { openProjectStylePicker };
+    return () => {
+      offs.forEach((off) => off());
+      removeEventListener('keydown', onKey);
+    };
+  }, []);
+
+  // Drag a folder from Finder onto the sidebar: add it, or offer each repo of a multi-repo folder.
+  useEffect(() => {
+    const side = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]');
+    const bridge = hostBridge();
+    const addDropped = async (paths: string[]) => {
+      try {
+        const [only] = paths;
+        if (paths.length === 1 && only) {
+          const found = await bridge.scanRepos(only);
+          if (!found.is_repo && found.repos.length > 1) {
+            openOverlay({ name: 'addProject', repos: { root: only, repos: found.repos } });
+            return;
+          }
+        }
+        for (const path of paths) await client.addProject({ path, name: null, color: null, icon: null });
+      } catch {
+        openOverlay({ name: 'addProject' }); // let the sheet explain what went wrong
+      }
+    };
+    return bridge.watchDrops(side, {
+      onHover: (over) => {
+        const el = side();
+        if (el) el.style.outline = over ? '2px dashed var(--blue)' : '';
+      },
+      onDrop: (paths) => paths.length && void addDropped(paths),
+    });
+  }, [client]);
+
+  return (
+    <>
+      {overlay?.name === 'newSession' && <NewSessionSheet />}
+      {overlay?.name === 'addProject' && <AddProjectSheet key={overlay.repos?.root ?? 'home'} />}
+      {overlay?.name === 'shortcuts' && <ShortcutsSheet />}
+      {overlay?.name === 'projectStyle' && <ProjectStylePicker key={overlay.projectId} />}
+    </>
+  );
 }
