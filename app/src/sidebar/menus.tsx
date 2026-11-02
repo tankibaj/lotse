@@ -57,7 +57,7 @@ export function projectMenu(
   }));
   return [
     { kind: 'header', label: project.name },
-    { kind: 'item', label: 'New Session…', hint: '⌘T', onSelect: actions.newSession },
+    { kind: 'item', label: 'New Session…', onSelect: actions.newSession },
     { kind: 'separator' },
     {
       kind: 'item',

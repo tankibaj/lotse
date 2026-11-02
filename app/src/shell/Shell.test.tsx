@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient, useClient } from '../lib/client';
 import { onUiCommand } from '../lib/ui/commands';
 import { Shell } from './Shell';
+
+// The drop watcher of the sheets talks to the webview when it believes it runs inside Tauri (one test fakes that).
+vi.mock('@tauri-apps/api/webview', () => ({ getCurrentWebview: () => ({ onDragDropEvent: async () => () => {} }) }));
 
 const mount = () => {
   const client = new MockClient({ script: false });
@@ -34,6 +38,26 @@ describe('Shell', () => {
     // a bare attribute only drags on the bar itself; "deep" covers its children, buttons still click
     bars.forEach((bar) => expect(bar).toHaveAttribute('data-tauri-drag-region', 'deep'));
     expect(bars[1]?.querySelector('[data-slot="tabs"]')).not.toBeNull();
+  });
+
+  it('the native traffic lights are positioned in tauri.conf.json, and the tab row clears them when the sidebar is hidden', async () => {
+    const conf = JSON.parse(readFileSync('src-tauri/tauri.conf.json', 'utf8') /* vitest runs from app/ */) as {
+      app: { windows: { titleBarStyle: string; trafficLightPosition?: { x: number; y: number } }[] };
+    };
+    const win = conf.app.windows[0];
+    expect(win?.titleBarStyle).toBe('Overlay');
+    expect(win?.trafficLightPosition).toEqual({ x: 12, y: 22 });
+
+    (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__ = {};
+    try {
+      const { container } = mount();
+      await userEvent.click(screen.getByRole('button', { name: /Hide sidebar/ }));
+      const row = container.querySelectorAll('[data-tauri-drag-region]')[0];
+      expect(row).toHaveClass('pl-[78px]');
+      expect(row).toHaveAttribute('data-tauri-drag-region', 'deep');
+    } finally {
+      delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    }
   });
 
   it('shows the mock\'s five panel buttons, inert with a "Coming soon" tooltip until the Beta panels land', async () => {

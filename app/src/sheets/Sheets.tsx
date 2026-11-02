@@ -27,10 +27,8 @@ export function Sheets() {
     ];
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.ctrlKey) return;
-      if (e.code === 'KeyT' && !e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        openOverlay({ name: 'newSession' });
-      } else if (e.code === 'KeyO' && e.shiftKey && !e.altKey) {
+      // ⌘T (new terminal) and ⌥⌘T (new Claude Code session) start sessions directly: see `useSessionShortcuts`.
+      if (e.code === 'KeyO' && e.shiftKey && !e.altKey) {
         e.preventDefault();
         openOverlay({ name: 'addProject' });
       } else if (!e.altKey && ((e.code === 'Slash' && !e.shiftKey) || e.key === '/')) {

@@ -23,7 +23,7 @@ const AGENT_LABEL = { terminal: 'Terminal', claude_code: 'Claude Code', codex: '
 export const COMMANDS: { id: Extract<PaletteAction, { type: 'command' }>['id']; label: string; hint: string; glyph: string }[] = [
   { id: 'next-need', label: 'Next session that needs you', hint: '⌘J', glyph: '▲' },
   { id: 'add-project', label: 'Add a Project…', hint: '⇧⌘O', glyph: '+' },
-  { id: 'new-session', label: 'New session…', hint: '⌘T', glyph: '+' },
+  { id: 'new-session', label: 'New session…', hint: '', glyph: '+' },
   { id: 'settings', label: 'Settings…', hint: '⌘,', glyph: '⚙︎' },
   { id: 'shortcuts', label: 'Keyboard shortcuts', hint: '⌘/', glyph: '⌘' },
   { id: 'pause', label: 'Pause notifications', hint: '⌥⌘N', glyph: '○' },

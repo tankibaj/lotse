@@ -64,9 +64,15 @@ describe('shortcut bindings', () => {
     expect(getOverlay()?.name).toBe('shortcuts');
   });
 
-  it('⌘T, ⇧⌘O, ⌘, and ⌘K each open their overlay, replacing the one before', async () => {
+  it('⌘T no longer opens the sheet: it starts a terminal (useSessionShortcuts)', () => {
     mountWp5();
     key({ code: 'KeyT', metaKey: true });
+    expect(getOverlay()).toBeNull();
+  });
+
+  it('⇧⌘O, ⌘, and ⌘K each open their overlay, replacing the one before', async () => {
+    mountWp5();
+    act(() => void emitUiCommand('openNewSession'));
     expect(getOverlay()?.name).toBe('newSession');
     key({ code: 'KeyO', metaKey: true, shiftKey: true });
     expect(getOverlay()?.name).toBe('addProject');
@@ -92,7 +98,7 @@ describe('shortcut bindings', () => {
     const trigger = document.createElement('button');
     document.body.append(trigger);
     trigger.focus();
-    key({ code: 'KeyT', metaKey: true });
+    act(() => void emitUiCommand('openNewSession'));
     const dlg = await screen.findByRole('dialog');
     await screen.findByLabelText('Project');
     for (let i = 0; i < 12; i++) {

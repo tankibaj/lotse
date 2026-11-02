@@ -178,7 +178,11 @@ export function Shell() {
           </>
         )}
         <main className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-11 shrink-0 items-end gap-1 border-b px-2" data-tauri-drag-region="deep">
+          {/* Sidebar hidden: the native lights (x 12 + 3 × 20, tauri.conf.json) sit over this row, so clear them. */}
+          <div
+            className={`flex h-11 shrink-0 items-end gap-1 border-b ${hidden && inTauri() ? 'pr-2 pl-[78px]' : 'px-2'}`}
+            data-tauri-drag-region="deep"
+          >
             {hidden && (
               <button className={`${iconButton} mb-2`} aria-label="Show sidebar" onClick={toggleSidebar}>
                 ☰
