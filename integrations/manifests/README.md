@@ -8,7 +8,7 @@ into the daemon; **nothing is ever fetched**.
 | File | What |
 |---|---|
 | `claude.toml` | Claude Code, as the fallback when no hook arrives: the spinner row (`esc to interrupt`), the `Do you want to proceed?` menu, background agents, the composer. Hook events always win. |
-| `codex.toml` | Codex CLI. Working row (`• Working (11s • esc to interrupt)`), footer spinner, command approval and other dialogs, trust and update screens, transcript viewer. |
+| `codex.toml` | Codex CLI, as the fallback until its hooks (`../codex`) report; hook status wins after that. Working row (`• Working (11s • esc to interrupt)`), footer spinner, command approval and other dialogs, trust and update screens, transcript viewer. |
 | `opencode.toml` | OpenCode, as the fallback when the Lotse plugin (`../opencode`) is not installed. |
 | `fixtures/*.json` | Authored PTY sessions with the status the engine must report after each step. |
 | `fixtures/recorded/*.json` | Real Codex PTY recordings (Orca project, MIT) with the status sequence they must replay to. |

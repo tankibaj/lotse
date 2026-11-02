@@ -134,7 +134,8 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
     // Tool output can be huge and no adapter reads it: leave it out of the frame.
     if let Some(fields) = payload.as_object_mut() {
         fields.remove("tool_response");
-        if cfg.agent == AgentKind::ClaudeCode {
+        if matches!(cfg.agent, AgentKind::ClaudeCode | AgentKind::Codex) {
+            // Codex hooks speak the same dialect (`tool_name`, `tool_input`, `prompt`, ...)
             minimize_claude(fields);
         }
         if cfg.injected {
@@ -376,6 +377,34 @@ mod tests {
                 "tool_name": "Write",
                 "tool_use_id": "tu1",
                 "tool_input": {"file_path": "/a/b.rs"},
+            })
+        );
+        d.handle.join().unwrap();
+    }
+
+    #[test]
+    fn codex_payloads_leave_conversation_text_and_file_contents_behind() {
+        let d = fake_daemon(Mode::Accept, "t");
+        let mut cfg = cfg(&d, Some("c1"));
+        cfg.agent = AgentKind::Codex;
+        let payload = br#"{"session_id":"s1","turn_id":"t1","hook_event_name":"Stop","model":"gpt-5","permission_mode":"default","prompt":"my secret plan","last_assistant_message":"reply text","tool_name":"apply_patch","tool_use_id":"tu1","tool_input":{"command":"*** Begin Patch","content":"fn secret() {}"},"tool_response":{"output":"big"}}"#;
+        run(&cfg, &payload[..]).unwrap();
+        let (_, req) = d.received.recv().unwrap();
+        let Request::HookEvent { agent, payload, .. } = req.request else {
+            panic!("expected a hook event");
+        };
+        assert_eq!(agent, AgentKind::Codex);
+        assert_eq!(
+            payload,
+            serde_json::json!({
+                "session_id": "s1",
+                "turn_id": "t1",
+                "hook_event_name": "Stop",
+                "model": "gpt-5",
+                "permission_mode": "default",
+                "tool_name": "apply_patch",
+                "tool_use_id": "tu1",
+                "tool_input": {"command": "*** Begin Patch"},
             })
         );
         d.handle.join().unwrap();

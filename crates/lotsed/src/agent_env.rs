@@ -6,11 +6,11 @@
 //!   (`ANTHROPIC_*`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK`, …) stays.
 //! * [`Injection`]: status hooks that need no global install. Claude Code gets the Lotse plugin
 //!   through `CLAUDE_CODE_PLUGIN_DIRS`, OpenCode gets the Lotse plugin through an overlay
-//!   `OPENCODE_CONFIG_DIR`; both are per pane, nothing in `~/.claude` or `~/.config/opencode` changes.
-//!   Codex is not injected: its hooks need a trusted entry in `config.toml`, so they would have to
-//!   live in the user's `~/.codex` or in a mirrored `CODEX_HOME` (see `integrations/codex/README.md`).
+//!   `OPENCODE_CONFIG_DIR`, Codex gets a mirrored `CODEX_HOME` (its hooks need a trusted entry in
+//!   a `config.toml`, see `integrations/codex/README.md`); all per pane, nothing in `~/.claude`,
+//!   `~/.config/opencode` or `~/.codex` changes.
 
-use lotse_hook::{claude_plugin, opencode_plugin};
+use lotse_hook::{claude_plugin, codex_home, opencode_plugin};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -66,12 +66,19 @@ pub fn scrub_host_markers(vars: &mut HashMap<String, String>) {
 
 const CLAUDE_PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
 const OPENCODE_CONFIG_DIR: &str = "OPENCODE_CONFIG_DIR";
+const CODEX_HOME: &str = "CODEX_HOME";
+/// The user's own Codex home, next to the mirror in `CODEX_HOME`: a pane started from a Lotse pane
+/// inherits both and must still mirror the user's home, not the mirror.
+const CODEX_SOURCE_HOME: &str = "LOTSE_CODEX_SOURCE_HOME";
+/// `LOTSE_CODEX_HOOKS=off` in the login environment turns the Codex mirror off.
+const CODEX_HOOKS_SWITCH: &str = "LOTSE_CODEX_HOOKS";
 
 /// Plugins written at daemon start, and how they reach a pane.
 #[derive(Debug, Clone, Default)]
 pub struct Injection {
     claude_plugin: Option<PathBuf>,
     opencode_overlays: Option<PathBuf>,
+    codex_mirrors: Option<PathBuf>,
 }
 
 impl Injection {
@@ -100,9 +107,19 @@ impl Injection {
                 None
             }
         };
+        // The mirrors are made per pane, from the user's home; here only the directory is checked.
+        let codex = base.join("codex");
+        let codex_mirrors = match std::fs::create_dir_all(&codex) {
+            Ok(()) => Some(codex),
+            Err(e) => {
+                tracing::warn!("Codex home mirror not possible, panes get no injected hooks: {e}");
+                None
+            }
+        };
         Self {
             claude_plugin,
             opencode_overlays,
+            codex_mirrors,
         }
     }
 
@@ -148,7 +165,50 @@ impl Injection {
                 Err(e) => tracing::warn!("{OPENCODE_CONFIG_DIR} left alone: {e:#}"),
             }
         }
+        let codex_off = vars.get(CODEX_HOOKS_SWITCH).is_some_and(|v| {
+            matches!(
+                v.trim().to_lowercase().as_str(),
+                "0" | "off" | "false" | "no"
+            )
+        });
+        if let Some(root) = self.codex_mirrors.as_ref().filter(|_| !codex_off)
+            && let Some(source) = codex_source(vars, root)
+        {
+            match codex_home::mirror(root, &source) {
+                Ok(dir) => {
+                    vars.insert(CODEX_HOME.into(), dir.to_string_lossy().into_owned());
+                    vars.insert(
+                        CODEX_SOURCE_HOME.into(),
+                        source.to_string_lossy().into_owned(),
+                    );
+                }
+                Err(e) => tracing::warn!("{CODEX_HOME} left alone: {e:#}"),
+            }
+        }
     }
+}
+
+/// The user's Codex home for a pane: their `CODEX_HOME`, else `$HOME/.codex`; `None` when it is not
+/// there (Codex was never run: the first pane after it was gets the hooks). `HOME` is the pane's
+/// (the login environment's), never guessed. Our own mirror in `CODEX_HOME`, inherited from a Lotse
+/// pane, is replaced by the source it was made from.
+fn codex_source(vars: &HashMap<String, String>, root: &Path) -> Option<PathBuf> {
+    let set = |name: &str| {
+        vars.get(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
+    let default = || set("HOME").map(|home| home.join(".codex"));
+    let source = match set(CODEX_HOME) {
+        Some(home) if !home.starts_with(root) => Some(home),
+        Some(_) => set(CODEX_SOURCE_HOME)
+            .filter(|d| !d.starts_with(root))
+            .or_else(default),
+        None if vars.get(CODEX_HOME).is_some_and(|v| !v.is_empty()) => None, // relative
+        None => default(),
+    };
+    source.filter(|dir| dir.is_dir())
 }
 
 #[cfg(test)]
@@ -278,6 +338,155 @@ mod tests {
         let mut again = map(&[("OPENCODE_CONFIG_DIR", overlay.to_str().unwrap())]);
         inj.apply(&mut again);
         assert_eq!(PathBuf::from(&again["OPENCODE_CONFIG_DIR"]), default);
+    }
+
+    /// A user's Codex home with a login, and a data dir for the injection.
+    struct CodexSetup {
+        tmp: tempfile::TempDir,
+        inj: Injection,
+        home: PathBuf,
+    }
+
+    fn codex_setup() -> CodexSetup {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("user");
+        std::fs::create_dir_all(home.join(".codex")).unwrap();
+        std::fs::write(home.join(".codex/auth.json"), "{\"token\":\"t\"}").unwrap();
+        let inj = Injection::prepare(&tmp.path().join("data"));
+        CodexSetup { tmp, inj, home }
+    }
+
+    #[test]
+    fn codex_gets_a_mirror_of_the_users_home_with_the_hooks_and_the_users_home_is_untouched() {
+        let s = codex_setup();
+        let mut vars = map(&[("HOME", s.home.to_str().unwrap())]);
+        s.inj.apply(&mut vars);
+
+        let mirror = PathBuf::from(&vars["CODEX_HOME"]);
+        assert!(mirror.starts_with(s.tmp.path().join("data/integrations/codex")));
+        assert_eq!(
+            vars["LOTSE_CODEX_SOURCE_HOME"],
+            s.home.join(".codex").to_str().unwrap()
+        );
+        // the login is the real file's, reached through the mirror
+        assert_eq!(
+            std::fs::read_to_string(mirror.join("auth.json")).unwrap(),
+            "{\"token\":\"t\"}"
+        );
+        let hooks: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(mirror.join("hooks.json")).unwrap())
+                .unwrap();
+        for event in [
+            "SessionStart",
+            "PermissionRequest",
+            "SubagentStart",
+            "SubagentStop",
+            "Stop",
+        ] {
+            assert_eq!(
+                hooks["hooks"][event][0]["hooks"][0]["command"],
+                lotse_hook::codex_home::HOOK_COMMAND,
+                "{event}"
+            );
+        }
+        assert!(
+            std::fs::read_to_string(mirror.join("config.toml"))
+                .unwrap()
+                .contains("trusted_hash")
+        );
+        // nothing was added to the user's home
+        let mut left: Vec<_> = std::fs::read_dir(s.home.join(".codex"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["auth.json"]);
+    }
+
+    #[test]
+    fn a_users_codex_home_variable_is_mirrored_and_an_inherited_mirror_is_not_mirrored_again() {
+        let s = codex_setup();
+        let work = s.tmp.path().join("work-codex");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("config.toml"), "model = \"work\"\n").unwrap();
+
+        let mut vars = map(&[
+            ("HOME", s.home.to_str().unwrap()),
+            ("CODEX_HOME", work.to_str().unwrap()),
+        ]);
+        s.inj.apply(&mut vars);
+        let mirror = PathBuf::from(&vars["CODEX_HOME"]);
+        assert_ne!(mirror, work);
+        assert_eq!(vars["LOTSE_CODEX_SOURCE_HOME"], work.to_str().unwrap());
+        assert!(
+            std::fs::read_to_string(mirror.join("config.toml"))
+                .unwrap()
+                .contains("model = \"work\"")
+        );
+
+        // a pane started from a Lotse pane inherits both variables: same mirror, still the user's source
+        let mut nested = vars.clone();
+        s.inj.apply(&mut nested);
+        assert_eq!(nested, vars);
+        // and with only our CODEX_HOME left, the default home is used
+        let mut lost = map(&[
+            ("HOME", s.home.to_str().unwrap()),
+            ("CODEX_HOME", mirror.to_str().unwrap()),
+        ]);
+        s.inj.apply(&mut lost);
+        assert_eq!(
+            lost["LOTSE_CODEX_SOURCE_HOME"],
+            s.home.join(".codex").to_str().unwrap()
+        );
+    }
+
+    #[test]
+    fn codex_is_left_alone_without_a_home_to_mirror_or_with_one_that_cannot_be_mirrored() {
+        let s = codex_setup();
+        // no HOME: the real home is never guessed
+        let mut vars = HashMap::new();
+        s.inj.apply(&mut vars);
+        assert!(!vars.contains_key("CODEX_HOME"));
+        // the user never ran Codex: no ~/.codex to mirror
+        let fresh = s.tmp.path().join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let mut vars = map(&[("HOME", fresh.to_str().unwrap())]);
+        s.inj.apply(&mut vars);
+        assert!(!vars.contains_key("CODEX_HOME"));
+        // a relative CODEX_HOME means nothing outside the pane's directory
+        let mut vars = map(&[("HOME", s.home.to_str().unwrap()), ("CODEX_HOME", ".codex")]);
+        s.inj.apply(&mut vars);
+        assert_eq!(vars["CODEX_HOME"], ".codex");
+        // a config.toml the trust entries cannot be added to: the user's variable stays
+        let broken = s.tmp.path().join("broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        std::fs::write(broken.join("config.toml"), "model = ").unwrap();
+        let mut vars = map(&[
+            ("HOME", s.home.to_str().unwrap()),
+            ("CODEX_HOME", broken.to_str().unwrap()),
+        ]);
+        s.inj.apply(&mut vars);
+        assert_eq!(vars["CODEX_HOME"], broken.to_str().unwrap());
+        assert!(!vars.contains_key("LOTSE_CODEX_SOURCE_HOME"));
+    }
+
+    #[test]
+    fn lotse_codex_hooks_off_in_the_environment_keeps_codex_on_the_users_home() {
+        let s = codex_setup();
+        for off in ["0", "off", "false", "no"] {
+            let mut vars = map(&[
+                ("HOME", s.home.to_str().unwrap()),
+                ("LOTSE_CODEX_HOOKS", off),
+            ]);
+            s.inj.apply(&mut vars);
+            assert!(!vars.contains_key("CODEX_HOME"), "{off}");
+        }
+        let mut vars = map(&[
+            ("HOME", s.home.to_str().unwrap()),
+            ("LOTSE_CODEX_HOOKS", "1"),
+        ]);
+        s.inj.apply(&mut vars);
+        assert!(vars.contains_key("CODEX_HOME"));
     }
 
     #[test]

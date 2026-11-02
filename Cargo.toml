@@ -43,6 +43,7 @@ dirs = "=7.0.0"
 which = "=8.0.6"
 nix = { version = "=0.31.3", features = ["process", "signal", "term", "user", "fs"] }
 regex = "=1.13.1"
+sha2 = "=0.10.9"
 uuid = { version = "=1.29.0", features = ["v4"] }
 
 # app shell

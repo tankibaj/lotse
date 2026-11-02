@@ -11,6 +11,8 @@ lotse-proto = { workspace = true }
 serde_json = { workspace = true }
 anyhow = { workspace = true }
 dirs = { workspace = true }
+sha2 = { workspace = true }
+toml = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

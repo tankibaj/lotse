@@ -11,7 +11,7 @@
 //! request come from the strongest source that reported them / is the winning source.
 
 use crate::adapter::{Adapter, Detection, Observation};
-use crate::{claude, opencode, osc7501, screen};
+use crate::{claude, codex, opencode, osc7501, screen};
 use lotse_proto::{AgentKind, DetectSource, PermRequest, SessionId, Status, SubAgent, UnixMs};
 use std::collections::BTreeMap;
 
@@ -77,13 +77,14 @@ impl Engine {
         }
     }
 
-    /// Engine with the bundled adapters for `agent`: registers whatever `claude::`, `osc7501::`,
+    /// Engine with the bundled adapters for `agent`: registers whatever `claude::`, `codex::`, `osc7501::`,
     /// `screen::` and `opencode::default_adapter(&session_id, agent)` return (each module owns its
     /// constructor, so WP6 never edits this file).
     pub fn with_default_adapters(session_id: SessionId, agent: AgentKind) -> Self {
         let mut engine = Self::new(session_id.clone(), agent);
         let adapters = [
             claude::default_adapter(&session_id, agent),
+            codex::default_adapter(&session_id, agent),
             osc7501::default_adapter(&session_id, agent),
             screen::default_adapter(&session_id, agent),
             opencode::default_adapter(&session_id, agent),

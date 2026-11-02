@@ -118,9 +118,11 @@ struct Reported {
     sub_agents: Vec<SubAgent>,
 }
 
-/// Hook adapter for one Claude Code session.
+/// Hook adapter for one Claude Code session. Codex's hooks have the same shape, so [`crate::codex`]
+/// reuses it with a few differences (`ClaudeAdapter::for_agent(AgentKind::Codex)`).
 #[derive(Debug)]
 pub struct ClaudeAdapter {
+    agent: AgentKind,
     lead: Lead,
     subs: Vec<Sub>,
     reported: Option<Reported>,
@@ -136,7 +138,14 @@ impl Default for ClaudeAdapter {
 
 impl ClaudeAdapter {
     pub fn new() -> Self {
+        Self::for_agent(AgentKind::ClaudeCode)
+    }
+
+    /// The adapter for `agent`'s hooks: `ClaudeCode` or `Codex` (the differences are in
+    /// [`crate::codex`]).
+    pub(crate) fn for_agent(agent: AgentKind) -> Self {
         Self {
+            agent,
             lead: Lead::Unknown,
             subs: Vec::new(),
             reported: None,
@@ -151,12 +160,44 @@ impl ClaudeAdapter {
             return false;
         };
         let agent_id = bounded_field(payload, "agent_id", ID_MAX_CHARS);
+        let codex = self.agent == AgentKind::Codex;
+        if codex {
+            // The status table of `codex.rs`: a sub-agent's own thread runs the lifecycle hooks too
+            // (tagged with its `agent_id`), and a question for the user is a `PreToolUse`.
+            if let Some(id) = agent_id
+                && matches!(
+                    event,
+                    "SessionStart" | "UserPromptSubmit" | "Stop" | "Interrupt"
+                )
+            {
+                let sub = self.upsert_sub(id, bounded_field(payload, "agent_type", TOOL_MAX_CHARS));
+                sub.status = Status::Run;
+                sub.perm = None;
+                return true;
+            }
+            if event == "PreToolUse"
+                && str_field(payload, "tool_name").is_some_and(crate::codex::is_user_input_tool)
+            {
+                return self.handle_hook_event("PermissionRequest", payload, agent_id);
+            }
+        }
+        self.handle_hook_event(event, payload, agent_id)
+    }
+
+    /// `handle_hook` after the Codex rewrites, for `event` (`false`: not an event this adapter acts on).
+    fn handle_hook_event(&mut self, event: &str, payload: &Value, agent_id: Option<&str>) -> bool {
+        let at = self.now;
         match event {
             "SessionStart" => {
                 if str_field(payload, "source") == Some("compact") {
                     return false;
                 }
-                self.lead = Lead::Idle;
+                // Codex runs it when a turn begins; Claude Code when the session does.
+                self.lead = if self.agent == AgentKind::Codex {
+                    Lead::Run
+                } else {
+                    Lead::Idle
+                };
                 self.subs.clear();
             }
             "UserPromptSubmit" => {
@@ -201,6 +242,8 @@ impl ClaudeAdapter {
                 }
             }
             "Stop" => self.lead = Lead::Done,
+            // Esc in Codex: the turn ends without a Stop
+            "Interrupt" if self.agent == AgentKind::Codex => self.lead = Lead::Done,
             "StopFailure" => match agent_id {
                 Some(id) => {
                     let sub =
@@ -323,11 +366,14 @@ impl ClaudeAdapter {
 
 impl Adapter for ClaudeAdapter {
     fn name(&self) -> &'static str {
-        "claude-hooks"
+        match self.agent {
+            AgentKind::Codex => "codex-hooks",
+            _ => "claude-hooks",
+        }
     }
 
     fn agent(&self) -> AgentKind {
-        AgentKind::ClaudeCode
+        self.agent
     }
 
     fn source(&self) -> DetectSource {
@@ -336,9 +382,7 @@ impl Adapter for ClaudeAdapter {
 
     fn observe(&mut self, obs: &Observation) -> Vec<Detection> {
         match obs {
-            Observation::Hook(HookObservation { agent, payload, at })
-                if *agent == AgentKind::ClaudeCode =>
-            {
+            Observation::Hook(HookObservation { agent, payload, at }) if *agent == self.agent => {
                 if self.handle_hook(payload, *at) {
                     self.detect(*at)
                 } else {

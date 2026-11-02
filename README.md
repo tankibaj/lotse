@@ -30,7 +30,7 @@ The build is signed ad hoc and not notarized. Built on your own Mac it opens nor
 1. Start Lotse. It starts `lotsed` in the background if its socket is missing, and creates `~/Library/Application Support/Lotse` (folder `0700`; socket, token and database `0600`).
 2. **Add a project** (⇧⌘O): pick a folder, scan a folder for repositories, clone a URL, or create a new folder.
 3. **New session** (⌘T): choose Claude Code, Codex, OpenCode or a shell. Launch commands are detected from your login shell's `PATH` and editable in Settings.
-4. For exact status from Claude Code and OpenCode install their integrations (below). Codex and shells are detected from the screen and the terminal's own signals.
+4. For exact status from Claude Code and OpenCode install their integrations (below). Codex gets its status and sub-agents per pane through a mirrored `CODEX_HOME` under the Lotse data folder (nothing in `~/.codex` changes; details and how to turn it off in `integrations/codex/README.md`), shells are detected from the terminal's own signals.
 5. ⌘K jumps to any session or command, ⌘J to the next session that needs you, ⌘/ lists the shortcuts.
 
 ### Agent integrations (hooks)

@@ -136,20 +136,19 @@ pub fn overlay(root: &Path, source: Option<&Path>) -> Result<PathBuf> {
         write_private(&target, PLUGIN_SOURCE)?;
     }
     if let Some(source) = source {
-        mirror(source, &dir, None)?;
-        mirror(&source.join("plugins"), &plugins, Some(FILE_NAME))?;
+        mirror(source, &dir, |name| name == "plugins")?;
+        mirror(&source.join("plugins"), &plugins, |name| name == FILE_NAME)?;
     }
     Ok(dir)
 }
 
-/// Make `into` hold a symlink for every entry of `from` (except `skip` and, at the top level, the
-/// `plugins` directory, which is mirrored separately); drop symlinks whose entry is gone.
-fn mirror(from: &Path, into: &Path, skip: Option<&str>) -> Result<()> {
+/// Make `into` hold a symlink for every entry of `from` that `skip` (by file name) does not exclude
+/// (the overlay's `plugins` directory is mirrored separately); drop symlinks whose entry is gone.
+pub(crate) fn mirror(from: &Path, into: &Path, skip: impl Fn(&str) -> bool) -> Result<()> {
     let wanted: Vec<std::ffi::OsString> = match std::fs::read_dir(from) {
         Ok(entries) => entries
             .filter_map(|e| e.ok().map(|e| e.file_name()))
-            .filter(|n| Some(n.to_string_lossy().as_ref()) != skip)
-            .filter(|n| skip.is_some() || n != "plugins")
+            .filter(|n| !skip(&n.to_string_lossy()))
             .collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", from.display())),
@@ -177,7 +176,7 @@ fn mirror(from: &Path, into: &Path, skip: Option<&str>) -> Result<()> {
 }
 
 /// Stable across builds (unlike `DefaultHasher`): names the overlay directory of a source.
-fn fnv1a(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
     })

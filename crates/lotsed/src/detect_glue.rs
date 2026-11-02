@@ -677,6 +677,32 @@ mod tests {
     }
 
     #[test]
+    fn codex_hooks_start_in_a_shell_pane_and_the_twin_of_an_injected_one_is_dropped() {
+        let codex = |d: &mut Detector, name: &str, source: Option<&str>, at: UnixMs| {
+            let mut payload = serde_json::json!({"hook_event_name": name});
+            if let Some(source) = source {
+                payload["lotse_source"] = source.into();
+            }
+            d.on_hook(AgentKind::Codex, payload, at).map(|u| u.status)
+        };
+        // `codex` started by hand in a plain terminal pane: its first hook makes the pane a Codex one
+        let mut d = detector(AgentKind::Terminal);
+        assert_eq!(
+            codex(&mut d, "UserPromptSubmit", Some("injected"), 100),
+            Some(Status::Run)
+        );
+        assert_eq!(d.agent(), AgentKind::Codex);
+        assert_eq!(
+            codex(&mut d, "Interrupt", Some("injected"), 200),
+            Some(Status::Done)
+        );
+        // a second hook install delivering the same events is deduplicated
+        assert_eq!(codex(&mut d, "UserPromptSubmit", None, 250), None);
+        assert_eq!(codex(&mut d, "Interrupt", None, 300), None);
+        assert_eq!(d.engine.status(), Status::Done);
+    }
+
+    #[test]
     fn repeats_from_one_source_and_old_twins_are_real_events() {
         let mut d = detector(AgentKind::ClaudeCode);
         assert_eq!(

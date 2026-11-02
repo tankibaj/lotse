@@ -408,7 +408,10 @@ mod tests {
     fn integration_names_are_whitelisted() {
         assert!(check_integration("claude", "uninstall").is_ok());
         assert!(check_integration("opencode", "status").is_ok());
-        assert!(check_integration("claude", "install").is_err(), "Lotse never installs global hooks");
+        assert!(
+            check_integration("claude", "install").is_err(),
+            "Lotse never installs global hooks"
+        );
         assert!(check_integration("claude; rm -rf /", "uninstall").is_err());
         assert!(check_integration("claude", "../x").is_err());
     }
