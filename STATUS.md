@@ -15,7 +15,7 @@ Orchestrator ledger and the truth after compaction. Plan: [ALPHA_PLAN.md](ALPHA_
 | WP6 | Codex + OpenCode detection | merged | done | 04:15 | 29m | $6.19 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 208, vitest 301) | non-UI match from mock data; accepted: Codex `Fail` only on "Reconnect failed"/non-zero exit; no PNGs | cc8ad31 |
 | WP7 | Git, notifications, native | merged | done | ~03:56 | 10m | $1.79 | 0 / 1 | Rust CI on worktree; full CI set on main green (cargo 164) | non-UI match; `notify.rs` not compiled until WP8 adds `pub mod notify;` | a1ca9cd |
 | WP8 | Integration | merged | done | 04:57 | 39m | $10.87 | 0 / 1 | full CI set on main green (cargo 261, vitest 322), playwright 48/48 + 12/12, `tauri build --debug --no-bundle` ✓ | match (menus, split); accepted: Reveal in Finder app-only, static mock pane | 5ed83eb |
-| WP9 | Hardening + Alpha build | running | launched 05:02 · `wp9-hardening` | ≤06:32 | | | | | | |
+| WP9 | Hardening + Alpha build | merged | done | 05:19 | 17m | $4.51 | 0 / 1 | main: cargo 267, vitest 322, playwright 52/52 + 12/12; `scripts/build-app.sh` built + signed + smoke ok; live lsof: no TCP/UDP on app or lotsed; modes 0700/0600 | non-UI match (settings defaults, statuses, git line) | 69e1adb |
 
 States: pending · running · review · merged · blocked. Branch, worktree and run dir live in each `status/WPn.md`.
 
@@ -23,13 +23,13 @@ States: pending · running · review · merged · blocked. Branch, worktree and 
 
 | Metric | Value | Notes |
 |---|---|---|
-| Session time (Alpha total) | 5h 09m | wall-clock of all runs; per WP in the table |
-| Merges into `main` | 9 | |
+| Session time (Alpha total) | 5h 26m | wall-clock of all runs; per WP in the table |
+| Merges into `main` | 10 | |
 | Failed changes | 2 | merge needed a fix or revert |
-| Change failure rate | 22 % | failed ÷ merges; target ≤ 15 % |
+| Change failure rate | 20 % | failed ÷ merges; target ≤ 15 % |
 | Escaped bugs | 0 | found after merge; see table below |
 | Handoffs / bounce-backs | 1 / 2 | |
-| Cost (Alpha total) | $55.87 | |
+| Cost (Alpha total) | $60.38 | |
 
 ## Escaped bugs
 
@@ -92,3 +92,6 @@ Per WP: feature · mock · app · match / gap (fixed, or accepted with a reason)
 - 2026-11-02 04:58 · WP8 done exit 0, $10.87, session 14710652. All 13 backlog items done (none skipped); `tauri-plugin-opener` NOT added — WP8 uses `/usr/bin/open` with validated args (decision for Naim). Orchestrator spot-read `host.rs`: no shell, `git clone --` + `GIT_ALLOW_PROTOCOL` (no `ext::`), `open_url` http/https only, capability adds only `dialog:allow-open`. Excluded regenerated `parity/wp3|wp4` PNGs. Merged → `5ed83eb`; main: full CI set green (cargo 261, vitest 322), Playwright 48/48 + 12/12, `tauri build --debug --no-bundle` ✓; pushed; worktree + branch removed. Touches token contract, capabilities, host commands → `/code-review`.
 - 2026-11-02 05:00 · **Checkpoint 3 (show-and-continue):** real Claude Code session run → perm → run → done NOT run (headless). Steps in `status/WP8.md` "Unverified"; scripted equivalent passes (`app/src-tauri/tests/bridge.rs`, `lotsed/tests/detection.rs`). Not waiting.
 - 2026-11-02 05:02 · WP9 launched (serial, `harnex quick`, $15/90 min): `lotse-wt/wp9-hardening` `feature/wp9-hardening` run `_orch/runs/wp9-hardening-0502` port 1421. Brief extras `_orch/wp9-extra.md` (owns grant, 9-item checklist incl. packaging `lotsed`/`lotse-hook` into the `.app`, licences, audits, DOGFOOD.md, open decisions). Extra allows: `cargo install cargo-audit`, `cargo audit`, `npm audit`, `codesign`, `lsof`.
+- 2026-11-02 05:20 · WP9 done exit 0, $4.51, session 7aa665ec. Security fixes with tests: `lotse-hook` drops prompt/assistant text/file contents from Claude payloads (orchestrator checked: nothing in lotsed/detect reads them), capabilities `core:default` → 5 explicit permissions, CSP + `object-src/base-uri/form-action 'none'`. `cargo audit` 0 vulns (5 Linux-only warnings), `npm audit --omit=dev` 0, full audit 11 moderate dev-only (minimatch via eslint) justified. `THIRD_PARTY_NOTICES.md` + `LICENSE-herdr`; 5 MPL-2.0 crates flagged (accepted). README install/uninstall, `DOGFOOD.md`, issue templates. Orchestrator: `chmod +x scripts/build-app.sh`, restored regenerated parity PNGs, merged → `69e1adb`, full CI set + Playwright on main green, pushed, worktree + branch removed.
+- 2026-11-02 05:24 · **Alpha build on main:** `scripts/build-app.sh` → `target/release/bundle/macos/Lotse.app` (13.9 MiB, ad-hoc signed, `lotsed` + `lotse-hook` in `Contents/MacOS`), smoke test ok (bundled app started its daemon). Live check: `lsof -i` on app + lotsed empty; data dir 0700, sock/token/db/pid/log 0600.
+- 2026-11-02 05:25 · **WP0–WP9 merged. Checkpoint 4 for Naim:** install `target/release/bundle/macos/Lotse.app` and run `DOGFOOD.md`. Open decisions (DOGFOOD § 3): `PostToolUseFailure` → run vs fail; light-theme contrast tokens; notification banner flag (proto bump); `/usr/bin/open` vs `tauri-plugin-opener`. Known flakes: one vitest test (2×/~55 runs, unnamed); `lotsed/tests/sessions.rs::a_client_that_stops_reading_is_disconnected_instead_of_buffered_forever` under load (fixed 5 s sleep → poll). Unverified live: real Claude session run → perm → run → done, banner/sound/Dock badge, WebGL on Retina, OpenCode plugin load. `/code-review` suggested for WP1 (socket/token), WP2 (settings installer), WP8 (bridge/host commands/capabilities), WP0 CI.
