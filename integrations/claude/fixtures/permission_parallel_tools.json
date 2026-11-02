@@ -1,0 +1,14 @@
+{
+  "description": "Parallel tool calls: another tool finishing must not clear a prompt that still waits (matched by tool_use_id, else by tool name).",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent. `tool_use_id` on PermissionRequest is Unverified; the adapter falls back to tool_name when it is missing",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "do both"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "perm_request.lead", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "make deploy"}, "tool_use_id": "t1"}, "update": true, "status": "perm", "perm": {"tool": "Bash", "summary": "make deploy"}},
+    {"row": "perm.parallel_tool_keeps_prompt", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"file_path": "/x"}, "tool_use_id": "t2"}, "update": false, "status": "perm"},
+    {"row": "perm.parallel_tool_keeps_prompt", "at": 3500, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_input": {"command": "false"}, "tool_use_id": "t3"}, "update": false, "status": "perm"},
+    {"row": "perm.cleared_by_post_tool", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "make deploy"}, "tool_use_id": "t1"}, "update": true, "status": "run", "perm": null, "running_since": 4000},
+    {"row": "perm_request.lead", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "make deploy"}}, "update": true, "status": "perm"},
+    {"row": "perm.parallel_tool_keeps_prompt", "at": 6000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Read"}, "update": false, "status": "perm"},
+    {"row": "perm.cleared_by_post_tool", "at": 7000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Bash"}, "update": true, "status": "run", "running_since": 7000}
+  ]
+}

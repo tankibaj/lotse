@@ -1,0 +1,11 @@
+{
+  "description": "Permission prompt answered with Allow in the terminal: run → perm → run → done.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "run the e2e tests"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "pre_tool.lead", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "npx playwright test e2e/patients"}, "tool_use_id": "t1"}, "update": false, "status": "run"},
+    {"row": "perm_request.lead", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "npx playwright test e2e/patients", "description": "Run e2e"}, "tool_use_id": "t1"}, "update": true, "status": "perm", "perm": {"tool": "Bash", "summary": "npx playwright test e2e/patients"}, "running_since": null},
+    {"row": "perm.cleared_by_post_tool", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "npx playwright test e2e/patients"}, "tool_use_id": "t1"}, "update": true, "status": "run", "perm": null, "running_since": 4000},
+    {"row": "stop", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": true, "status": "done", "running_since": null}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "description": "Mock session a1: sub-agents explore-repo (done) and test-runner (run). The lead's Stop does not end the session while a sub-agent runs; the next prompt drops finished sub-agents.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "explore and test"}, "update": true, "status": "run", "running_since": 1000, "sub_agents": []},
+    {"row": "subagent_start", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStart", "agent_id": "ag-1", "agent_type": "explore-repo"}, "update": true, "status": "run", "sub_agents": [{"id": "ag-1", "name": "explore-repo", "status": "run"}]},
+    {"row": "subagent_start", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStart", "agent_id": "ag-2", "agent_type": "test-runner"}, "update": true, "status": "run", "sub_agents": [{"id": "ag-1", "name": "explore-repo", "status": "run"}, {"id": "ag-2", "name": "test-runner", "status": "run"}]},
+    {"row": "subagent_stop", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStop", "agent_id": "ag-1", "agent_type": "explore-repo"}, "update": true, "status": "run", "running_since": 1000, "sub_agents": [{"id": "ag-1", "name": "explore-repo", "status": "done"}, {"id": "ag-2", "name": "test-runner", "status": "run"}]},
+    {"row": "derived.stop_keeps_run_while_subs_run", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": false, "status": "run", "sub_agents": [{"id": "ag-1", "name": "explore-repo", "status": "done"}, {"id": "ag-2", "name": "test-runner", "status": "run"}]},
+    {"row": "subagent_stop", "at": 6000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStop", "agent_id": "ag-2", "agent_type": "test-runner"}, "update": true, "status": "done", "running_since": null, "sub_agents": [{"id": "ag-1", "name": "explore-repo", "status": "done"}, {"id": "ag-2", "name": "test-runner", "status": "done"}]},
+    {"row": "prompt.drops_finished_subs", "at": 7000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "next"}, "update": true, "status": "run", "running_since": 7000, "sub_agents": []}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "description": "Daemon started mid-turn: the first event seen is a tool event inside a sub-agent whose SubagentStart was missed. The row is created from the tool event; it keeps the session running after the lead's Stop.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "late.unknown_sub", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "agent_id": "ag-9", "tool_name": "Grep", "tool_input": {"pattern": "TODO"}}, "update": true, "status": "run", "running_since": 1000, "sub_agents": [{"id": "ag-9", "name": "ag-9", "status": "run"}]},
+    {"row": "late.unknown_sub", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "PreToolUse", "agent_id": "ag-9", "agent_type": "reviewer", "tool_name": "Read", "tool_input": {"file_path": "/x"}}, "update": true, "status": "run", "running_since": 1000, "sub_agents": [{"id": "ag-9", "name": "reviewer", "status": "run"}]},
+    {"row": "post_tool.lead", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Task", "tool_input": {"description": "review"}}, "update": false, "status": "run"},
+    {"row": "derived.stop_keeps_run_while_subs_run", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": false, "status": "run"},
+    {"row": "subagent_stop", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStop", "agent_id": "ag-9", "agent_type": "reviewer"}, "update": true, "status": "done", "running_since": null, "sub_agents": [{"id": "ag-9", "name": "reviewer", "status": "done"}]}
+  ]
+}
