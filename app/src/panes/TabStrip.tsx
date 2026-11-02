@@ -4,7 +4,7 @@ import { useClient } from '../lib/client/context';
 import type { AgentKind, Session, SessionId } from '../lib/client/types';
 import { startSession } from '../lib/state/actions';
 import { emitUiCommand } from '../lib/ui/commands';
-import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
+import { getSelectedSessionId, selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { moveTab, saveTabOrder, useProjectTabs } from '../lib/ui/tabOrder';
 import { openSettings } from '../sheets/overlay';
 import { ConfirmDialog } from '../sidebar/ConfirmDialog';
@@ -13,6 +13,7 @@ import type { MenuEntry } from '../sidebar/ContextMenu';
 import { InlineEdit } from '../sidebar/InlineEdit';
 import { sessionMenu } from '../sidebar/menus';
 import { ProjectTile } from './ProjectTile';
+import { dragTabOverPanes } from './splitBus';
 import { StatusGlyph } from './StatusGlyph';
 import { useSessions } from './useSessions';
 
@@ -112,19 +113,27 @@ export function TabStrip() {
   // Mouse down selects the tab at once (like a browser's); moving on from there drags it to a new place.
   const onTabPointerDown = (e: ReactPointerEvent<HTMLElement>, s: Session) => {
     if (e.button !== 0 || renaming === s.id) return;
+    const before = getSelectedSessionId();
     selectSession(s.id);
     const x0 = e.clientX;
+    const y0 = e.clientY;
     const projectId = s.project_id;
     const order = tabs.map((t) => t.id);
     let moved = false;
     let target: SessionId | null = null;
+    // Pulled down onto the panes, the tab splits a pane instead of reordering (the panes say where the pointer is).
+    let over = false;
+    let at = { x: x0, y: y0 };
     const move = (ev: PointerEvent) => {
-      if (!moved && Math.abs(ev.clientX - x0) < DRAG_PX) return;
+      if (!moved && Math.hypot(ev.clientX - x0, ev.clientY - y0) < DRAG_PX) return;
       if (!moved) document.body.style.userSelect = 'none';
       moved = true;
-      const at = dropAt(ev.clientX, s.id);
-      target = at.before;
-      setDrop({ id: s.id, ...at });
+      at = { x: ev.clientX, y: ev.clientY };
+      over = dragTabOverPanes({ phase: 'move', sessionId: s.id, ...at });
+      if (over) return setDrop(null);
+      const place = dropAt(ev.clientX, s.id);
+      target = place.before;
+      setDrop({ id: s.id, ...place });
     };
     const end = (commit: boolean) => {
       window.removeEventListener('pointermove', move);
@@ -137,6 +146,7 @@ export function TabStrip() {
       // The click that follows a drag must not re-select or hand focus over.
       suppressClick.current = true;
       setTimeout(() => (suppressClick.current = false), 0);
+      if (over) return void dragTabOverPanes(commit ? { phase: 'drop', sessionId: s.id, ...at, restore: before } : { phase: 'cancel' });
       const next = moveTab(order, s.id, target);
       if (commit && next.some((id, i) => id !== order[i])) saveTabOrder(projectId, next);
     };
@@ -258,6 +268,7 @@ export function TabStrip() {
           entries={sessionMenu(menuTab, {
             open: () => selectSession(menuTab.id),
             split: () => emitUiCommand('splitSession', menuTab.id),
+            splitDown: () => emitUiCommand('splitSessionDown', menuTab.id),
             rename: () => setRenaming(menuTab.id),
             stop: () => stop(menuTab),
           })}

@@ -9,6 +9,7 @@ export const SHORTCUTS: [string, string][] = [
   ['New terminal', '⌘T'],
   ['New Claude Code session', '⌥⌘T'],
   ['Open side by side (split)', '⌘D · ⌥-click · drag'],
+  ['Open stacked (split down)', '⇧⌘D · ⌥⇧-click · drag'],
   ['Focus previous / next pane', '⌘[ · ⌘]'],
   ['Full diff review', '⌥⌘D'],
   ['Close pane', '⌘W'],

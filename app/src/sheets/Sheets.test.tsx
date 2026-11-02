@@ -43,6 +43,15 @@ describe('shortcut bindings', () => {
     expect(getOverlay()).toBeNull();
   });
 
+  it('the shortcuts sheet lists split right (⌘D) and split down (⇧⌘D, ⌥⇧-click)', async () => {
+    mountWp5();
+    key({ code: 'Slash', metaKey: true });
+    const dlg = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    const rows = [...dlg.querySelectorAll('.contents')].map((r) => r.textContent ?? '');
+    expect(rows).toContain('Open side by side (split)⌘D · ⌥-click · drag');
+    expect(rows).toContain('Open stacked (split down)⇧⌘D · ⌥⇧-click · drag');
+  });
+
   it('the shortcuts sheet has a Close button and Tab cannot leave it', async () => {
     mountWp5();
     const outside = document.createElement('button');

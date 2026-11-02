@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useClient } from '../lib/client';
 import { onUiCommand } from '../lib/ui/commands';
+import { openInSplit } from '../panes/splitBus';
 import { selectSession, getSelectedSessionId } from '../lib/ui/selection';
 import { openOverlay, openSettings, closeOverlay, toggleOverlay, useOverlay } from '../sheets/overlay';
 import { Modal } from '../sheets/ui';
@@ -41,6 +42,8 @@ function PaletteView() {
         }
         case 'add-project': openOverlay({ name: 'addProject' }); break;
         case 'new-session': openOverlay({ name: 'newSession' }); break;
+        case 'split-right': openInSplit(null, 'right'); break;
+        case 'split-down': openInSplit(null, 'down'); break;
         case 'settings': openSettings(); break;
         case 'shortcuts': openOverlay({ name: 'shortcuts' }); break;
         case 'pause': {

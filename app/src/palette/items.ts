@@ -6,7 +6,7 @@ export const STATUS_RANK: Record<Status, number> = { perm: 5, fail: 4, run: 3, d
 export type PaletteAction =
   | { type: 'session'; sessionId: string }
   | { type: 'project'; projectId: string }
-  | { type: 'command'; id: 'next-need' | 'add-project' | 'new-session' | 'settings' | 'shortcuts' | 'pause' };
+  | { type: 'command'; id: 'next-need' | 'add-project' | 'new-session' | 'split-right' | 'split-down' | 'settings' | 'shortcuts' | 'pause' };
 
 export interface PaletteItem {
   key: string;
@@ -24,6 +24,8 @@ export const COMMANDS: { id: Extract<PaletteAction, { type: 'command' }>['id']; 
   { id: 'next-need', label: 'Next session that needs you', hint: '⌘J', glyph: '▲' },
   { id: 'add-project', label: 'Add a Project…', hint: '⇧⌘O', glyph: '+' },
   { id: 'new-session', label: 'New session…', hint: '', glyph: '+' },
+  { id: 'split-right', label: 'Split Right', hint: '⌘D', glyph: '▐' },
+  { id: 'split-down', label: 'Split Down', hint: '⇧⌘D', glyph: '▄' },
   { id: 'settings', label: 'Settings…', hint: '⌘,', glyph: '⚙︎' },
   { id: 'shortcuts', label: 'Keyboard shortcuts', hint: '⌘/', glyph: '⌘' },
   { id: 'pause', label: 'Pause notifications', hint: '⌥⌘N', glyph: '○' },

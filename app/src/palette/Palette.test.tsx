@@ -5,6 +5,7 @@ import type { Session } from '../lib/client/types';
 import { emitUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { mountWp5 } from '../sheets/harness';
+import { onSplitRequest } from '../panes/splitBus';
 import { getOverlay } from '../sheets/overlay';
 import { nextNeedingYou, paletteItems } from './items';
 
@@ -40,6 +41,25 @@ describe('Command palette', () => {
     }
     expect(all).toContain('⇧⌘O');
     expect(screen.getAllByRole('option').filter((o) => o.textContent?.endsWith('Project')).length).toBe(5);
+  });
+
+  it('Split Right and Split Down commands show their shortcuts and ask the panes for the next session', async () => {
+    mountWp5();
+    const asked: unknown[] = [];
+    const off = onSplitRequest((id, direction) => asked.push([id, direction]));
+    const input = await open();
+    const row = (name: string) => screen.getAllByRole('option').find((o) => o.textContent?.includes(name));
+    expect(row('Split Right')).toHaveTextContent('⌘D');
+    expect(row('Split Down')).toHaveTextContent('⇧⌘D');
+    await userEvent.type(input, 'split down');
+    expect(labels()).toHaveLength(1);
+    await userEvent.keyboard('{Enter}');
+    expect(asked).toEqual([[null, 'down']]);
+    expect(getOverlay()).toBeNull();
+    await open();
+    await userEvent.click(row('Split Right') as HTMLElement);
+    expect(asked).toEqual([[null, 'down'], [null, 'right']]);
+    off();
   });
 
   it('filters by label or hint and reports no matches', async () => {

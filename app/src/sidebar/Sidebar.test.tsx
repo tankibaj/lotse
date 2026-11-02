@@ -618,6 +618,14 @@ describe('context menus', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: /Split Right/ }));
     expect(split).toHaveBeenCalledWith('a2');
     off();
+    // Split Down is its own command, so the panes know which way to split
+    const splitDown = vi.fn();
+    const offDown = onUiCommand('splitSessionDown', splitDown);
+    fireEvent.contextMenu(card('a2'));
+    expect(screen.getByRole('menuitem', { name: /Split Down/ })).toHaveTextContent('⌥⇧-click');
+    await userEvent.click(screen.getByRole('menuitem', { name: /Split Down/ }));
+    expect(splitDown).toHaveBeenCalledWith('a2');
+    offDown();
     fireEvent.contextMenu(card('a2'));
     await userEvent.click(screen.getByRole('menuitem', { name: /Stop/ }));
     await waitFor(() => expect(document.querySelector('[data-sid="a2"]')).toBeNull());
@@ -638,6 +646,8 @@ describe('context menus', () => {
     fireEvent.contextMenu(card('a2'));
     expect(screen.getByRole('menuitem', { name: /^Open(?! in)/ })).toHaveFocus();
     await userEvent.keyboard('{ArrowDown}'); // Split Right
+    await userEvent.keyboard('{ArrowDown}'); // Split Down
+    expect(screen.getByRole('menuitem', { name: /Split Down/ })).toHaveFocus();
     await userEvent.keyboard('{ArrowDown}');
     expect(screen.getByRole('menuitem', { name: /Rename/ })).toHaveFocus();
     await userEvent.keyboard('{Enter}');

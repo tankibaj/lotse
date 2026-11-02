@@ -91,16 +91,18 @@ export function projectMenu(
 export interface SessionMenuActions {
   open: () => void;
   split: () => void;
+  splitDown: () => void;
   rename: () => void;
   stop: () => void;
 }
 
-/** Session context menu: Open, Split right, Rename, Show transcript / changes (Beta), Stop. */
+/** Session context menu: Open, Split right, Split down, Rename, Show transcript / changes (Beta), Stop. */
 export function sessionMenu(session: Session, actions: SessionMenuActions): MenuEntry[] {
   return [
     { kind: 'header', label: session.title },
     { kind: 'item', label: 'Open', hint: '⏎', onSelect: actions.open },
     { kind: 'item', label: 'Open in Split Right', hint: '⌥-click', onSelect: actions.split },
+    { kind: 'item', label: 'Open in Split Down', hint: '⌥⇧-click', onSelect: actions.splitDown },
     { kind: 'separator' },
     { kind: 'item', label: 'Rename…', onSelect: actions.rename },
     { kind: 'item', label: 'Show Transcript', disabled: true, hint: 'Beta' },
