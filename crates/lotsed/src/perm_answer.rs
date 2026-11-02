@@ -5,6 +5,8 @@
 //! `native-chat-approval-envelope.ts`): Claude Code and Codex take the option's digit (Orca sends `1`
 //! to allow); OpenCode takes Enter (its prompt starts on "Allow once"); every agent takes Esc to
 //! deny. Orca has no "always" answer; the digit of the "don't ask again" option is this module's own.
+//! A prompt without one (Claude Code's "can't be checked" Bash prompts) gets "Yes, and switch to auto
+//! mode" for Always instead (Naim's call): from then on the session stops asking.
 //! Unverified: OpenCode's "Allow always" is a second confirm step whose keys no recording shows, so
 //! it is not answered.
 
@@ -45,7 +47,10 @@ fn numbered(rows: &[String], decision: PermDecision) -> Result<String, AnswerErr
     let choices = numbered_choices(rows).ok_or(AnswerError::NoPrompt)?;
     let pick = match decision {
         PermDecision::Allow => choices.iter().find(|c| is_plain_yes(&c.text)),
-        PermDecision::Always => choices.iter().find(|c| is_always(&c.text)),
+        PermDecision::Always => choices
+            .iter()
+            .find(|c| is_always(&c.text))
+            .or_else(|| choices.iter().find(|c| is_auto_mode_switch(&c.text))),
         PermDecision::Deny => choices.iter().find(|c| is_no(&c.text)),
     };
     match (pick, decision) {
@@ -177,6 +182,13 @@ fn is_always(text: &str) -> bool {
         .any(|k| t.contains(k))
 }
 
+/// "Yes, and switch to auto mode": Always's fallback when no option stops just this question.
+/// The accept-edits switch and plan approval's "use auto mode" are not it.
+fn is_auto_mode_switch(text: &str) -> bool {
+    let t = strip_hint(text).to_lowercase();
+    t.starts_with("yes") && t.contains("switch to auto mode")
+}
+
 /// "No" or "No, and tell Claude what to do differently"; not "None" or "Not now".
 fn is_no(text: &str) -> bool {
     let t = text.to_lowercase();
@@ -280,17 +292,18 @@ mod tests {
     }
 
     #[test]
-    fn claude_always_is_never_the_auto_mode_switch() {
+    fn claude_always_switches_to_auto_mode_only_without_a_dont_ask_again() {
+        // the "A variable in this command can't be checked" prompt of the bug report
         let only_auto = "\
  Do you want to proceed?
  ❯ 1. Yes
-   2. Yes, and switch to auto mode (shift+tab)
+   2. Yes, and switch to auto mode · auto mode handles these prompts for you
    3. No";
-        assert_eq!(
-            keys(ClaudeCode, only_auto, Always),
-            Err(AnswerError::NoChoice)
-        );
+        assert_eq!(keys(ClaudeCode, only_auto, Always), Ok("2".into()));
         assert_eq!(keys(ClaudeCode, only_auto, Allow), Ok("1".into()));
+        assert_eq!(keys(ClaudeCode, only_auto, Deny), Ok("3".into()));
+        // with both, the narrower "this project" wins
+        assert_eq!(keys(ClaudeCode, CLAUDE_4, Always), Ok("2".into()));
     }
 
     #[test]
