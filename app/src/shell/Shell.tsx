@@ -93,7 +93,7 @@ export function Shell() {
         {!hidden && (
           <>
             <aside
-              className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r bg-side"
+              className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r bg-side lotse-glass"
               style={{ width }}
               aria-label="Sidebar"
               data-testid="sidebar-region"
