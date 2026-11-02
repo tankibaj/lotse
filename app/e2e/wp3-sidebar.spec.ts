@@ -17,7 +17,7 @@ async function open(page: Page, theme: 'light' | 'dark', size = { width: 1440, h
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.clock.install(); // the MockClient script only advances when a test runs the clock
   await page.goto('/');
-  await expect(page.getByText('billing-api')).toBeVisible();
+  await expect(page.getByTestId('sidebar-region').getByText('billing-api')).toBeVisible();
 }
 
 /** Seed many projects through the dev-only handle (`window.__lotse`, MockClient only). */
@@ -101,7 +101,7 @@ test('resize 200–420 persists and clamps', async ({ page }) => {
   await page.screenshot({ path: `${SHOTS}/light-1440-w420.png` });
 
   await page.reload();
-  await expect(page.getByText('billing-api')).toBeVisible();
+  await expect(page.getByTestId('sidebar-region').getByText('billing-api')).toBeVisible();
   expect(await width(page)).toBe(420); // persisted
 });
 
