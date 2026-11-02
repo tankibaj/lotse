@@ -579,6 +579,25 @@ impl Adapter for Osc7501Adapter {
             _ => Vec::new(),
         }
     }
+
+    /// All reports of one chunk are applied first, then one detection of the final state.
+    // TODO(osc-batch): a chunk that holds a whole `working` → `done` turn reports only `done`, so
+    // that turn's "finished" banner is skipped; revisit if an agent is seen to emit both at once.
+    fn observe_batch(&mut self, batch: &[Observation]) -> Vec<Detection> {
+        if !batch.iter().all(|o| matches!(o, Observation::Osc(_))) {
+            return batch.iter().flat_map(|obs| self.observe(obs)).collect();
+        }
+        let mut at = None;
+        for obs in batch {
+            if let Observation::Osc(osc) = obs
+                && let Some(Message::Report(report)) = parse_body(&osc.payload)
+            {
+                self.apply(report);
+                at = Some(osc.at);
+            }
+        }
+        at.map_or_else(Vec::new, |at| self.detection(at))
+    }
 }
 
 #[cfg(test)]
@@ -617,6 +636,29 @@ mod tests {
         }));
         det.last()
             .map(|d| (d.status.unwrap(), d.sub_agents.as_ref().unwrap().len()))
+    }
+
+    #[test]
+    fn a_batch_of_reports_yields_one_detection_of_the_final_state() {
+        let mut a = Osc7501Adapter::new();
+        let mut batch = Vec::new();
+        for n in 0..400u64 {
+            let state = if n % 2 == 0 { "working" } else { "blocked" };
+            batch.push(Observation::Osc(OscObservation {
+                payload: format!("state={state}"),
+                at: n,
+            }));
+        }
+        batch.push(Observation::Osc(OscObservation {
+            payload: "state=blocked".into(),
+            at: 400,
+        }));
+        let det = a.observe_batch(&batch);
+        assert_eq!(det.len(), 1);
+        assert_eq!(det[0].status, Some(Status::Perm));
+        assert_eq!(det[0].at, 400);
+        // Nothing new: no second detection.
+        assert!(a.observe_batch(&batch[..1]).len() <= 1);
     }
 
     #[test]

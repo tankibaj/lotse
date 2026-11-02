@@ -140,23 +140,42 @@ impl Detector {
         self.engine.observe(obs)
     }
 
+    fn observe_batch(&mut self, batch: &[Observation]) -> Option<StatusUpdate> {
+        if self.exited {
+            return None;
+        }
+        self.engine.observe_batch(batch)
+    }
+
+    /// Nothing to do on a tick before the next 1 s clock tick: no unparsed output, no screen
+    /// sample or synchronized update pending.
+    pub fn idle(&self) -> bool {
+        !self.dirty && self.backlog.is_empty() && self.parser.sync_bytes_count() == 0
+    }
+
     pub fn on_output(&mut self, data: &[u8], now: Instant, at: UnixMs) -> Fed {
         let mut fed = Fed::default();
         if self.exited {
             return fed;
         }
+        // All reports of this chunk reach the engine as one batch: one update, one broadcast.
+        let mut reports = Vec::new();
         for osc in self.scanner.feed(data, at) {
             if is_query(&osc.payload) {
                 fed.reply = true;
             } else {
-                fed.updates
-                    .extend(self.observe(Observation::Osc(OscObservation { ..osc })));
+                reports.push(Observation::Osc(OscObservation { ..osc }));
             }
+        }
+        if !reports.is_empty() {
+            fed.updates.extend(self.observe_batch(&reports));
         }
         // The VT model is fed from `tick`, off the reader's hot path: a flood (`cat bigfile`) must
         // not slow the byte stream down. Only the newest bytes matter for the visible screen.
         self.backlog.extend_from_slice(data);
-        if self.backlog.len() > BACKLOG_MAX {
+        // Trimmed in bulk (once the backlog doubles) rather than per chunk: a flood would
+        // otherwise move the whole backlog on every 16 KiB read. `flush` skips the excess.
+        if self.backlog.len() > 2 * BACKLOG_MAX {
             let excess = self.backlog.len() - BACKLOG_MAX;
             self.backlog.drain(..excess);
         }
@@ -169,7 +188,8 @@ impl Detector {
     fn flush(&mut self) {
         if !self.backlog.is_empty() {
             let data = std::mem::take(&mut self.backlog);
-            self.parser.advance(&mut self.term, &data);
+            let newest = &data[data.len().saturating_sub(BACKLOG_MAX)..];
+            self.parser.advance(&mut self.term, newest);
         }
     }
 
@@ -272,14 +292,17 @@ impl Detector {
     pub fn screen_rows(&mut self) -> Vec<String> {
         self.flush();
         let grid = self.term.grid();
+        let mut text = String::new(); // one scratch buffer for every row
         (0..grid.screen_lines())
             .map(|l| {
                 let line = &grid[Line(l as i32)];
-                let text: String = (0..grid.columns())
-                    .map(|c| &line[Column(c)])
-                    .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
-                    .map(|cell| cell.c)
-                    .collect();
+                text.clear();
+                text.extend(
+                    (0..grid.columns())
+                        .map(|c| &line[Column(c)])
+                        .filter(|cell| !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+                        .map(|cell| cell.c),
+                );
                 text.trim_end().to_owned()
             })
             .collect()
@@ -317,6 +340,52 @@ impl Trigger {
             Trigger::Done => NotificationKind::Done,
             Trigger::SubAgentDone(_) => NotificationKind::SubAgentDone,
         }
+    }
+}
+
+/// Window in which a session gets at most one notification of each kind.
+pub const NOTIFY_GAP: Duration = Duration::from_secs(2);
+/// A permission request that differs from the last notified one is a new reason to look up (the
+/// contract of `Trigger::Perm`), so it may pass inside the window, this many times at most.
+const MAX_DISTINCT_PERMS: u32 = 5;
+
+#[derive(Debug, Default)]
+struct Slot {
+    window_start: Option<Instant>,
+    sent: u32,
+    last_perm: Option<PermRequest>,
+}
+
+/// At most one Perm / Done / Fail notification per kind per [`NOTIFY_GAP`] (Perm: also each new
+/// request, up to [`MAX_DISTINCT_PERMS`]): a program that toggles its status in a loop must not
+/// flood the user. The status itself still updates every time.
+#[derive(Debug, Default)]
+pub struct NotifyLimiter {
+    slots: [Slot; 3],
+}
+
+impl NotifyLimiter {
+    pub fn allow(&mut self, trigger: &Trigger, now: Instant) -> bool {
+        let (slot, perm) = match trigger {
+            Trigger::Perm(p) => (&mut self.slots[0], p.as_ref()),
+            Trigger::Fail => (&mut self.slots[1], None),
+            Trigger::Done => (&mut self.slots[2], None),
+            Trigger::SubAgentDone(_) => return true,
+        };
+        if slot
+            .window_start
+            .is_none_or(|t| now.saturating_duration_since(t) >= NOTIFY_GAP)
+        {
+            slot.window_start = Some(now);
+            slot.sent = 0;
+        }
+        let new_request = perm.is_some() && perm != slot.last_perm.as_ref();
+        let allowed = slot.sent == 0 || (new_request && slot.sent < MAX_DISTINCT_PERMS);
+        if allowed {
+            slot.sent += 1;
+            slot.last_perm = perm.cloned();
+        }
+        allowed
     }
 }
 
@@ -410,6 +479,65 @@ mod tests {
         assert_eq!(rows[0], "hello");
         assert_eq!(rows[1], "world");
         assert_eq!(rows[2], "");
+    }
+
+    #[test]
+    fn a_chunk_of_osc_toggles_is_one_update_and_notifies_at_most_once_per_kind() {
+        let mut d = detector(AgentKind::ClaudeCode);
+        let mut chunk = String::new();
+        for n in 0..400 {
+            let state = ["working", "blocked", "done", "error"][n % 4];
+            chunk.push_str(&format!("\x1b]7501;state={state}\x07"));
+        }
+        chunk.push_str("\x1b]7501;state=blocked\x07");
+        let fed = d.on_output(chunk.as_bytes(), Instant::now(), 5);
+        assert_eq!(fed.updates.len(), 1);
+        assert_eq!(fed.updates[0].status, Status::Perm);
+
+        // the same flood arriving as many chunks: every status update goes through, but the
+        // notifications are limited to one per kind per gap
+        let t0 = Instant::now();
+        let mut limiter = NotifyLimiter::default();
+        let triggers = [Trigger::Perm(None), Trigger::Fail, Trigger::Done];
+        let allowed = (0..300u64)
+            .filter(|n| {
+                limiter.allow(
+                    &triggers[(*n % 3) as usize],
+                    t0 + Duration::from_millis(n * 5),
+                )
+            })
+            .count();
+        assert_eq!(allowed, 3);
+        assert!(limiter.allow(&Trigger::Fail, t0 + NOTIFY_GAP + Duration::from_millis(10)));
+        assert!(limiter.allow(&Trigger::SubAgentDone("a".into()), t0));
+        assert!(limiter.allow(&Trigger::SubAgentDone("a".into()), t0));
+
+        // distinct permission requests are new reasons to look up, but only a few per window
+        let mut limiter = NotifyLimiter::default();
+        let allowed = (0..100)
+            .filter(|n| {
+                let req = PermRequest {
+                    tool: "Bash".into(),
+                    summary: format!("cmd {n}"),
+                };
+                limiter.allow(&Trigger::Perm(Some(req)), t0)
+            })
+            .count();
+        assert_eq!(allowed, MAX_DISTINCT_PERMS as usize);
+    }
+
+    #[test]
+    fn the_backlog_trims_in_bulk_but_the_vt_model_sees_only_the_newest_bytes() {
+        let mut d = detector(AgentKind::Terminal);
+        let t0 = Instant::now();
+        let filler = "x".repeat(16 * 1024);
+        for n in 0..80 {
+            feed(&mut d, &filler, t0, n);
+        }
+        assert!(d.backlog.len() <= 2 * BACKLOG_MAX);
+        feed(&mut d, "\r\nlast line", t0, 90);
+        let rows = d.screen_rows();
+        assert!(rows.iter().any(|r| r == "last line"), "{rows:?}");
     }
 
     #[test]

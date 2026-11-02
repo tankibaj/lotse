@@ -60,6 +60,13 @@ pub const HOOKS_DOC_URL: &str = "https://code.claude.com/docs/en/hooks";
 
 /// Longest `PermRequest::summary`, in characters.
 const SUMMARY_MAX_CHARS: usize = 160;
+/// Hook payloads come from any local process: every string kept in memory is clipped, and the
+/// per-session sub-agent list is bounded (oldest dropped), so a flood cannot grow the daemon.
+const TOOL_MAX_CHARS: usize = 40;
+const ID_MAX_CHARS: usize = 128;
+/// Text scanned for the one-line summary.
+const COMMAND_MAX_CHARS: usize = 512;
+const MAX_SUBS: usize = 256;
 
 /// Hook delivery is best effort (`lotse-hook` drops an event on timeout or a daemon restart), so a
 /// lost `SubagentStop` must not keep a session running forever. A running or waiting sub-agent that
@@ -142,7 +149,7 @@ impl ClaudeAdapter {
         let Some(event) = str_field(payload, "hook_event_name") else {
             return false;
         };
-        let agent_id = str_field(payload, "agent_id");
+        let agent_id = bounded_field(payload, "agent_id", ID_MAX_CHARS);
         match event {
             "SessionStart" => {
                 if str_field(payload, "source") == Some("compact") {
@@ -162,7 +169,8 @@ impl ClaudeAdapter {
                 let post = event != "PreToolUse";
                 match agent_id {
                     Some(id) => {
-                        let sub = self.upsert_sub(id, str_field(payload, "agent_type"));
+                        let sub = self
+                            .upsert_sub(id, bounded_field(payload, "agent_type", TOOL_MAX_CHARS));
                         if !post || perm_cleared_by(sub.perm.as_ref(), payload) {
                             sub.status = Status::Run;
                             sub.perm = None;
@@ -178,11 +186,13 @@ impl ClaudeAdapter {
             "PermissionRequest" => {
                 let pending = Pending {
                     req: perm_request(payload),
-                    tool_use_id: str_field(payload, "tool_use_id").map(str::to_owned),
+                    tool_use_id: bounded_field(payload, "tool_use_id", ID_MAX_CHARS)
+                        .map(str::to_owned),
                 };
                 match agent_id {
                     Some(id) => {
-                        let sub = self.upsert_sub(id, str_field(payload, "agent_type"));
+                        let sub = self
+                            .upsert_sub(id, bounded_field(payload, "agent_type", TOOL_MAX_CHARS));
                         sub.status = Status::Perm;
                         sub.perm = Some(pending);
                     }
@@ -192,7 +202,8 @@ impl ClaudeAdapter {
             "Stop" => self.lead = Lead::Done,
             "StopFailure" => match agent_id {
                 Some(id) => {
-                    let sub = self.upsert_sub(id, str_field(payload, "agent_type"));
+                    let sub =
+                        self.upsert_sub(id, bounded_field(payload, "agent_type", TOOL_MAX_CHARS));
                     sub.status = Status::Fail;
                     sub.perm = None;
                 }
@@ -200,7 +211,7 @@ impl ClaudeAdapter {
             },
             "SubagentStart" => {
                 let Some(id) = agent_id else { return false };
-                let sub = self.upsert_sub(id, str_field(payload, "agent_type"));
+                let sub = self.upsert_sub(id, bounded_field(payload, "agent_type", TOOL_MAX_CHARS));
                 sub.status = Status::Run;
                 sub.perm = None;
             }
@@ -232,6 +243,9 @@ impl ClaudeAdapter {
         let at = match self.subs.iter().position(|s| s.id == id) {
             Some(at) => at,
             None => {
+                if self.subs.len() >= MAX_SUBS {
+                    self.subs.remove(0);
+                }
                 self.subs.push(Sub {
                     id: id.to_owned(),
                     name: agent_type.unwrap_or(id).to_owned(),
@@ -365,16 +379,30 @@ fn str_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
     payload.get(key)?.as_str().filter(|s| !s.is_empty())
 }
 
+/// [`str_field`] cut to `max_chars` characters (on a character boundary).
+fn bounded_field<'a>(payload: &'a Value, key: &str, max_chars: usize) -> Option<&'a str> {
+    str_field(payload, key).map(|s| clip_str(s, max_chars))
+}
+
+fn clip_str(s: &str, max_chars: usize) -> &str {
+    s.char_indices()
+        .nth(max_chars)
+        .map_or(s, |(at, _)| &s[..at])
+}
+
 /// Does a `PostToolUse` / `PostToolUseFailure` finish the pending permission prompt?
 ///
 /// Parallel tool calls can finish while another tool still waits for the user: the post event only
 /// clears the prompt when it is about the same tool call (`tool_use_id`) or, without ids, the same tool.
 fn perm_cleared_by(pending: Option<&Pending>, payload: &Value) -> bool {
     let Some(pending) = pending else { return true };
-    if let (Some(waiting), Some(done)) = (&pending.tool_use_id, str_field(payload, "tool_use_id")) {
+    if let (Some(waiting), Some(done)) = (
+        &pending.tool_use_id,
+        bounded_field(payload, "tool_use_id", ID_MAX_CHARS),
+    ) {
         return waiting == done;
     }
-    match str_field(payload, "tool_name") {
+    match bounded_field(payload, "tool_name", TOOL_MAX_CHARS) {
         Some(tool) => tool == pending.req.tool,
         None => true,
     }
@@ -382,7 +410,7 @@ fn perm_cleared_by(pending: Option<&Pending>, payload: &Value) -> bool {
 
 /// `PermRequest` from a `PermissionRequest` payload: the tool name and a one-line summary of its input.
 fn perm_request(payload: &Value) -> PermRequest {
-    let tool = str_field(payload, "tool_name").unwrap_or("Tool");
+    let tool = bounded_field(payload, "tool_name", TOOL_MAX_CHARS).unwrap_or("Tool");
     let input = payload.get("tool_input");
     PermRequest {
         tool: tool.to_owned(),
@@ -416,7 +444,7 @@ fn summarize_input(tool: &str, input: &Value) -> String {
         .iter()
         .chain(COMMON_KEYS.iter())
         .find_map(|key| str_field(input, key))
-        .map(one_line)
+        .map(|text| one_line(clip_str(text, COMMAND_MAX_CHARS)))
         .unwrap_or_default()
 }
 
@@ -470,6 +498,32 @@ mod tests {
         assert_eq!(p.summary, "");
         // No tool name at all.
         assert_eq!(perm_request(&json!({})).tool, "Tool");
+    }
+
+    #[test]
+    fn hook_strings_are_clipped_on_a_char_boundary() {
+        let p = perm_request(&json!({
+            "tool_name": "ü".repeat(10_000),
+            "tool_input": {"command": format!("{}x", " ".repeat(100_000))}
+        }));
+        assert_eq!(p.tool.chars().count(), TOOL_MAX_CHARS);
+        assert!(p.summary.chars().count() <= SUMMARY_MAX_CHARS);
+    }
+
+    #[test]
+    fn sub_agent_rows_are_capped_dropping_the_oldest() {
+        let mut a = ClaudeAdapter::new();
+        for n in 0..(MAX_SUBS * 2) {
+            let id = format!("{n}-{}", "i".repeat(5_000));
+            hook(
+                &mut a,
+                json!({"hook_event_name": "SubagentStart", "agent_id": id}),
+                n as u64,
+            );
+        }
+        assert_eq!(a.subs.len(), MAX_SUBS);
+        assert!(a.subs.iter().all(|s| s.id.chars().count() <= ID_MAX_CHARS));
+        assert!(a.subs[0].id.starts_with(&format!("{}-", MAX_SUBS)));
     }
 
     #[test]

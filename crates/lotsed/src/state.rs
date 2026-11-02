@@ -723,14 +723,25 @@ impl State {
             }
         });
         spawn("lotse-git-refresh", GIT_REFRESH, |s| {
-            // sessions of one project share a folder: ask git once per folder
-            let mut by_folder: HashMap<PathBuf, lotse_proto::GitInfo> = HashMap::new();
+            // Sessions of one project share a folder: ask git once per folder, and only for a
+            // folder where a live session saw PTY output or a hook since its last refresh.
+            type Due = (Arc<SessionHandle>, Option<u64>);
+            let mut folders: HashMap<PathBuf, Vec<Due>> = HashMap::new();
             for h in s.handles() {
-                let git = by_folder
-                    .entry(h.cwd())
-                    .or_insert_with_key(|dir| git_glue::info(dir))
-                    .clone();
-                h.apply_git(git);
+                let due = h.git_due();
+                folders.entry(h.cwd()).or_default().push((h, due));
+            }
+            for (dir, sessions) in folders {
+                if sessions.iter().all(|(_, due)| due.is_none()) {
+                    continue;
+                }
+                let git = git_glue::info(&dir);
+                for (h, due) in sessions {
+                    h.apply_git(git.clone());
+                    if let Some(token) = due {
+                        h.git_refreshed(token);
+                    }
+                }
             }
         });
     }

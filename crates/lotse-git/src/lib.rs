@@ -39,6 +39,13 @@ where
     Command::new("git")
         .arg("-C")
         .arg(dir)
+        // A repo's own config must not run commands on the background refresh.
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
+        ])
         .args(args)
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -140,7 +147,7 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
     let ahead = out_ok(dir, ["rev-list", "--count", "@{upstream}..HEAD"])?
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    let status = run(dir, ["status", "--porcelain"])?;
+    let status = run(dir, ["status", "--porcelain", "--ignore-submodules=dirty"])?;
     if !status.status.success() {
         return Err(GitError::Command(stderr(&status)));
     }
@@ -298,6 +305,20 @@ mod tests {
 
     fn real(p: &Path) -> PathBuf {
         p.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn repo_local_fsmonitor_hook_is_never_executed() {
+        let d = repo();
+        let marker = tempfile::tempdir().unwrap().keep().join("pwned");
+        let hook = format!("touch {}; echo", marker.display());
+        git(d.path(), &["config", "core.fsmonitor", hook.as_str()]);
+        write(d.path(), "b.txt", "new\n");
+        let info = git_info(d.path()).unwrap();
+        assert_eq!(info.dirty, 1);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(marker.parent().unwrap());
+        assert!(!ran, "core.fsmonitor command executed");
     }
 
     #[test]

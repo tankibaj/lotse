@@ -108,10 +108,15 @@ impl Engine {
 
     /// Offer an observation to every adapter and merge; `None` when nothing changed.
     pub fn observe(&mut self, obs: Observation) -> Option<StatusUpdate> {
+        self.observe_batch(std::slice::from_ref(&obs))
+    }
+
+    /// Observations that arrived together, merged once: one update for the whole batch.
+    pub fn observe_batch(&mut self, batch: &[Observation]) -> Option<StatusUpdate> {
         let detections: Vec<Detection> = self
             .adapters
             .iter_mut()
-            .flat_map(|adapter| adapter.observe(&obs))
+            .flat_map(|adapter| adapter.observe_batch(batch))
             .collect();
         let mut at = None;
         for detection in detections {
@@ -274,6 +279,27 @@ mod tests {
             e.register(Box::new(Scripted { source, script }));
         }
         e
+    }
+
+    #[test]
+    fn a_flood_of_osc_reports_in_one_batch_is_one_update() {
+        use crate::adapter::OscObservation;
+        let mut e = Engine::with_default_adapters(SessionId::new("s"), AgentKind::ClaudeCode);
+        let batch: Vec<Observation> = (0..300u64)
+            .map(|n| {
+                Observation::Osc(OscObservation {
+                    payload: format!("state={}", if n % 2 == 0 { "working" } else { "blocked" }),
+                    at: n,
+                })
+            })
+            .collect();
+        let update = e.observe_batch(&batch).expect("one update");
+        assert_eq!(update.status, Status::Perm);
+        assert_eq!(update.at, 299);
+        assert!(
+            e.observe_batch(&batch).is_none(),
+            "same final state: nothing new"
+        );
     }
 
     #[test]

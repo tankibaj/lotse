@@ -75,4 +75,11 @@ pub trait Adapter: Send {
 
     /// Feed one observation; return what changed (empty when the observation is not for this adapter).
     fn observe(&mut self, obs: &Observation) -> Vec<Detection>;
+
+    /// Several observations that arrived together (the OSC reports of one output chunk). Same
+    /// result as feeding them one by one, except that an adapter may report only the state it ends
+    /// in, so a flood of reports costs one detection, not one per report.
+    fn observe_batch(&mut self, batch: &[Observation]) -> Vec<Detection> {
+        batch.iter().flat_map(|obs| self.observe(obs)).collect()
+    }
 }

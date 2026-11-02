@@ -65,7 +65,7 @@ fn response_frame(req_id: u64, response: Response) -> Frame {
 fn is_slow(req: &Request) -> bool {
     matches!(
         req,
-        Request::DetectLaunchCommands | Request::CreateSession(_)
+        Request::DetectLaunchCommands | Request::CreateSession(_) | Request::GetGitInfo { .. }
     )
 }
 
@@ -202,6 +202,16 @@ mod tests {
             request: Request::Ping,
         })))
         .unwrap()
+    }
+
+    #[test]
+    fn git_info_runs_off_the_connection_loop() {
+        let req = Request::GetGitInfo {
+            project_id: lotse_proto::ProjectId::new("p"),
+            session_id: None,
+        };
+        assert!(is_slow(&req));
+        assert!(!is_slow(&Request::Ping));
     }
 
     #[tokio::test]

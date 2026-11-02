@@ -61,6 +61,11 @@ pub const PLUGIN_DOC_URL: &str = "https://opencode.ai/docs/plugins/";
 
 /// Longest `PermRequest::summary`, in characters.
 const SUMMARY_MAX_CHARS: usize = 160;
+/// Plugin payloads come from any local process: strings kept in memory are clipped and the
+/// per-session records (sessions, pending requests) are bounded, oldest dropped first.
+const TOOL_MAX_CHARS: usize = 40;
+const ID_MAX_CHARS: usize = 128;
+const MAX_RECORDS: usize = 256;
 /// A busy session that has been silent this long lost its idle event.
 const BUSY_EXPIRE_MS: UnixMs = 30 * 60 * 1000;
 
@@ -126,6 +131,9 @@ impl OpenCodeAdapter {
         let at_index = match self.sessions.iter().position(|s| s.id == id) {
             Some(i) => i,
             None => {
+                if self.sessions.len() >= MAX_RECORDS {
+                    self.sessions.remove(0);
+                }
                 self.sessions.push(Session {
                     id: id.to_owned(),
                     parent: None,
@@ -151,11 +159,11 @@ impl OpenCodeAdapter {
     fn handle_hook(&mut self, payload: &Value, at: UnixMs) -> bool {
         let (Some(event), Some(id)) = (
             str_field(payload, "hook_event_name"),
-            str_field(payload, "session_id"),
+            id_field(payload, "session_id"),
         ) else {
             return false;
         };
-        let parent = str_field(payload, "parent_id");
+        let parent = id_field(payload, "parent_id");
         match event {
             "SessionCreated" => {
                 let i = self.index(id, parent, at);
@@ -187,11 +195,11 @@ impl OpenCodeAdapter {
                         .unwrap_or("permission")
                 };
                 let request = Request {
-                    id: str_field(payload, "request_id")
+                    id: id_field(payload, "request_id")
                         .unwrap_or_default()
                         .to_owned(),
                     req: PermRequest {
-                        tool: clip(tool, 40),
+                        tool: clip(tool, TOOL_MAX_CHARS),
                         summary: clip(
                             str_field(payload, "summary").unwrap_or_default(),
                             SUMMARY_MAX_CHARS,
@@ -201,12 +209,17 @@ impl OpenCodeAdapter {
                 let pending = &mut self.sessions[i].pending;
                 match pending.iter_mut().find(|r| r.id == request.id) {
                     Some(slot) => *slot = request,
-                    None => pending.push(request),
+                    None => {
+                        if pending.len() >= MAX_RECORDS {
+                            pending.remove(0);
+                        }
+                        pending.push(request);
+                    }
                 }
             }
             "PermissionReplied" | "QuestionReplied" | "QuestionRejected" => {
                 let i = self.index(id, parent, at);
-                match str_field(payload, "request_id").filter(|r| !r.is_empty()) {
+                match id_field(payload, "request_id").filter(|r| !r.is_empty()) {
                     Some(request) => self.sessions[i].pending.retain(|r| r.id != request),
                     // No id to match: the user answered whatever was open.
                     None => self.sessions[i].pending.clear(),
@@ -305,6 +318,16 @@ fn str_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
     payload.get(key)?.as_str()
 }
 
+/// [`str_field`] cut to [`ID_MAX_CHARS`] characters.
+fn id_field<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
+    let s = str_field(payload, key)?;
+    Some(
+        s.char_indices()
+            .nth(ID_MAX_CHARS)
+            .map_or(s, |(at, _)| &s[..at]),
+    )
+}
+
 fn clip(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
@@ -372,6 +395,39 @@ mod tests {
 
     fn st(session: &str, status: &str) -> Value {
         json!({"hook_event_name": "SessionStatus", "session_id": session, "status": status})
+    }
+
+    #[test]
+    fn records_and_strings_are_bounded() {
+        let mut a = OpenCodeAdapter::new();
+        let big = "ü".repeat(5_000);
+        for n in 0..(MAX_RECORDS * 2) {
+            feed(
+                &mut a,
+                n as u64,
+                ev("SessionCreated", &format!("{n}-{big}")),
+            );
+        }
+        assert_eq!(a.sessions.len(), MAX_RECORDS);
+        assert!(
+            a.sessions
+                .iter()
+                .all(|s| s.id.chars().count() <= ID_MAX_CHARS)
+        );
+        assert!(a.sessions[0].id.starts_with(&format!("{MAX_RECORDS}-")));
+
+        for n in 0..(MAX_RECORDS * 2) {
+            feed(
+                &mut a,
+                1_000 + n as u64,
+                json!({"hook_event_name": "PermissionAsked", "session_id": "s",
+                       "request_id": format!("r{n}"), "tool": big, "summary": big}),
+            );
+        }
+        let s = a.sessions.last().unwrap();
+        assert_eq!(s.pending.len(), MAX_RECORDS);
+        assert_eq!(s.pending[0].req.tool.chars().count(), TOOL_MAX_CHARS);
+        assert!(s.pending[0].req.summary.chars().count() <= SUMMARY_MAX_CHARS);
     }
 
     #[test]

@@ -3,8 +3,9 @@
 //! The plugin is one file we own, copied to `<config dir>/plugins/lotse-status.js` where
 //! `<config dir>` is `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`. Same safety rules as
 //! the Claude installer: idempotent, a foreign file with that name is never overwritten, a changed
-//! file of ours is backed up first (`lotse-status.js.lotse-backup`, mode 0600), uninstall removes only
-//! a file that carries our marker (and puts the backup back when there is one).
+//! file of ours is simply replaced (never backed up: a backup of our own file would come back as
+//! stale code on uninstall), uninstall removes only a file that carries our marker and puts back
+//! a `lotse-status.js.lotse-backup` only when that is a genuine non-Lotse file.
 //!
 //! Unverified (no web access): that OpenCode loads plugins from this directory,
 //! see <https://opencode.ai/docs/plugins/>.
@@ -67,23 +68,17 @@ pub fn install(config_dir: &Path) -> Result<InstallOutcome> {
     if existing.as_deref() == Some(PLUGIN_SOURCE) {
         return Ok(InstallOutcome::Unchanged);
     }
-    let mut backup = None;
-    if let Some(old) = &existing {
-        if !old.contains(MARKER) {
-            bail!(
-                "{} exists and is not the Lotse plugin; not overwriting it",
-                target.display()
-            );
-        }
-        let path = backup_path(config_dir);
-        write_private(&path, old)?;
-        backup = Some(path);
+    if existing.as_deref().is_some_and(|old| !old.contains(MARKER)) {
+        bail!(
+            "{} exists and is not the Lotse plugin; not overwriting it",
+            target.display()
+        );
     }
     std::fs::create_dir_all(config_dir.join("plugins"))
         .with_context(|| format!("creating {}", config_dir.join("plugins").display()))?;
     // plugins are code the user's agent runs: readable by the user's tools, writable by the user only
     write_private(&target, PLUGIN_SOURCE)?;
-    Ok(InstallOutcome::Written { backup })
+    Ok(InstallOutcome::Written { backup: None })
 }
 
 pub fn uninstall(config_dir: &Path) -> Result<UninstallOutcome> {
@@ -94,10 +89,17 @@ pub fn uninstall(config_dir: &Path) -> Result<UninstallOutcome> {
     }
     std::fs::remove_file(&target).with_context(|| format!("removing {}", target.display()))?;
     let backup = backup_path(config_dir);
-    if let Some(old) = read_existing(&backup)? {
-        write_private(&target, &old)?;
-        std::fs::remove_file(&backup).ok();
-        return Ok(UninstallOutcome::RestoredBackup);
+    match read_existing(&backup)? {
+        Some(old) if !old.contains(MARKER) => {
+            write_private(&target, &old)?;
+            std::fs::remove_file(&backup).ok();
+            return Ok(UninstallOutcome::RestoredBackup);
+        }
+        // A stale backup of our own file (older installers wrote one): never put it back.
+        Some(_) => {
+            std::fs::remove_file(&backup).ok();
+        }
+        None => {}
     }
     Ok(UninstallOutcome::Removed)
 }
@@ -153,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn an_older_copy_of_ours_is_backed_up_and_restored_on_uninstall() {
+    fn an_older_copy_of_ours_is_overwritten_without_backup_and_removed_on_uninstall() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         std::fs::create_dir_all(dir.join("plugins")).unwrap();
@@ -164,12 +166,36 @@ mod tests {
             InstallStatus::Partial { .. }
         ));
 
-        let InstallOutcome::Written { backup: Some(b) } = install(dir).unwrap() else {
-            panic!("expected a backup");
-        };
-        assert_eq!(std::fs::read_to_string(b).unwrap(), old);
+        assert_eq!(
+            install(dir).unwrap(),
+            InstallOutcome::Written { backup: None }
+        );
+        assert!(!backup_path(dir).exists());
+        assert_eq!(status(dir).unwrap(), InstallStatus::Installed);
+        assert_eq!(uninstall(dir).unwrap(), UninstallOutcome::Removed);
+        assert!(!plugin_path(dir).exists());
+    }
+
+    #[test]
+    fn uninstall_restores_a_genuine_user_backup_but_drops_a_stale_lotse_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::create_dir_all(dir.join("plugins")).unwrap();
+
+        install(dir).unwrap();
+        std::fs::write(backup_path(dir), "export default {}").unwrap();
         assert_eq!(uninstall(dir).unwrap(), UninstallOutcome::RestoredBackup);
-        assert_eq!(std::fs::read_to_string(plugin_path(dir)).unwrap(), old);
+        assert_eq!(
+            std::fs::read_to_string(plugin_path(dir)).unwrap(),
+            "export default {}"
+        );
+
+        std::fs::remove_file(plugin_path(dir)).unwrap();
+        install(dir).unwrap();
+        std::fs::write(backup_path(dir), format!("// stale {MARKER}")).unwrap();
+        assert_eq!(uninstall(dir).unwrap(), UninstallOutcome::Removed);
+        assert!(!plugin_path(dir).exists());
+        assert!(!backup_path(dir).exists());
     }
 
     #[test]

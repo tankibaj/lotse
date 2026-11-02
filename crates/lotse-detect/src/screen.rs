@@ -42,8 +42,9 @@ pub mod manifest;
 use crate::adapter::{Adapter, Detection, Observation, ProcessObservation, ScreenObservation};
 use lotse_proto::{AgentKind, DetectSource, PermRequest, SessionId, Status, UnixMs};
 use manifest::{Manifest, ManifestSet, RuleState, Verdict};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 /// Longest `PermRequest::summary`, in characters.
 const SUMMARY_MAX_CHARS: usize = 160;
@@ -101,13 +102,73 @@ pub fn user_manifest_dir() -> Option<PathBuf> {
 }
 
 /// Called by `Engine::with_default_adapters`: the manifest-driven adapter for `agent`, using the
-/// bundled manifests and the user override directory ([`user_manifest_dir`]).
+/// bundled manifests and the user override directory ([`user_manifest_dir`]). The parsed set is
+/// cached and reloaded only when the user directory changed.
 pub fn default_adapter(_session: &SessionId, agent: AgentKind) -> Option<Box<dyn Adapter>> {
-    let set = match user_manifest_dir() {
-        Some(dir) => ManifestSet::with_user_dir(&dir),
-        None => ManifestSet::bundled(),
-    };
+    static CACHE: SetCache = SetCache(Mutex::new(None));
+    let set = CACHE.get(user_manifest_dir().as_deref());
     ScreenAdapter::from_set(&set, agent).map(|a| Box::new(a) as Box<dyn Adapter>)
+}
+
+/// What a manifest directory looked like when its set was parsed: the directory's own mtime plus
+/// name, mtime and size of every `*.toml` (an in-place edit does not touch the directory's mtime).
+type DirStamp = Vec<(Option<std::ffi::OsString>, Option<SystemTime>, u64)>;
+
+fn dir_stamp(dir: &Path) -> DirStamp {
+    let stat = |p: &Path| std::fs::metadata(p).ok();
+    let mut stamp = vec![(
+        None,
+        stat(dir).and_then(|m| m.modified().ok()),
+        0, // directory size is meaningless
+    )];
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "toml"))
+        .collect();
+    files.sort();
+    for path in files {
+        let meta = stat(&path);
+        stamp.push((
+            path.file_name().map(ToOwned::to_owned),
+            meta.as_ref().and_then(|m| m.modified().ok()),
+            meta.map_or(0, |m| m.len()),
+        ));
+    }
+    stamp
+}
+
+struct Cached {
+    dir: Option<PathBuf>,
+    stamp: DirStamp,
+    set: Arc<ManifestSet>,
+}
+
+struct SetCache(Mutex<Option<Cached>>);
+
+impl SetCache {
+    fn get(&self, dir: Option<&Path>) -> Arc<ManifestSet> {
+        let stamp = dir.map(dir_stamp).unwrap_or_default();
+        let mut slot = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(c) = slot.as_ref()
+            && c.dir.as_deref() == dir
+            && c.stamp == stamp
+        {
+            return c.set.clone();
+        }
+        let set = Arc::new(match dir {
+            Some(dir) => ManifestSet::with_user_dir(dir),
+            None => ManifestSet::bundled(),
+        });
+        *slot = Some(Cached {
+            dir: dir.map(Path::to_path_buf),
+            stamp,
+            set: set.clone(),
+        });
+        set
+    }
 }
 
 // ---- adapter ------------------------------------------------------------------------------------
@@ -358,6 +419,35 @@ mod tests {
 
     fn scr(status: Status) -> Vec<(DetectSource, Status)> {
         vec![(DetectSource::Screen, status)]
+    }
+
+    #[test]
+    fn manifest_set_is_cached_until_the_user_dir_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = SetCache(Mutex::new(None));
+        let first = cache.get(Some(dir.path()));
+        assert!(Arc::ptr_eq(&first, &cache.get(Some(dir.path()))));
+
+        std::fs::write(
+            dir.path().join("mine.toml"),
+            "schema = 1\nid = \"mine\"\nagent = \"claude_code\"\n",
+        )
+        .unwrap();
+        let second = cache.get(Some(dir.path()));
+        assert!(!Arc::ptr_eq(&first, &second));
+        assert!(second.get("mine").is_some());
+        // an in-place edit of the same file (new size) reloads too
+        std::fs::write(
+            dir.path().join("mine.toml"),
+            "schema = 1\nid = \"mine\"\nagent = \"claude_code\"\nversion = \"2\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cache.get(Some(dir.path())).get("mine").unwrap().version,
+            "2"
+        );
+        // another directory is another set
+        assert!(cache.get(None).get("mine").is_none());
     }
 
     #[test]

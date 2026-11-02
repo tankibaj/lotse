@@ -5,7 +5,7 @@
 //! channel so a child that stops reading input can never block the reader (deadlock).
 
 use crate::db::Db;
-use crate::detect_glue::{Detector, Trigger, notification, process_name};
+use crate::detect_glue::{Detector, NotifyLimiter, Trigger, notification, process_name};
 use crate::hub::{Bytes, ClientTx, Hub};
 use crate::ring::Ring;
 use crate::title::{LineTracker, derive_title};
@@ -21,7 +21,7 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -119,6 +119,74 @@ struct Live {
     master: Box<dyn MasterPty + Send>,
 }
 
+/// Cheap, lock-free "did anything happen" bookkeeping, so the background loops can skip a session
+/// that is quiet: the git refresh (PTY output or a hook since the last refresh) and the detect tick.
+pub struct Activity {
+    /// Bumped on every PTY read, hook and restart.
+    count: AtomicU64,
+    /// `count` when the folder's git line was last read (`MAX`: never).
+    git_seen: AtomicU64,
+    /// `count` at the last tick that ran, and whether the detector had nothing pending then.
+    tick_seen: AtomicU64,
+    tick_quiet: AtomicBool,
+    tick_skipped: AtomicU32,
+}
+
+/// A quiet session is ticked once in `TICK_SKIPS + 1` calls (about once a second at 100 ms): the
+/// foreground-process check and the adapters' 1 s clock tick still run, the 100 ms polling does not.
+const TICK_SKIPS: u32 = 9;
+
+impl Activity {
+    fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            git_seen: AtomicU64::new(u64::MAX),
+            tick_seen: AtomicU64::new(0),
+            tick_quiet: AtomicBool::new(false),
+            tick_skipped: AtomicU32::new(0),
+        }
+    }
+
+    fn bump(&self) {
+        self.count.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn count(&self) -> u64 {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// `Some(token)` when the git line is worth re-reading: the first time, or after output or a
+    /// hook since the last refresh. Pass the token to [`Self::git_done`] once git has been read.
+    fn git_due(&self) -> Option<u64> {
+        let now = self.count();
+        (now != self.git_seen.load(Ordering::Acquire)).then_some(now)
+    }
+
+    fn git_done(&self, token: u64) {
+        self.git_seen.store(token, Ordering::Release);
+    }
+
+    /// `true`: nothing happened since the last tick that ran and the detector had no deadline
+    /// pending, so this tick can be skipped (at most `TICK_SKIPS` in a row).
+    fn skip_tick(&self) -> bool {
+        let still = self.tick_quiet.load(Ordering::Acquire)
+            && self.count() == self.tick_seen.load(Ordering::Acquire)
+            && self.tick_skipped.load(Ordering::Relaxed) < TICK_SKIPS;
+        if still {
+            self.tick_skipped.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.tick_skipped.store(0, Ordering::Relaxed);
+        }
+        still
+    }
+
+    /// A tick ran having seen `count`; `quiet`: the detector has nothing pending.
+    fn ticked(&self, count: u64, quiet: bool) {
+        self.tick_seen.store(count, Ordering::Release);
+        self.tick_quiet.store(quiet, Ordering::Release);
+    }
+}
+
 /// Most input bytes waiting for a child that is not reading.
 const MAX_PENDING_INPUT: usize = 8 * 1024 * 1024;
 
@@ -140,11 +208,13 @@ struct Inner {
     spec: SpawnSpec,
     /// Feeds the status engine (hooks, OSC 7501, screen, process).
     detector: Detector,
+    limiter: NotifyLimiter,
 }
 
 pub struct SessionHandle {
     id: SessionId,
     ctx: Ctx,
+    activity: Activity,
     inner: Mutex<Inner>,
 }
 
@@ -225,7 +295,9 @@ impl SessionHandle {
         let handle = Arc::new(Self {
             id: meta.id.clone(),
             ctx,
+            activity: Activity::new(),
             inner: Mutex::new(Inner {
+                limiter: NotifyLimiter::default(),
                 detector,
                 meta,
                 title_auto,
@@ -330,6 +402,7 @@ impl SessionHandle {
     }
 
     fn on_output(&self, data: &[u8]) {
+        self.activity.bump();
         let frame: Bytes = match lotse_proto::encode(&Frame::Pty {
             session_id: self.id.clone(),
             data: data.to_vec(),
@@ -356,6 +429,7 @@ impl SessionHandle {
 
     /// An agent hook payload (`Request::HookEvent`).
     pub fn on_hook(&self, agent: AgentKind, payload: serde_json::Value) {
+        self.activity.bump();
         let at = now_ms();
         let triggers = {
             let mut g = self.lock();
@@ -370,12 +444,23 @@ impl SessionHandle {
 
     /// About every 100 ms: foreground process, screen sample, clock tick.
     pub fn tick(&self) {
+        let seen = self.activity.count();
+        if self.activity.skip_tick() {
+            return;
+        }
         let now = Instant::now();
         let at = now_ms();
         // the foreground process group is cheap to read; its name needs a `ps`, so only on change
         let changed = {
-            let g = self.lock();
-            if g.closing || g.live.is_none() {
+            let mut g = self.lock();
+            if g.closing {
+                return;
+            }
+            if g.live.is_none() {
+                // exited: no detection, only let go of the group id once the survivors are gone
+                forget_empty_group(&mut g);
+                drop(g);
+                self.activity.ticked(seen, true);
                 return;
             }
             let pgid = g
@@ -385,7 +470,7 @@ impl SessionHandle {
             (pgid != g.detector.fg_pgid).then_some(pgid).flatten()
         };
         let name = changed.map(|pgid| (pgid, process_name(pgid)));
-        let triggers = {
+        let (triggers, quiet) = {
             let mut g = self.lock();
             if g.closing || g.live.is_none() {
                 return;
@@ -398,9 +483,22 @@ impl SessionHandle {
                 }
             }
             updates.extend(g.detector.tick(now, at));
-            self.apply(&mut g, updates)
+            let quiet = g.detector.idle();
+            (self.apply(&mut g, updates), quiet)
         };
+        self.activity.ticked(seen, quiet);
         self.notify(triggers);
+    }
+
+    /// `Some(token)` when this session's folder deserves a git refresh: the process is alive and
+    /// there was PTY output or a hook since the last refresh (the first refresh always runs).
+    /// Report the refresh with [`Self::git_refreshed`].
+    pub fn git_due(&self) -> Option<u64> {
+        self.is_alive().then(|| self.activity.git_due()).flatten()
+    }
+
+    pub fn git_refreshed(&self, token: u64) {
+        self.activity.git_done(token);
     }
 
     /// Take a fresh git line (branch, ahead, dirty) for this session's folder; broadcast
@@ -474,6 +572,8 @@ impl SessionHandle {
                         }
                         _ => None,
                     };
+                    let now = Instant::now();
+                    let trigger = trigger.filter(|t| g.limiter.allow(t, now));
                     triggers.extend(trigger.map(|t| (g.meta.clone(), t)));
                 }
             }
@@ -538,10 +638,7 @@ impl SessionHandle {
             }
             g.detector.on_exit(code, at);
             g.live = None;
-            // keep the group id only while survivors hold it (a freed id may be reused by anyone)
-            if g.pgid.is_some_and(|p| !group_alive(p)) {
-                g.pgid = None;
-            }
+            forget_empty_group(&mut g);
             // process-group identity: the weakest detection source, a better one may refine it
             let status = if code == Some(0) {
                 Status::Done
@@ -689,6 +786,7 @@ impl SessionHandle {
             return Err(SessionError::StillRunning);
         }
         let launched = launch(&g.spec, g.cols, g.rows)?;
+        self.activity.bump();
         g.pgid = launched.child.process_id();
         g.generation += 1;
         let generation = g.generation;
@@ -736,6 +834,14 @@ impl SessionHandle {
     }
 }
 
+/// Keep the group id only while survivors hold it: a freed id may be reused by any process, and
+/// closing the session must never signal that one.
+fn forget_empty_group(g: &mut Inner) {
+    if g.pgid.is_some_and(|p| !group_alive(p)) {
+        g.pgid = None;
+    }
+}
+
 fn queue_input(live: Option<&Live>, data: &[u8]) -> Result<(), SessionError> {
     let live = live.ok_or(SessionError::Exited)?;
     if live.pending.fetch_add(data.len(), Ordering::AcqRel) + data.len() > MAX_PENDING_INPUT {
@@ -768,5 +874,96 @@ fn pty_size(cols: u16, rows: u16) -> PtySize {
 fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
     if let Err(e) = std::thread::Builder::new().name(name.into()).spawn(f) {
         tracing::error!("cannot start thread {name}: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lotse_proto::{ProjectId, SessionId};
+
+    #[test]
+    fn git_refresh_is_due_first_then_only_after_activity() {
+        let a = Activity::new();
+        let token = a.git_due().expect("first refresh always runs");
+        a.git_done(token);
+        assert_eq!(a.git_due(), None, "quiet since the last refresh");
+        a.bump();
+        let token = a.git_due().expect("output since the last refresh");
+        // output while git was running is not lost
+        a.bump();
+        a.git_done(token);
+        assert!(a.git_due().is_some());
+    }
+
+    #[test]
+    fn a_quiet_session_skips_nine_ticks_of_ten_and_activity_ends_the_quiet() {
+        let a = Activity::new();
+        assert!(!a.skip_tick(), "first tick always runs");
+        a.ticked(a.count(), true);
+        let skipped = (0..30).filter(|_| a.skip_tick()).count();
+        assert_eq!(skipped, 27, "9 skipped, 1 run, repeated");
+        a.bump();
+        assert!(!a.skip_tick(), "output since the last tick");
+        a.ticked(a.count(), false);
+        assert!(!a.skip_tick(), "detector had a deadline pending");
+    }
+
+    fn spawn_sh(script: &str) -> Arc<SessionHandle> {
+        let ctx = Ctx {
+            hub: Arc::new(Hub::default()),
+            db: Arc::new(Db::open_in_memory().unwrap()),
+            settings: Arc::new(RwLock::new(Settings::default())),
+        };
+        let meta = Session {
+            id: SessionId::new("s-1"),
+            project_id: ProjectId::new("p-1"),
+            title: "t".into(),
+            agent: AgentKind::Terminal,
+            command: "sh".into(),
+            status: Status::Idle,
+            sub_agents: Vec::new(),
+            git: GitInfo {
+                is_git: false,
+                branch: String::new(),
+                ahead: 0,
+                dirty: 0,
+                worktree: false,
+                worktree_path: None,
+            },
+            created_at: 0,
+            last_activity: 0,
+            running_since: None,
+            unread: false,
+            perm: None,
+            source: DetectSource::Process,
+        };
+        let spec = SpawnSpec {
+            argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
+            cwd: std::env::temp_dir(),
+            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+        };
+        SessionHandle::spawn(ctx, meta, false, spec, 1024, 80, 24, |_, _| true).unwrap()
+    }
+
+    fn wait_until(what: &str, mut cond: impl FnMut() -> bool) {
+        let end = Instant::now() + Duration::from_secs(20);
+        while !cond() {
+            assert!(Instant::now() < end, "timed out waiting for {what}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_group_id_is_dropped_once_the_survivors_of_an_exited_session_are_gone() {
+        // the shell exits at once; a background `sleep` keeps the process group non-empty
+        let h = spawn_sh("sleep 1 & exit 0");
+        wait_until("the leader's exit", || !h.is_alive());
+        assert!(h.lock().pgid.is_some(), "survivors still hold the group");
+        wait_until("the group id to be released", || {
+            h.tick();
+            h.lock().pgid.is_none()
+        });
+        assert!(h.kill().is_none(), "nothing left to signal");
     }
 }
