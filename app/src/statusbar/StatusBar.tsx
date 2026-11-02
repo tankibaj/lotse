@@ -1,6 +1,7 @@
 import { FolderGit2, GitBranch } from 'lucide-react';
 import { useClient } from '../lib/client/context';
 import {
+  formatUsage,
   needYouCount,
   toggleNeedFilter,
   togglePausedNotifications,
@@ -12,7 +13,7 @@ import { useSelectedSessionId } from '../lib/ui/selection';
 import { NoGitIcon } from '../sidebar/NoGit';
 
 // Alpha status bar (spec/mock.html footer): need-you filter chip, git of the current session, daemon
-// state and session count, pause-notifications bell, LAN Off, tokens (`—` until the transcript parser, Beta).
+// state and session count, pause-notifications bell, LAN Off, today's tokens and cost (`—` until the first snapshot).
 
 const chip = 'rounded px-1.5 hover:bg-black/5 dark:hover:bg-white/10';
 
@@ -26,7 +27,8 @@ const Bell = ({ off }: { off: boolean }) => (
 
 export function StatusBar() {
   const client = useClient();
-  const { projects, sessions, settings, connection } = useWorkspace();
+  const { projects, sessions, settings, connection, usage: usageToday } = useWorkspace();
+  const usage = formatUsage(usageToday);
   const { needFilter } = useUiState();
   const selectedId = useSelectedSessionId();
   useSessionShortcuts();
@@ -103,7 +105,9 @@ export function StatusBar() {
         {paused && ' Paused'}
       </button>
       <span>LAN Off</span>
-      <span>Today — tokens · —</span>
+      <span data-testid="status-usage" title={usage.title}>
+        {usage.text}
+      </span>
     </footer>
   );
 }

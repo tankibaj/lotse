@@ -17,13 +17,26 @@ const key = (code: string, init: KeyboardEventInit = {}) =>
   act(() => void fireEvent.keyDown(window, { code, key: code.startsWith('Key') ? code.slice(3).toLowerCase() : code, metaKey: true, ...init }));
 
 describe('StatusBar', () => {
-  it('shows need-you count, daemon state with session count, LAN Off and tokens as —', async () => {
+  it('shows need-you count, daemon state with session count, LAN Off and today\'s tokens and cost like the mock', async () => {
     await ready();
     const bar = screen.getByRole('contentinfo');
     expect(bar).toHaveTextContent('▲ 2 need you');
     expect(bar).toHaveTextContent('● lotsed running · 7 sessions');
     expect(bar).toHaveTextContent('LAN Off');
-    expect(bar).toHaveTextContent('Today — tokens · —');
+    expect(await screen.findByTestId('status-usage')).toHaveTextContent('Today 412k tokens · $4.18');
+    expect(screen.getByTestId('status-usage')).toHaveAttribute('title', expect.stringContaining('cache read 300k'));
+  });
+
+  it('follows usage_changed, and shows tokens only when a model has no known price', async () => {
+    const { client } = await ready();
+    await screen.findByText('Today 412k tokens · $4.18');
+    act(() => client.setUsage({ input_tokens: 900_000, output_tokens: 600_000, cache_read_tokens: 0, cache_write_tokens: 0, cost_micros: 12_345_678 }));
+    expect(screen.getByTestId('status-usage')).toHaveTextContent('Today 1.5M tokens · $12.35');
+    act(() => client.setUsage({ input_tokens: 1_200, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_micros: null }));
+    const usage = screen.getByTestId('status-usage');
+    expect(usage).toHaveTextContent('Today 1.2k tokens');
+    expect(usage).not.toHaveTextContent('$');
+    expect(usage).toHaveAttribute('title', expect.stringContaining('without a known price'));
   });
 
   it('shows the git line of the selected session: branch, worktree, ahead, dirty; "No git" for plain folders', async () => {

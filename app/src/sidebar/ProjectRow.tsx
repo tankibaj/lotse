@@ -5,7 +5,7 @@ import { rollupSummary } from '../lib/state/selectors';
 import { InlineEdit } from './InlineEdit';
 import { NoGitIcon } from './NoGit';
 import { ProjectTile } from './ProjectTile';
-import { StatusGlyph } from './StatusGlyph';
+import { Rollup } from './Rollup';
 
 // Project row: chevron (only on hover or focus, Finder style), coloured tile, name, no-git and muted
 // badges, and, when collapsed, the roll-up (▲2 ✕1, else the top state; idle shows nothing).
@@ -83,27 +83,7 @@ function ProjectRowImpl({ project: p, sessions, open, renaming, onToggle, onMenu
           ●
         </span>
       )}
-      {sum && (
-        <span className="flex items-center gap-1.5">
-          {sum.perm > 0 && (
-            <span className="inline-flex items-center gap-0.5 text-[11px] text-orange tabular-nums" data-rollup="perm">
-              <StatusGlyph status="perm" />
-              {sum.perm > 1 ? sum.perm : ''}
-            </span>
-          )}
-          {sum.fail > 0 && (
-            <span className="inline-flex items-center gap-0.5 text-[11px] text-red tabular-nums" data-rollup="fail">
-              <StatusGlyph status="fail" />
-              {sum.fail > 1 ? sum.fail : ''}
-            </span>
-          )}
-          {sum.perm === 0 && sum.fail === 0 && sum.top !== 'idle' && sum.top !== 'unknown' && (
-            <span data-rollup={sum.top}>
-              <StatusGlyph status={sum.top} />
-            </span>
-          )}
-        </span>
-      )}
+      {sum && <Rollup sum={sum} />}
     </button>
   );
 }

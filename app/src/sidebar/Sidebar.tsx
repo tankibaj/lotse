@@ -5,6 +5,7 @@ import type { PermDecision, ProjectId, SessionId } from '../lib/client/types';
 import {
   filterGroups,
   groupSessions,
+  groupWorkspaces,
   needYouCount,
   timeSignature,
   toggleCollapsed,
@@ -14,26 +15,29 @@ import {
   useWorkspace,
   visibleSessionIds,
 } from '../lib/state';
+import type { ProjectGroup } from '../lib/state';
 import { emitUiCommand } from '../lib/ui/commands';
 import { NewSessionMenu } from '../lib/ui/NewSessionMenu';
 import { hostBridge } from '../sheets/hostBridge';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu } from './ContextMenu';
-import { projectMenu, sessionMenu } from './menus';
+import { projectMenu, sessionMenu, workspaceMenu } from './menus';
 import { ProjectRow } from './ProjectRow';
 import { SessionCard } from './SessionCard';
+import { WorkspaceNameDialog } from './WorkspaceNameDialog';
+import { WorkspaceRow } from './WorkspaceRow';
 
 /** `newSession`: the new-session dropdown for project `id`. */
-type Menu = { kind: 'project' | 'session' | 'newSession'; id: string; x: number; y: number };
-type Target = { kind: 'project' | 'session'; id: string };
+type Menu = { kind: 'project' | 'session' | 'workspace' | 'newSession'; id: string; x: number; y: number };
+type Target = { kind: 'project' | 'session' | 'workspace'; id: string };
 
 const noop = () => {};
 
 /** Search, Projects header (both fixed) and the project tree (the only part that scrolls). */
 export function Sidebar() {
   const client = useClient();
-  const { projects, sessions, settings } = useWorkspace();
+  const { workspaces, projects, sessions, settings } = useWorkspace();
   const { needFilter, collapsed } = useUiState();
   const selectedId = useSelectedSessionId();
 
@@ -42,6 +46,8 @@ export function Sidebar() {
   const [menu, setMenu] = useState<Menu | null>(null);
   const [renaming, setRenaming] = useState<Target | null>(null);
   const [confirm, setConfirm] = useState<Target | null>(null);
+  /** "New Workspace…": `moveProject` goes into it once created (from a project's "Move to Workspace"). */
+  const [newWorkspace, setNewWorkspace] = useState<{ moveProject?: ProjectId } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Sessions whose Allow / Always / Deny is on its way to the daemon: the buttons stay off meanwhile.
   const [answering, setAnswering] = useState<ReadonlySet<SessionId>>(new Set());
@@ -56,16 +62,23 @@ export function Sidebar() {
   const groups = useMemo(() => groupSessions(projects, sessions), [projects, sessions]);
   const shown = useMemo(() => filterGroups(groups, filterOn), [groups, filterOn]);
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
+  // Workspace headers appear only when there is more than one workspace: with one, the tree is the mock's.
+  const multi = workspaces.length > 1;
+  const wsGroups = useMemo(() => groupWorkspaces(workspaces, shown), [workspaces, shown]);
+  const wsOpen = (id: string) => filterOn || !collapsed.has(id);
+  /** Project groups in the order the sidebar shows them, collapsed workspaces left out. */
+  const navGroups = (multi ? wsGroups.filter((w) => wsOpen(w.workspace.id)).flatMap((w) => w.groups) : shown);
 
   const onSelect = useCallback((id: SessionId) => selectSession(id), []);
   const onToggle = useCallback((id: ProjectId) => toggleCollapsed(id), []);
   const onSessionMenu = useCallback((id: SessionId, x: number, y: number) => setMenu({ kind: 'session', id, x, y }), []);
   const onProjectMenu = useCallback((id: ProjectId, x: number, y: number) => setMenu({ kind: 'project', id, x, y }), []);
+  const onWorkspaceMenu = useCallback((id: string, x: number, y: number) => setMenu({ kind: 'workspace', id, x, y }), []);
   // Keyboard users keep their place: after an inline action the control they used disappears, so focus
-  // goes back to the card (or project row) it belonged to.
+  // goes back to the card (or project / workspace row) it belonged to.
   const refocus = useCallback((t: Target) => {
     setTimeout(() => {
-      const sel = t.kind === 'session' ? `[data-sid="${t.id}"] [data-card-main]` : `[data-pid="${t.id}"]`;
+      const sel = t.kind === 'session' ? `[data-sid="${t.id}"] [data-card-main]` : t.kind === 'project' ? `[data-pid="${t.id}"]` : `[data-wid="${t.id}"]`;
       navRef.current?.querySelector<HTMLElement>(sel)?.focus();
     }, 0);
   }, []);
@@ -126,23 +139,38 @@ export function Sidebar() {
     },
     [client, endRename],
   );
+  const onRenameWorkspace = useCallback(
+    (id: string, name: string) => {
+      endRename();
+      client.renameWorkspace(id, name).catch((e: unknown) => setNotice(e instanceof Error ? e.message : 'Could not rename the workspace'));
+    },
+    [client, endRename],
+  );
   const cancelRename = endRename;
 
   const stop = (id: SessionId) => client.closeSession(id).catch(noop);
+  const fail = (what: string) => (e: unknown) => setNotice(e instanceof Error ? e.message : what);
 
   const onKeyDown = (e: ReactKeyboardEvent<HTMLElement>) => {
     const el = e.target as HTMLElement;
     if (el instanceof HTMLInputElement) return;
     const card = el.closest<HTMLElement>('[data-sid]');
     const row = el.closest<HTMLElement>('[data-pid]');
+    const wsRow = el.closest<HTMLElement>('[data-wid]');
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      const ids = visibleSessionIds(shown, collapsed, filterOn);
+      const ids = visibleSessionIds(navGroups, collapsed, filterOn);
       const down = e.key === 'ArrowDown';
       let next: SessionId | undefined;
-      if (!card && row) {
+      if (!card && wsRow) {
+        // Workspace header focused: the session right after / before it, like a project row.
+        const at = wsGroups.findIndex((w) => w.workspace.id === wsRow.dataset.wid);
+        const above = wsGroups.slice(0, Math.max(0, at)).filter((w) => wsOpen(w.workspace.id)).flatMap((w) => w.groups);
+        const before = visibleSessionIds(above, collapsed, filterOn).length;
+        next = ids[down ? before : before - 1];
+      } else if (!card && row) {
         // Project row focused: step to the session right after / before the row, not relative to the selection.
-        const at = shown.findIndex((g) => g.project.id === row.dataset.pid);
-        const before = visibleSessionIds(shown.slice(0, Math.max(0, at)), collapsed, filterOn).length;
+        const at = navGroups.findIndex((g) => g.project.id === row.dataset.pid);
+        const before = visibleSessionIds(navGroups.slice(0, Math.max(0, at)), collapsed, filterOn).length;
         next = ids[down ? before : before - 1];
       } else {
         const i = ids.indexOf(card?.dataset.sid ?? selectedId ?? '');
@@ -152,23 +180,79 @@ export function Sidebar() {
       e.preventDefault();
       selectSession(next);
       navRef.current?.querySelector<HTMLElement>(`[data-sid="${next}"] [data-card-main]`)?.focus();
-    } else if (row && !filterOn && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
+    } else if ((row ?? wsRow) && !filterOn && (e.key === 'ArrowRight' || e.key === 'ArrowLeft')) {
       e.preventDefault();
-      toggleCollapsed(row.dataset.pid ?? '', e.key === 'ArrowLeft');
+      toggleCollapsed((row ?? wsRow)?.dataset.pid ?? wsRow?.dataset.wid ?? '', e.key === 'ArrowLeft');
     } else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
-      const target = card ?? row;
+      const target = card ?? row ?? wsRow;
       if (!target) return;
       e.preventDefault();
       const r = target.getBoundingClientRect();
       if (card?.dataset.sid) onSessionMenu(card.dataset.sid, r.left + 24, r.bottom - 4);
       else if (row?.dataset.pid) onProjectMenu(row.dataset.pid, r.left + 24, r.bottom - 4);
+      else if (wsRow?.dataset.wid) onWorkspaceMenu(wsRow.dataset.wid, r.left + 24, r.bottom - 4);
     }
   };
 
   const menuProject = menu?.kind === 'project' ? projectById.get(menu.id) : undefined;
   const menuSession = menu?.kind === 'session' ? sessions.find((s) => s.id === menu.id) : undefined;
+  const menuWorkspace = menu?.kind === 'workspace' ? workspaces.find((w) => w.id === menu.id) : undefined;
   const confirmProject = confirm?.kind === 'project' ? projectById.get(confirm.id) : undefined;
   const confirmSession = confirm?.kind === 'session' ? sessions.find((s) => s.id === confirm.id) : undefined;
+  const confirmWorkspace = confirm?.kind === 'workspace' ? workspaces.find((w) => w.id === confirm.id) : undefined;
+  const confirmWorkspaceProjects = confirmWorkspace ? projects.filter((p) => p.workspace_id === confirmWorkspace.id).length : 0;
+
+  /** One project: its row, the "No sessions" hint and its cards. */
+  const renderProject = ({ project, sessions: list }: ProjectGroup) => {
+    const open = filterOn || !collapsed.has(project.id);
+    return (
+      <div key={project.id} className="space-y-0.5" data-project={project.id}>
+        <ProjectRow
+          project={project}
+          sessions={list}
+          open={open}
+          renaming={renaming?.kind === 'project' && renaming.id === project.id}
+          onToggle={onToggle}
+          onMenu={onProjectMenu}
+          onRename={onRenameProject}
+          onCancelRename={cancelRename}
+        />
+        {open && list.length === 0 && (
+          <div className="py-1 pl-[38px] text-[12px] text-dim">
+            No sessions ·{' '}
+            <button
+              className="text-blue"
+              aria-haspopup="menu"
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setMenu({ kind: 'newSession', id: project.id, x: r.left, y: r.bottom + 4 });
+              }}
+            >
+              New session
+            </button>
+          </div>
+        )}
+        {open &&
+          list.map((s) => (
+            <SessionCard
+              key={s.id}
+              session={s}
+              project={project}
+              selected={s.id === selectedId}
+              now={now}
+              renaming={renaming?.kind === 'session' && renaming.id === s.id}
+              answering={answering.has(s.id)}
+              onSelect={onSelect}
+              onMenu={onSessionMenu}
+              onResolve={onResolve}
+              onRetry={onRetry}
+              onRename={onRenameSession}
+              onCancelRename={cancelRename}
+            />
+          ))}
+      </div>
+    );
+  };
 
   return (
     <>
@@ -227,56 +311,30 @@ export function Sidebar() {
             </button>
           </div>
         )}
-        {shown.map(({ project, sessions: list }) => {
-          const open = filterOn || !collapsed.has(project.id);
-          return (
-            <div key={project.id} className="space-y-0.5" data-project={project.id}>
-              <ProjectRow
-                project={project}
-                sessions={list}
-                open={open}
-                renaming={renaming?.kind === 'project' && renaming.id === project.id}
-                onToggle={onToggle}
-                onMenu={onProjectMenu}
-                onRename={onRenameProject}
-                onCancelRename={cancelRename}
-              />
-              {open && list.length === 0 && (
-                <div className="py-1 pl-[38px] text-[12px] text-dim">
-                  No sessions ·{' '}
-                  <button
-                    className="text-blue"
-                    aria-haspopup="menu"
-                    onClick={(e) => {
-                      const r = e.currentTarget.getBoundingClientRect();
-                      setMenu({ kind: 'newSession', id: project.id, x: r.left, y: r.bottom + 4 });
-                    }}
-                  >
-                    New session
-                  </button>
-                </div>
-              )}
-              {open &&
-                list.map((s) => (
-                  <SessionCard
-                    key={s.id}
-                    session={s}
-                    project={project}
-                    selected={s.id === selectedId}
-                    now={now}
-                    renaming={renaming?.kind === 'session' && renaming.id === s.id}
-                    answering={answering.has(s.id)}
-                    onSelect={onSelect}
-                    onMenu={onSessionMenu}
-                    onResolve={onResolve}
-                    onRetry={onRetry}
-                    onRename={onRenameSession}
-                    onCancelRename={cancelRename}
-                  />
-                ))}
-            </div>
-          );
-        })}
+        {multi
+          ? wsGroups
+              .filter((w) => !filterOn || w.groups.length > 0)
+              .map((w) => {
+                const open = wsOpen(w.workspace.id);
+                return (
+                  <div key={w.workspace.id} className="space-y-0.5" data-workspace={w.workspace.id}>
+                    <WorkspaceRow
+                      workspace={w.workspace}
+                      sessions={w.sessions}
+                      projectCount={w.groups.length}
+                      open={open}
+                      renaming={renaming?.kind === 'workspace' && renaming.id === w.workspace.id}
+                      onToggle={onToggle}
+                      onMenu={onWorkspaceMenu}
+                      onRename={onRenameWorkspace}
+                      onCancelRename={cancelRename}
+                    />
+                    {open && w.groups.length === 0 && <div className="py-1 pl-[26px] text-[12px] text-dim">No projects</div>}
+                    {open && w.groups.map(renderProject)}
+                  </div>
+                );
+              })
+          : shown.map(renderProject)}
       </nav>
 
       {menu && menuProject && (
@@ -288,6 +346,9 @@ export function Sidebar() {
             // the project menu closes first, then the dropdown opens where it was
             newSession: () => setMenu({ kind: 'newSession', id: menuProject.id, x: menu.x, y: menu.y }),
             changeStyle: () => emitUiCommand('openProjectStyle', menuProject.id),
+            workspaces,
+            moveTo: (workspaceId) => void client.moveProject(menuProject.id, workspaceId).catch(fail('Could not move the project')),
+            newWorkspace: () => setNewWorkspace({ moveProject: menuProject.id }),
             reveal: hostBridge().revealInFinder
               ? () => void hostBridge().revealInFinder?.(menuProject.path)?.catch(noop)
               : undefined,
@@ -295,6 +356,32 @@ export function Sidebar() {
             remove: () => setConfirm({ kind: 'project', id: menuProject.id }),
           })}
           onClose={() => setMenu(null)}
+        />
+      )}
+      {menu && menuWorkspace && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          label={`${menuWorkspace.name} actions`}
+          entries={workspaceMenu(menuWorkspace, {
+            newWorkspace: () => setNewWorkspace({}),
+            rename: () => setRenaming({ kind: 'workspace', id: menuWorkspace.id }),
+            // the first workspace is the default one: it stays
+            remove: menuWorkspace.id === workspaces[0]?.id ? undefined : () => setConfirm({ kind: 'workspace', id: menuWorkspace.id }),
+          })}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {newWorkspace && (
+        <WorkspaceNameDialog
+          title="New Workspace"
+          submitLabel="Create"
+          onCancel={() => setNewWorkspace(null)}
+          onSubmit={async (name) => {
+            const ws = await client.createWorkspace(name);
+            setNewWorkspace(null);
+            if (newWorkspace.moveProject) await client.moveProject(newWorkspace.moveProject, ws.id).catch(fail('Could not move the project'));
+          }}
         />
       )}
       {menu?.kind === 'newSession' && (
@@ -327,6 +414,22 @@ export function Sidebar() {
           onConfirm={() => {
             setConfirm(null);
             client.removeProject(confirmProject.id).catch(noop);
+          }}
+        />
+      )}
+      {confirmWorkspace && (
+        <ConfirmDialog
+          title={`Delete ${confirmWorkspace.name}?`}
+          body={
+            confirmWorkspaceProjects > 0
+              ? `Its ${confirmWorkspaceProjects} project${confirmWorkspaceProjects === 1 ? '' : 's'} move to ${workspaces[0]?.name ?? 'the default workspace'}. Nothing is removed from disk.`
+              : 'The workspace is empty.'
+          }
+          confirmLabel="Delete"
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => {
+            setConfirm(null);
+            client.deleteWorkspace(confirmWorkspace.id, true).catch(fail('Could not delete the workspace'));
           }}
         />
       )}

@@ -22,7 +22,9 @@ pub use types::*;
 
 /// Wire version. Sent in `hello` and `hello_ok`; a mismatch is `ErrorCode::VersionMismatch`.
 /// 2: `PermRequest::always`.
-pub const PROTO_VERSION: u32 = 2;
+/// 3: workspaces (`Workspace`, workspace requests and events, `Snapshot::workspaces`), `get_diff`,
+///    `get_transcript`, today's usage (`Snapshot::usage`, `usage_changed`).
+pub const PROTO_VERSION: u32 = 3;
 
 #[cfg(test)]
 mod fixture_tests;

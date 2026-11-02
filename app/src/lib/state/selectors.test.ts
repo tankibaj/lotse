@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import type { Session, Status } from '../client/types';
+import type { Project, Session, Status } from '../client/types';
 import {
   coarseAge,
   displayStatus,
   filterGroups,
+  formatTokens,
+  formatUsage,
   groupSessions,
+  groupWorkspaces,
   mostUrgent,
   needsYou,
   noLiveStatus,
@@ -201,5 +204,82 @@ describe('no live status hint', () => {
     expect(timeSignature(list, 5_000)).toBe(timeSignature(list, 9_000));
     expect(timeSignature(list, 9_000)).not.toBe(timeSignature(list, 12_000));
     expect(timeSignature(list, 12_000)).toBe(timeSignature(list, 15_000));
+  });
+});
+
+describe('workspaces', () => {
+  const project = (id: string, workspace_id: string): Project => ({
+    id,
+    workspace_id,
+    name: id,
+    path: `/x/${id}`,
+    color: 'teal',
+    icon: 'folder',
+    is_git: true,
+    notifications: { mode: 'global' },
+  });
+  const ws = [
+    { id: 'w1', name: 'Default' },
+    { id: 'w2', name: 'Client work' },
+    { id: 'w3', name: 'Empty' },
+  ];
+
+  it('groups projects under their workspace in daemon order, with the workspace\'s sessions for the roll-up', () => {
+    const projects = [project('p1', 'w1'), project('p2', 'w2'), project('p3', 'w1')];
+    const sessions = [session('a', 'idle', { project_id: 'p1' }), session('b', 'perm', { project_id: 'p2' }), session('c', 'run', { project_id: 'p3' })];
+    const groups = groupWorkspaces(ws, groupSessions(projects, sessions));
+    expect(groups.map((g) => [g.workspace.id, g.groups.map((x) => x.project.id)])).toEqual([
+      ['w1', ['p1', 'p3']],
+      ['w2', ['p2']],
+      ['w3', []],
+    ]);
+    // the most urgent state rolls up to the workspace: perm > run > idle
+    expect(groups.map((g) => rollup(g.sessions))).toEqual(['run', 'perm', 'idle']);
+    expect(rollupSummary(groups[1]!.sessions)).toMatchObject({ perm: 1, fail: 0, top: 'perm' });
+  });
+
+  it('a project of an unknown workspace sits in the first one instead of vanishing', () => {
+    const groups = groupWorkspaces(ws, groupSessions([project('p1', 'gone')], []));
+    expect(groups[0]?.groups.map((g) => g.project.id)).toEqual(['p1']);
+    expect(groups[1]?.groups).toEqual([]);
+  });
+});
+
+describe('today\'s usage text', () => {
+  const usage = (input: number, cost: number | null, rest = 0) => ({
+    input_tokens: input,
+    output_tokens: rest,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    cost_micros: cost,
+  });
+
+  it('formats token counts compactly', () => {
+    expect([0, 999, 1_000, 1_234, 9_960, 10_000, 412_000, 999_499, 1_000_000, 1_500_000, 12_345_678].map(formatTokens)).toEqual([
+      '0',
+      '999',
+      '1k',
+      '1.2k',
+      '10k', // 9_960 rounds up
+      '10k',
+      '412k',
+      '999k',
+      '1M',
+      '1.5M',
+      '12.3M',
+    ]);
+  });
+
+  it('reads like the mock: Today 412k tokens · $4.18', () => {
+    expect(formatUsage(usage(412_000, 4_180_000)).text).toBe('Today 412k tokens · $4.18');
+    expect(formatUsage(usage(0, 0)).text).toBe('Today 0 tokens · $0.00');
+    expect(formatUsage(usage(1_000, 6_000)).text).toBe('Today 1k tokens · $0.01'); // cents round to nearest
+  });
+
+  it('is tokens only without a price, dashes before the first snapshot', () => {
+    const noPrice = formatUsage(usage(2_000_000, null, 500_000));
+    expect(noPrice.text).toBe('Today 2.5M tokens');
+    expect(noPrice.title).toContain('without a known price');
+    expect(formatUsage(null).text).toBe('Today — tokens · —');
   });
 });

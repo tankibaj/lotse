@@ -107,8 +107,8 @@ describe('tab context menu', () => {
       'Open in Split Right⌥-click',
       'Open in Split Down⌥⇧-click',
       'Rename…',
-      'Show TranscriptBeta',
-      'Show ChangesBeta',
+      'Show Transcript',
+      'Show Changes',
       'Stop Session',
     ]);
   });

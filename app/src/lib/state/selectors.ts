@@ -1,4 +1,4 @@
-import type { AgentKind, Project, ProjectId, Session, SessionId, Status } from '../client/types';
+import type { AgentKind, Project, ProjectId, Session, SessionId, Status, UsageToday, Workspace } from '../client/types';
 
 // Pure selectors over the snapshot: roll-up, need-you, coarse time, visible order. No React, no clock reads.
 
@@ -89,6 +89,47 @@ export interface ProjectGroup {
 /** Projects in daemon order, each with its sessions in daemon order. */
 export function groupSessions(projects: readonly Project[], sessions: readonly Session[]): ProjectGroup[] {
   return projects.map((project) => ({ project, sessions: sessions.filter((s) => s.project_id === project.id) }));
+}
+
+export interface WorkspaceGroup {
+  workspace: Workspace;
+  groups: ProjectGroup[];
+  /** Every session of the workspace's projects (the roll-up input). */
+  sessions: Session[];
+}
+
+/**
+ * Workspaces in daemon order (the default one first), each with its projects in daemon order.
+ * A project whose workspace is unknown (an event raced a delete) sits in the first workspace.
+ */
+export function groupWorkspaces(workspaces: readonly Workspace[], groups: readonly ProjectGroup[]): WorkspaceGroup[] {
+  const known = new Set(workspaces.map((w) => w.id));
+  return workspaces.map((workspace, i) => {
+    const mine = groups.filter((g) => g.project.workspace_id === workspace.id || (i === 0 && !known.has(g.project.workspace_id)));
+    return { workspace, groups: mine, sessions: mine.flatMap((g) => g.sessions) };
+  });
+}
+
+/** `980`, `1.2k`, `412k`, `1.5M`: three significant digits at most. */
+export function formatTokens(n: number): string {
+  const trim = (x: number) => x.toFixed(1).replace(/\.0$/, '');
+  if (n < 1_000) return String(n);
+  if (n < 10_000) return `${trim(n / 1_000)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1_000)}k`;
+  return `${trim(n / 1_000_000)}M`;
+}
+
+/** Status bar: `Today 412k tokens · $4.18`; tokens only when a model has no known price; dashes before the first snapshot. */
+export function formatUsage(usage: UsageToday | null): { text: string; title: string } {
+  if (!usage) return { text: 'Today — tokens · —', title: 'Tokens and cost today, from the Claude Code transcripts' };
+  const tokens = usage.input_tokens + usage.output_tokens + usage.cache_read_tokens + usage.cache_write_tokens;
+  const detail =
+    `input ${formatTokens(usage.input_tokens)} · output ${formatTokens(usage.output_tokens)} · ` +
+    `cache read ${formatTokens(usage.cache_read_tokens)} · cache write ${formatTokens(usage.cache_write_tokens)}`;
+  if (usage.cost_micros === null) {
+    return { text: `Today ${formatTokens(tokens)} tokens`, title: `${detail}. No cost: a model without a known price was used.` };
+  }
+  return { text: `Today ${formatTokens(tokens)} tokens · $${(usage.cost_micros / 1_000_000).toFixed(2)}`, title: detail };
 }
 
 /** Need-you filter: only sessions that need you, empty projects dropped. Without the filter: everything. */

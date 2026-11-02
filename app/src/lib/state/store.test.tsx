@@ -121,6 +121,32 @@ describe('reduceEvent', () => {
     expect(removed.sessions.some((x) => x.project_id === 'p1')).toBe(false);
   });
 
+  it('applies workspace and usage events (proto 3), ignoring a duplicate add', async () => {
+    const before = await base();
+    expect(before.workspaces).toEqual([]); // `base` carries what the test copies; the snapshot has the default one
+    const snap = await new MockClient({ script: false }).getSnapshot();
+    const withWs = { ...before, workspaces: snap.workspaces, usage: snap.usage };
+    const w2 = { id: 'w2', name: 'Client work' };
+    const added = reduceEvent(withWs, { event: 'workspace_added', data: w2 });
+    expect(added.workspaces.map((w) => w.name)).toEqual(['Default', 'Client work']);
+    expect(reduceEvent(added, { event: 'workspace_added', data: w2 }).workspaces).toHaveLength(2);
+    const renamed = reduceEvent(added, { event: 'workspace_updated', data: { id: 'w2', name: 'Clients' } });
+    expect(renamed.workspaces[1]?.name).toBe('Clients');
+    expect(reduceEvent(renamed, { event: 'workspace_removed', data: { workspace_id: 'w2' } }).workspaces).toEqual(snap.workspaces);
+    const usage = { input_tokens: 1, output_tokens: 2, cache_read_tokens: 3, cache_write_tokens: 4, cost_micros: null };
+    expect(reduceEvent(withWs, { event: 'usage_changed', data: usage }).usage).toEqual(usage);
+  });
+
+  it('loads workspaces and usage from the snapshot', async () => {
+    const { client, result } = await load();
+    expect(result.current.workspaces).toEqual([{ id: 'w1', name: 'Default' }]);
+    expect(result.current.usage?.cost_micros).toBe(4_180_000);
+    const ws = await client.createWorkspace('Home');
+    await waitFor(() => expect(result.current.workspaces.map((w) => w.id)).toEqual(['w1', ws.id]));
+    act(() => client.setUsage({ input_tokens: 5, output_tokens: 0, cache_read_tokens: 0, cache_write_tokens: 0, cost_micros: 0 }));
+    expect(result.current.usage?.input_tokens).toBe(5);
+  });
+
   it('applies sub-agent, git and settings events', async () => {
     const sub = await apply({ event: 'sub_agent_status', data: { session_id: 'a1', sub_agent_id: 'a1-s2', status: 'done' } });
     expect(sub.sessions.find((s) => s.id === 'a1')?.sub_agents.find((x) => x.id === 'a1-s2')?.status).toBe('done');

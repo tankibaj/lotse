@@ -2,6 +2,7 @@ import type {
   AgentKind,
   AttachInfo,
   DaemonEvent,
+  GitDiff,
   GitInfo,
   HelloOk,
   LaunchCommandInfo,
@@ -15,6 +16,9 @@ import type {
   SessionId,
   Settings,
   Snapshot,
+  Transcript,
+  Workspace,
+  WorkspaceId,
 } from './types';
 
 export type Unsubscribe = () => void;
@@ -51,6 +55,16 @@ export interface DaemonClient {
   /** `remove_project` */
   removeProject(projectId: ProjectId): Promise<void>;
 
+  /** `move_project`: also announced as `project_updated`. */
+  moveProject(projectId: ProjectId, workspaceId: WorkspaceId): Promise<Project>;
+
+  /** `create_workspace`: rejects with `conflict` when the name is taken. */
+  createWorkspace(name: string): Promise<Workspace>;
+  /** `rename_workspace` */
+  renameWorkspace(workspaceId: WorkspaceId, name: string): Promise<Workspace>;
+  /** `delete_workspace`: `conflict` while it has projects, unless `moveProjects` sends them to the default workspace. */
+  deleteWorkspace(workspaceId: WorkspaceId, moveProjects: boolean): Promise<void>;
+
   /** `list_sessions` */
   listSessions(projectId?: ProjectId): Promise<Session[]>;
   /** `create_session` */
@@ -84,6 +98,10 @@ export interface DaemonClient {
 
   /** `get_git_info` */
   getGitInfo(projectId: ProjectId, sessionId?: SessionId): Promise<GitInfo>;
+  /** `get_diff`: Show Changes. */
+  getDiff(sessionId: SessionId): Promise<GitDiff>;
+  /** `get_transcript`: Show Transcript. Rejects with `unavailable` ("Not available for OpenCode") for agents without one. */
+  getTranscript(sessionId: SessionId, limit?: number): Promise<Transcript>;
   /** `hook_event` (sent by `lotse-hook`; exposed for completeness and tests) */
   hookEvent(agent: AgentKind, sessionId: SessionId | null, payload: unknown): Promise<void>;
   /** `shutdown` */

@@ -1,7 +1,7 @@
-// Mirror of crates/lotse-proto (PROTO_VERSION 2). Frozen after WP0: change only with an
+// Mirror of crates/lotse-proto (PROTO_VERSION 3). Frozen after WP0: change only with an
 // orchestrator-approved proto bump. JSON fixtures in crates/lotse-proto/fixtures are the shared contract.
 
-export const PROTO_VERSION = 2;
+export const PROTO_VERSION = 3;
 
 // ids (opaque strings minted by the daemon)
 export type WorkspaceId = string;
@@ -32,6 +32,12 @@ export type NotificationMode =
   | { mode: 'global' }
   | { mode: 'mute' }
   | { mode: 'custom'; perm: boolean; fail: boolean; done: boolean; sub_agent_done: boolean };
+
+/** Groups projects in the sidebar (proto 3). The first workspace is the default one. */
+export interface Workspace {
+  id: WorkspaceId;
+  name: string;
+}
 
 export interface Project {
   id: ProjectId;
@@ -167,11 +173,71 @@ export interface DaemonInfo {
   started_at: UnixMs;
 }
 
+export type DiffStatus = 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked';
+
+/** One file of a session's `git diff` (proto 3). */
+export interface DiffFile {
+  path: string;
+  /** Previous path of a rename. */
+  old_path: string | null;
+  status: DiffStatus;
+  /** "Binary files … differ": noted, no diff text. */
+  binary: boolean;
+  /** The text was cut at the per-file or total size cap. */
+  truncated: boolean;
+  /** Unified diff of this file; empty for untracked and binary files. */
+  diff: string;
+}
+
+/** Answer to `get_diff`: changes against HEAD (staged and unstaged) plus untracked names. */
+export interface GitDiff {
+  /** `false`: not a git repository. */
+  is_git: boolean;
+  files: DiffFile[];
+  /** The total size cap was hit: later files are left out. */
+  truncated: boolean;
+}
+
+export type TranscriptRole = 'user' | 'assistant' | 'tool';
+
+export interface TranscriptTool {
+  name: string;
+  summary: string;
+}
+
+export interface TranscriptTurn {
+  role: TranscriptRole;
+  text: string;
+  tool: TranscriptTool | null;
+  at: UnixMs | null;
+}
+
+/** Answer to `get_transcript`: the last turns of the agent's transcript. */
+export interface Transcript {
+  /** `false`: the agent has not reported a transcript file yet. */
+  available: boolean;
+  turns: TranscriptTurn[];
+  /** Older turns were left out. */
+  truncated: boolean;
+}
+
+/** Today's tokens and cost (local day), from the Claude Code transcripts the daemon knows. */
+export interface UsageToday {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  /** Millionths of a US dollar; `null` when a model without a known price took part ("tokens only"). */
+  cost_micros: number | null;
+}
+
 export interface Snapshot {
   daemon: DaemonInfo;
+  workspaces: Workspace[];
   projects: Project[];
   sessions: Session[];
   settings: Settings;
+  usage: UsageToday;
 }
 
 export interface AttachInfo {
@@ -206,6 +272,10 @@ export type Request =
   | { method: 'add_project'; params: NewProject }
   | { method: 'update_project'; params: { project_id: ProjectId; patch: ProjectPatch } }
   | { method: 'remove_project'; params: { project_id: ProjectId } }
+  | { method: 'move_project'; params: { project_id: ProjectId; workspace_id: WorkspaceId } }
+  | { method: 'create_workspace'; params: { name: string } }
+  | { method: 'rename_workspace'; params: { workspace_id: WorkspaceId; name: string } }
+  | { method: 'delete_workspace'; params: { workspace_id: WorkspaceId; move_projects: boolean } }
   | { method: 'list_sessions'; params: { project_id: ProjectId | null } }
   | { method: 'create_session'; params: NewSession }
   | { method: 'rename_session'; params: { session_id: SessionId; title: string } }
@@ -221,6 +291,8 @@ export type Request =
   | { method: 'update_settings'; params: { settings: Settings } }
   | { method: 'detect_launch_commands' }
   | { method: 'get_git_info'; params: { project_id: ProjectId; session_id: SessionId | null } }
+  | { method: 'get_diff'; params: { session_id: SessionId } }
+  | { method: 'get_transcript'; params: { session_id: SessionId; limit: number | null } }
   | { method: 'hook_event'; params: { agent: AgentKind; session_id: SessionId | null; payload: unknown } }
   | { method: 'shutdown' };
 
@@ -236,12 +308,18 @@ export type Response =
   | { kind: 'settings'; data: Settings }
   | { kind: 'launch_commands'; data: LaunchCommandInfo[] }
   | { kind: 'git_info'; data: GitInfo }
+  | { kind: 'workspace'; data: Workspace }
+  | { kind: 'diff'; data: GitDiff }
+  | { kind: 'transcript'; data: Transcript }
   | { kind: 'error'; data: ProtoError };
 
 export type DaemonEvent =
   | { event: 'project_added'; data: Project }
   | { event: 'project_updated'; data: Project }
   | { event: 'project_removed'; data: { project_id: ProjectId } }
+  | { event: 'workspace_added'; data: Workspace }
+  | { event: 'workspace_updated'; data: Workspace }
+  | { event: 'workspace_removed'; data: { workspace_id: WorkspaceId } }
   | { event: 'session_created'; data: Session }
   | { event: 'session_updated'; data: Session }
   | { event: 'session_closed'; data: { session_id: SessionId } }
@@ -261,6 +339,7 @@ export type DaemonEvent =
   | { event: 'sub_agent_status'; data: { session_id: SessionId; sub_agent_id: SubAgentId; status: Status } }
   | { event: 'git_info_changed'; data: { session_id: SessionId; git: GitInfo } }
   | { event: 'settings_changed'; data: Settings }
+  | { event: 'usage_changed'; data: UsageToday }
   | {
       event: 'notification';
       data: {

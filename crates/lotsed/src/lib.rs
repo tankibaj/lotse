@@ -13,6 +13,8 @@
 //! - [`perm_answer`]: option list on a permission prompt → the keys that answer it
 //! - [`launch`]: launch commands, PATH lookup, version detection, login environment
 //! - [`db`]: SQLite schema and migrations
+//! - [`transcript`]: agent transcript files (path validation, last turns)
+//! - [`usage`]: today's tokens and cost from the Claude Code transcripts
 
 #![deny(unsafe_code)]
 
@@ -32,3 +34,5 @@ pub mod server;
 pub mod session;
 pub mod state;
 pub mod title;
+pub mod transcript;
+pub mod usage;

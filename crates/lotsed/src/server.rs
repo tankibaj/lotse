@@ -65,7 +65,11 @@ fn response_frame(req_id: u64, response: Response) -> Frame {
 fn is_slow(req: &Request) -> bool {
     matches!(
         req,
-        Request::DetectLaunchCommands | Request::CreateSession(_) | Request::GetGitInfo { .. }
+        Request::DetectLaunchCommands
+            | Request::CreateSession(_)
+            | Request::GetGitInfo { .. }
+            | Request::GetDiff { .. }
+            | Request::GetTranscript { .. }
     )
 }
 

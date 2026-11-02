@@ -4,10 +4,11 @@
 //! [`GitInfo`], so the daemon can forward it unchanged.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
-pub use lotse_proto::GitInfo;
+pub use lotse_proto::{DiffFile, DiffStatus, GitDiff, GitInfo};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -29,15 +30,11 @@ pub enum GitError {
     Io(#[from] std::io::Error),
 }
 
-/// Runs `git -C dir args…` with a stable environment: English output, no prompts, and no
-/// optional index locks (the status refresh must never race an agent's own `git` calls).
-fn run<I, S>(dir: &Path, args: I) -> Result<Output, GitError>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    Command::new("git")
-        .arg("-C")
+/// `git -C dir …` with a stable environment: English output, no prompts, and no optional index
+/// locks (the status refresh must never race an agent's own `git` calls).
+fn command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
         .arg(dir)
         // A repo's own config must not run commands on the background refresh.
         .args([
@@ -46,18 +43,59 @@ where
             "-c",
             "core.untrackedCache=false",
         ])
-        .args(args)
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => GitError::GitMissing,
-            _ => GitError::Io(e),
-        })
+        .env_remove("GIT_INDEX_FILE");
+    cmd
+}
+
+fn spawn_error(e: std::io::Error) -> GitError {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => GitError::GitMissing,
+        _ => GitError::Io(e),
+    }
+}
+
+/// Runs `git -C dir args…` (see [`command`]) and collects its output.
+fn run<I, S>(dir: &Path, args: I) -> Result<Output, GitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    command(dir).args(args).output().map_err(spawn_error)
+}
+
+/// Like [`run`], but reads at most `cap` bytes of stdout: a command that would print more is
+/// stopped. Returns the bytes and whether the output was cut. Errors when git fails on its own.
+fn run_capped<I, S>(dir: &Path, args: I, cap: usize) -> Result<(Vec<u8>, bool), GitError>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut child = command(dir)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(spawn_error)?;
+    let mut out = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        stdout.take(cap as u64 + 1).read_to_end(&mut out)?;
+    }
+    let cut = out.len() > cap;
+    if cut {
+        out.truncate(cap);
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    if !cut && !status.success() {
+        return Err(GitError::Command(format!("git exited with {status}")));
+    }
+    Ok((out, cut))
 }
 
 /// Stdout of a successful command, trimmed; `None` when git exited non-zero.
@@ -164,6 +202,180 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         worktree,
         worktree_path: worktree.then(|| l.toplevel.to_string_lossy().into_owned()),
     })
+}
+
+/// Largest `git diff` text [`diff`] reads (Show Changes).
+pub const DIFF_MAX_BYTES: usize = 512 * 1024;
+/// Largest diff text kept for one file; the rest of that file is cut.
+pub const DIFF_MAX_FILE_BYTES: usize = 128 * 1024;
+/// Most untracked file names listed.
+const MAX_UNTRACKED: usize = 500;
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// Show Changes: what differs in `dir`'s repository from `HEAD` (staged and unstaged together),
+/// as one unified diff per file, plus the names of untracked files. Read-only and bounded:
+/// [`DIFF_MAX_BYTES`] in total, [`DIFF_MAX_FILE_BYTES`] per file, binary files noted without text.
+/// A folder outside any repository yields `GitDiff { is_git: false, .. }`.
+///
+/// Hardening: the repo's `core.fsmonitor` never runs (see [`command`]), and `--no-ext-diff` /
+/// `--no-textconv` keep `diff.external`, `GIT_EXTERNAL_DIFF` and `.gitattributes` textconv drivers
+/// from running a program the repo chose.
+pub fn diff(dir: &Path) -> Result<GitDiff, GitError> {
+    diff_capped(dir, DIFF_MAX_BYTES, DIFF_MAX_FILE_BYTES)
+}
+
+/// [`diff`] with explicit caps; tests use small ones.
+pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitDiff, GitError> {
+    if layout(dir)?.is_none() {
+        return Ok(GitDiff {
+            is_git: false,
+            files: Vec::new(),
+            truncated: false,
+        });
+    }
+    // a repository without a commit has no HEAD: compare with the empty tree
+    let base = if out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some() {
+        "HEAD".to_string()
+    } else {
+        out_ok(dir, ["hash-object", "-t", "tree", "/dev/null"])?
+            .filter(|h| !h.is_empty())
+            .unwrap_or_else(|| EMPTY_TREE.to_string())
+    };
+    let (raw, cut) = run_capped(
+        dir,
+        [
+            "-c",
+            "core.quotepath=false",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=dirty",
+            "--find-renames",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            base.as_str(),
+            "--",
+        ],
+        max_total,
+    )?;
+    let text = String::from_utf8_lossy(&raw);
+    let mut files: Vec<DiffFile> = split_patch(&text)
+        .into_iter()
+        .map(|section| parse_section(section, max_file))
+        .collect();
+    if cut && let Some(last) = files.last_mut() {
+        last.truncated = true;
+    }
+    let mut truncated = cut;
+
+    let (names, names_cut) = run_capped(
+        dir,
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+        ],
+        64 * 1024,
+    )?;
+    let mut names: Vec<&[u8]> = names.split(|b| *b == 0).filter(|n| !n.is_empty()).collect();
+    if names_cut {
+        names.pop(); // the last name may be cut off
+    }
+    if names_cut || names.len() > MAX_UNTRACKED {
+        truncated = true;
+    }
+    files.extend(names.into_iter().take(MAX_UNTRACKED).map(|n| DiffFile {
+        path: String::from_utf8_lossy(n).into_owned(),
+        old_path: None,
+        status: DiffStatus::Untracked,
+        binary: false,
+        truncated: false,
+        diff: String::new(),
+    }));
+    Ok(GitDiff {
+        is_git: true,
+        files,
+        truncated,
+    })
+}
+
+/// The per-file sections of a `git diff` (each starts at its `diff --git` line).
+fn split_patch(text: &str) -> Vec<&str> {
+    let mut starts: Vec<usize> = Vec::new();
+    let mut at = 0;
+    for line in text.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            starts.push(at);
+        }
+        at += line.len();
+    }
+    starts.push(text.len());
+    starts.windows(2).map(|w| &text[w[0]..w[1]]).collect()
+}
+
+/// `s` cut to at most `max` bytes: on a char boundary, preferably after a whole line.
+fn cut_text(s: &str, max: usize) -> &str {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    let head = &s[..end];
+    head.rfind('\n').map_or(head, |i| &head[..=i])
+}
+
+fn parse_section(section: &str, max_file: usize) -> DiffFile {
+    let (mut status, mut binary) = (DiffStatus::Modified, false);
+    let (mut rename_from, mut rename_to, mut minus, mut plus) = (None, None, None, None);
+    for line in section.lines().skip(1) {
+        if line.starts_with("@@") {
+            break; // the headers end at the first hunk
+        }
+        if let Some(p) = line.strip_prefix("rename from ") {
+            rename_from = Some(p.to_string());
+        } else if let Some(p) = line.strip_prefix("rename to ") {
+            rename_to = Some(p.to_string());
+        } else if line.starts_with("new file mode") {
+            status = DiffStatus::Added;
+        } else if line.starts_with("deleted file mode") {
+            status = DiffStatus::Deleted;
+        } else if let Some(p) = line.strip_prefix("--- a/") {
+            minus = Some(p.trim_end_matches('\t').to_string());
+        } else if let Some(p) = line.strip_prefix("+++ b/") {
+            plus = Some(p.trim_end_matches('\t').to_string());
+        } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
+            binary = true;
+        }
+    }
+    if rename_to.is_some() {
+        status = DiffStatus::Renamed;
+    }
+    // `diff --git a/<path> b/<path>`: both halves are equal unless the file was renamed
+    let from_header = || {
+        let rest = section.lines().next()?.strip_prefix("diff --git a/")?;
+        rest.get(..rest.len().checked_sub(3)? / 2)
+            .map(str::to_string)
+    };
+    let path = rename_to
+        .or(plus)
+        .or(minus)
+        .or_else(from_header)
+        .unwrap_or_default();
+    let diff = if binary {
+        String::new()
+    } else {
+        cut_text(section, max_file).to_string()
+    };
+    DiffFile {
+        path,
+        old_path: rename_from,
+        status,
+        binary,
+        truncated: !binary && diff.len() < section.len(),
+        diff,
+    }
 }
 
 /// `~/.lotse/worktrees`, or `None` without a home directory.
@@ -554,5 +766,135 @@ mod tests {
         assert_eq!(project_name(&l("/x/my proj")), "my-proj");
         assert_eq!(project_name(&l("/x/.hidden")), "hidden");
         assert_eq!(project_name(&l("/")), "project");
+    }
+
+    fn file<'a>(d: &'a GitDiff, path: &str) -> &'a DiffFile {
+        d.files
+            .iter()
+            .find(|f| f.path == path)
+            .unwrap_or_else(|| panic!("{path} not in {:?}", d.files))
+    }
+
+    #[test]
+    fn diff_lists_staged_unstaged_and_untracked_files() {
+        let d = repo();
+        write(d.path(), "b.txt", "b\n");
+        git(d.path(), &["add", "b.txt"]); // staged, new
+        write(d.path(), "a.txt", "a\nmore\n"); // unstaged edit
+        write(d.path(), "c.txt", "untracked\n");
+        let diff = diff(d.path()).unwrap();
+        assert!(diff.is_git && !diff.truncated);
+        let a = file(&diff, "a.txt");
+        assert_eq!(a.status, DiffStatus::Modified);
+        assert!(
+            a.diff.starts_with("diff --git a/a.txt b/a.txt"),
+            "{}",
+            a.diff
+        );
+        assert!(a.diff.contains("\n+more\n"));
+        assert_eq!(file(&diff, "b.txt").status, DiffStatus::Added);
+        assert!(file(&diff, "b.txt").diff.contains("\n+b\n"));
+        let c = file(&diff, "c.txt");
+        assert_eq!(c.status, DiffStatus::Untracked);
+        assert!(c.diff.is_empty() && !c.binary);
+        assert_eq!(diff.files.len(), 3);
+    }
+
+    #[test]
+    fn diff_of_a_clean_repo_is_empty_and_a_plain_folder_is_no_git() {
+        let d = repo();
+        let clean = diff(d.path()).unwrap();
+        assert!(clean.is_git && clean.files.is_empty());
+        let plain = tempfile::tempdir().unwrap();
+        let none = diff(plain.path()).unwrap();
+        assert!(!none.is_git && none.files.is_empty());
+        assert!(matches!(
+            diff(&plain.path().join("gone")),
+            Err(GitError::NotADirectory(_))
+        ));
+    }
+
+    #[test]
+    fn diff_reports_renames_deletions_and_binaries() {
+        let d = repo();
+        std::fs::write(d.path().join("img.bin"), [0u8, 159, 146, 150, 0, 1]).unwrap();
+        write(d.path(), "gone.txt", "bye\n");
+        write(
+            d.path(),
+            "old name.txt",
+            "same content\nline two\nline three\n",
+        );
+        git(d.path(), &["add", "."]);
+        git(d.path(), &["commit", "-q", "-m", "more"]);
+        git(d.path(), &["mv", "old name.txt", "new name.txt"]);
+        git(d.path(), &["rm", "-q", "gone.txt"]);
+        std::fs::write(d.path().join("img.bin"), [0u8, 1, 2, 3, 0, 9]).unwrap();
+        let diff = diff(d.path()).unwrap();
+        let renamed = file(&diff, "new name.txt");
+        assert_eq!(renamed.status, DiffStatus::Renamed);
+        assert_eq!(renamed.old_path.as_deref(), Some("old name.txt"));
+        assert_eq!(file(&diff, "gone.txt").status, DiffStatus::Deleted);
+        let bin = file(&diff, "img.bin");
+        assert!(bin.binary && bin.diff.is_empty(), "{bin:?}");
+        assert_eq!(bin.status, DiffStatus::Modified);
+    }
+
+    #[test]
+    fn diff_works_before_the_first_commit() {
+        let d = tempfile::tempdir().unwrap();
+        git(d.path(), &["init", "-q", "-b", "main"]);
+        write(d.path(), "first.txt", "hello\n");
+        git(d.path(), &["add", "first.txt"]);
+        let diff = diff(d.path()).unwrap();
+        assert_eq!(file(&diff, "first.txt").status, DiffStatus::Added);
+    }
+
+    #[test]
+    fn diff_is_capped_per_file_and_in_total() {
+        let d = repo();
+        let big = "line of text that is not short\n".repeat(400); // ~12 KB
+        for name in ["f1.txt", "f2.txt", "f3.txt"] {
+            write(d.path(), name, &big);
+            git(d.path(), &["add", name]);
+        }
+        // per-file cap: every file cut, none dropped
+        let per_file = diff_capped(d.path(), 1 << 20, 2_000).unwrap();
+        assert_eq!(per_file.files.len(), 3);
+        assert!(!per_file.truncated);
+        for f in &per_file.files {
+            assert!(f.truncated && f.diff.len() <= 2_000, "{}", f.diff.len());
+        }
+        // total cap: the diff stops, later files are left out
+        let total = diff_capped(d.path(), 20_000, 1 << 20).unwrap();
+        assert!(total.truncated);
+        assert!(total.files.len() < 3, "{}", total.files.len());
+        assert!(total.files.last().unwrap().truncated);
+        let bytes: usize = total.files.iter().map(|f| f.diff.len()).sum();
+        assert!(bytes <= 20_000, "{bytes}");
+        // the real caps hold a big change to 512 KB
+        write(d.path(), "huge.txt", &big.repeat(100)); // ~1.2 MB
+        git(d.path(), &["add", "huge.txt"]);
+        let huge = diff(d.path()).unwrap();
+        assert!(huge.truncated);
+        let bytes: usize = huge.files.iter().map(|f| f.diff.len()).sum();
+        assert!(bytes <= DIFF_MAX_BYTES, "{bytes}");
+    }
+
+    #[test]
+    fn diff_never_runs_commands_from_the_repo_config() {
+        let d = repo();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = |n: &str| dir.path().join(n);
+        let touch = |n: &str| format!("touch {}; echo", marker(n).display());
+        git(d.path(), &["config", "core.fsmonitor", &touch("fsmonitor")]);
+        git(d.path(), &["config", "diff.external", &touch("external")]);
+        git(d.path(), &["config", "diff.t.textconv", &touch("textconv")]);
+        write(d.path(), ".gitattributes", "*.txt diff=t\n");
+        write(d.path(), "a.txt", "changed\n");
+        let diff = diff(d.path()).unwrap();
+        assert_eq!(file(&diff, "a.txt").status, DiffStatus::Modified);
+        for n in ["fsmonitor", "external", "textconv"] {
+            assert!(!marker(n).exists(), "core/diff {n} command executed");
+        }
     }
 }

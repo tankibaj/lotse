@@ -5,6 +5,7 @@ import type {
   AgentKind,
   AttachInfo,
   DaemonEvent,
+  GitDiff,
   GitInfo,
   HelloOk,
   LaunchCommandInfo,
@@ -22,6 +23,11 @@ import type {
   Snapshot,
   Status,
   SubAgent,
+  Transcript,
+  TranscriptTurn,
+  UsageToday,
+  Workspace,
+  WorkspaceId,
 } from './types';
 import { DaemonError, PROTO_VERSION } from './types';
 
@@ -45,6 +51,44 @@ const SUBTITLE: Record<NotificationKind, string> = {
 const SWATCHES = ['purple', 'indigo', 'teal', 'sky', 'lavender', 'tan', 'sage', 'yellow'];
 
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+
+/** What Show Changes lists for any mock session with uncommitted changes. */
+const MOCK_DIFF: GitDiff = {
+  is_git: true,
+  truncated: false,
+  files: [
+    {
+      path: 'src/invoice.ts',
+      old_path: null,
+      status: 'modified',
+      binary: false,
+      truncated: false,
+      diff:
+        'diff --git a/src/invoice.ts b/src/invoice.ts\nindex 1a2b3c4..5d6e7f8 100644\n--- a/src/invoice.ts\n+++ b/src/invoice.ts\n@@ -10,7 +10,7 @@ export function total(lines: Line[]) {\n   let sum = 0;\n   for (const l of lines) {\n-    sum += Math.round(l.net * 100) / 100;\n+    sum += roundHalfEven(l.net);\n   }\n   return sum;\n }\n@@ -41,3 +41,4 @@ export function vat(net: number) {\n   return net * 0.19;\n }\n+export const ROUNDING = "half-even";\n',
+    },
+    {
+      path: 'src/rounding.ts',
+      old_path: null,
+      status: 'added',
+      binary: false,
+      truncated: false,
+      diff:
+        'diff --git a/src/rounding.ts b/src/rounding.ts\nnew file mode 100644\nindex 0000000..9f8e7d6\n--- /dev/null\n+++ b/src/rounding.ts\n@@ -0,0 +1,3 @@\n+export function roundHalfEven(x: number) {\n+  return Math.round(x * 100) / 100;\n+}\n',
+    },
+    { path: 'docs/logo.png', old_path: null, status: 'modified', binary: true, truncated: false, diff: '' },
+    { path: 'notes.md', old_path: null, status: 'untracked', binary: false, truncated: false, diff: '' },
+  ],
+};
+
+/** What Show Transcript lists for a mock Claude Code or Codex session. */
+const MOCK_TURNS: Omit<TranscriptTurn, 'at'>[] = [
+  { role: 'user', text: 'Fix the invoice rounding so totals match the PDF.', tool: null },
+  { role: 'assistant', text: "I'll start by looking at how line totals are summed.", tool: null },
+  { role: 'tool', text: '', tool: { name: 'Grep', summary: 'roundTo' } },
+  { role: 'tool', text: '', tool: { name: 'Edit', summary: 'src/invoice.ts' } },
+  { role: 'assistant', text: 'Totals now round half-even per line. Running the tests.', tool: null },
+  { role: 'tool', text: '', tool: { name: 'Bash', summary: 'npm test -- totals' } },
+];
 const enc = new TextEncoder();
 
 export interface ScriptStep {
@@ -91,9 +135,11 @@ export interface MockClientOptions {
 /** In-memory `DaemonClient` seeded with the mock's projects, sessions, sub-agents and statuses. */
 export class MockClient implements DaemonClient {
   private readonly now: () => number;
+  private workspaces: Workspace[];
   private projects: Project[];
   private sessions: Session[];
   private settings: Settings;
+  private usage: UsageToday;
   private readonly daemon: Snapshot['daemon'];
   private readonly listeners = new Set<(e: DaemonEvent) => void>();
   private readonly connListeners = new Set<(s: ConnectionState) => void>();
@@ -104,14 +150,17 @@ export class MockClient implements DaemonClient {
   private elapsed = 0;
   private nextSession = 8;
   private nextProject = 6;
+  private nextWorkspace = 2;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(opts: MockClientOptions = {}) {
     this.now = opts.now ?? Date.now;
     const delta = this.now() - FIXTURE_NOW;
     const snap = clone(FIXTURE);
+    this.workspaces = snap.workspaces;
     this.projects = snap.projects;
     this.settings = snap.settings;
+    this.usage = snap.usage;
     this.daemon = { ...snap.daemon, started_at: snap.daemon.started_at + delta };
     this.sessions = snap.sessions.map((s) => ({
       ...s,
@@ -207,7 +256,14 @@ export class MockClient implements DaemonClient {
   async ping(): Promise<void> {}
 
   async getSnapshot(): Promise<Snapshot> {
-    return clone({ daemon: this.daemon, projects: this.projects, sessions: this.sessions, settings: this.settings });
+    return clone({
+      daemon: this.daemon,
+      workspaces: this.workspaces,
+      projects: this.projects,
+      sessions: this.sessions,
+      settings: this.settings,
+      usage: this.usage,
+    });
   }
 
   async listProjects(): Promise<Project[]> {
@@ -246,6 +302,58 @@ export class MockClient implements DaemonClient {
     for (const s of this.sessions.filter((x) => x.project_id === projectId)) await this.closeSession(s.id);
     this.projects = this.projects.filter((p) => p.id !== projectId);
     this.emit({ event: 'project_removed', data: { project_id: projectId } });
+  }
+
+  async moveProject(projectId: ProjectId, workspaceId: WorkspaceId): Promise<Project> {
+    const p = this.mustProject(projectId);
+    this.mustWorkspace(workspaceId);
+    if (p.workspace_id !== workspaceId) {
+      p.workspace_id = workspaceId;
+      this.emit({ event: 'project_updated', data: clone(p) });
+    }
+    return clone(p);
+  }
+
+  async createWorkspace(name: string): Promise<Workspace> {
+    const clean = name.trim();
+    if (clean === '' || clean.length > 100) {
+      throw new DaemonError({ code: 'invalid_request', message: 'workspace name must be 1-100 characters' });
+    }
+    this.nameFree(clean);
+    const ws: Workspace = { id: `w${this.nextWorkspace++}`, name: clean };
+    this.workspaces.push(ws);
+    this.emit({ event: 'workspace_added', data: clone(ws) });
+    return clone(ws);
+  }
+
+  async renameWorkspace(workspaceId: WorkspaceId, name: string): Promise<Workspace> {
+    const ws = this.mustWorkspace(workspaceId);
+    const clean = name.trim();
+    if (clean === '' || clean.length > 100) {
+      throw new DaemonError({ code: 'invalid_request', message: 'workspace name must be 1-100 characters' });
+    }
+    this.nameFree(clean, workspaceId);
+    ws.name = clean;
+    this.emit({ event: 'workspace_updated', data: clone(ws) });
+    return clone(ws);
+  }
+
+  async deleteWorkspace(workspaceId: WorkspaceId, moveProjects: boolean): Promise<void> {
+    const ws = this.mustWorkspace(workspaceId);
+    const home = this.workspaces[0];
+    if (!home || ws.id === home.id) {
+      throw new DaemonError({ code: 'conflict', message: 'the default workspace cannot be deleted' });
+    }
+    const inside = this.projects.filter((p) => p.workspace_id === ws.id);
+    if (inside.length > 0 && !moveProjects) {
+      throw new DaemonError({ code: 'conflict', message: `the workspace still has ${inside.length} project(s)` });
+    }
+    for (const p of inside) {
+      p.workspace_id = home.id;
+      this.emit({ event: 'project_updated', data: clone(p) });
+    }
+    this.workspaces = this.workspaces.filter((w) => w.id !== ws.id);
+    this.emit({ event: 'workspace_removed', data: { workspace_id: ws.id } });
   }
 
   async listSessions(projectId?: ProjectId): Promise<Session[]> {
@@ -378,6 +486,28 @@ export class MockClient implements DaemonClient {
     return clone(s.git);
   }
 
+  async getDiff(sessionId: SessionId): Promise<GitDiff> {
+    const s = this.must(sessionId);
+    if (!s.git.is_git) return { is_git: false, files: [], truncated: false };
+    return clone(s.git.dirty > 0 ? MOCK_DIFF : { is_git: true, files: [], truncated: false });
+  }
+
+  async getTranscript(sessionId: SessionId, limit?: number): Promise<Transcript> {
+    const s = this.must(sessionId);
+    if (s.agent === 'terminal' || s.agent === 'opencode') {
+      throw new DaemonError({ code: 'unavailable', message: `Not available for ${LABEL[s.agent]}` });
+    }
+    const turns = MOCK_TURNS.map((t, i) => ({ ...t, at: s.created_at + i * 5_000 }));
+    const last = limit === undefined ? turns : turns.slice(-limit);
+    return { available: true, turns: clone(last), truncated: last.length < turns.length };
+  }
+
+  /** Change today's tokens and cost like a daemon refresh would (tests, demos). */
+  setUsage(usage: UsageToday): void {
+    this.usage = clone(usage);
+    this.emit({ event: 'usage_changed', data: clone(usage) });
+  }
+
   async hookEvent(): Promise<void> {}
 
   async shutdown(): Promise<void> {
@@ -422,6 +552,19 @@ export class MockClient implements DaemonClient {
     const s = this.sessions.find((x) => x.id === id);
     if (!s) throw new DaemonError({ code: 'not_found', message: `no session ${id}` });
     return s;
+  }
+
+  private mustWorkspace(id: WorkspaceId): Workspace {
+    const w = this.workspaces.find((x) => x.id === id);
+    if (!w) throw new DaemonError({ code: 'not_found', message: `no workspace ${id}` });
+    return w;
+  }
+
+  /** Names are unique, case-insensitive. */
+  private nameFree(name: string, except?: WorkspaceId): void {
+    if (this.workspaces.some((w) => w.id !== except && w.name.toLowerCase() === name.toLowerCase())) {
+      throw new DaemonError({ code: 'conflict', message: 'a workspace with that name exists' });
+    }
   }
 
   private mustProject(id: ProjectId): Project {

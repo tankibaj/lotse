@@ -45,6 +45,11 @@
     "appearance": { "theme": "light", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
     "scrollback_bytes": 4194304
   } } },
+  { "type": "event", "body": { "event": "workspace_added", "data": { "id": "w2", "name": "Client work" } } },
+  { "type": "event", "body": { "event": "workspace_updated", "data": { "id": "w2", "name": "Clients" } } },
+  { "type": "event", "body": { "event": "workspace_removed", "data": { "workspace_id": "w2" } } },
+  { "type": "event", "body": { "event": "usage_changed", "data": { "input_tokens": 52000, "output_tokens": 38000, "cache_read_tokens": 300000, "cache_write_tokens": 22000, "cost_micros": 4180000 } } },
+  { "type": "event", "body": { "event": "usage_changed", "data": { "input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_micros": null } } },
   { "type": "event", "body": { "event": "notification", "data": { "session_id": "a3", "kind": "perm", "title": "praxis-web · Claude Code", "subtitle": "Needs permission", "body": "Bash(npx playwright test e2e/patients)", "sound": true, "at": 1793610835000 } } },
   { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "sound": true, "at": 1793610000000 } } },
   { "type": "event", "body": { "event": "notification", "data": { "session_id": "a6", "kind": "done", "title": "dotfiles · OpenCode", "subtitle": "Done", "body": null, "sound": false, "at": 1793608920000 } } },

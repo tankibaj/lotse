@@ -5,7 +5,10 @@
     "response": {
       "kind": "snapshot",
       "data": {
-        "daemon": { "version": "0.1.0", "proto_version": 2, "pid": 4242, "started_at": 1793524440000 },
+        "daemon": { "version": "0.1.0", "proto_version": 3, "pid": 4242, "started_at": 1793524440000 },
+        "workspaces": [
+          { "id": "w1", "name": "Default" }
+        ],
         "projects": [
           { "id": "p1", "workspace_id": "w1", "name": "billing-api", "path": "/Users/naim/Repos/billing-api", "color": "purple", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
           { "id": "p2", "workspace_id": "w1", "name": "praxis-web", "path": "/Users/naim/Repos/praxis-web", "color": "teal", "icon": "folder", "is_git": true, "notifications": { "mode": "global" } },
@@ -85,7 +88,8 @@
           },
           "appearance": { "theme": "auto", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
           "scrollback_bytes": 4194304
-        }
+        },
+        "usage": { "input_tokens": 52000, "output_tokens": 38000, "cache_read_tokens": 300000, "cache_write_tokens": 22000, "cost_micros": 4180000 }
       }
     }
   }
