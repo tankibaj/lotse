@@ -15,12 +15,12 @@ export const AGENT_LABEL: Record<AgentKind, string> = {
 };
 
 export const STATUS_LABEL: Record<Status, string> = {
-  run: 'In progress',
+  run: 'Running',
   perm: 'Needs permission',
   fail: 'Failed',
   done: 'Done',
   idle: 'Idle',
-  unknown: 'Unknown',
+  unknown: 'Detecting…',
 };
 
 /** A session needs you when it, or one of its sub-agents, waits for permission or failed. */
@@ -29,10 +29,21 @@ export const needsYou = (s: Session): boolean =>
 
 export const needYouCount = (sessions: readonly Session[]): number => sessions.filter(needsYou).length;
 
-/** Highest-ranked status among the sessions (`idle` for none). Sub-agents do not change it. */
+/**
+ * What the lead's icon shows. Running-lead rule: while any sub-agent runs, a lead that is not waiting or
+ * failed (idle, done, unknown) shows `run`; perm and fail keep their own state.
+ */
+export function displayStatus(s: Session): Status {
+  return RANK[s.status] < RANK.run && s.sub_agents.some((x) => x.status === 'run') ? 'run' : s.status;
+}
+
+/** Highest-ranked displayed status among the sessions (`idle` for none). */
 export function rollup(sessions: readonly Session[]): Status {
   let top: Status = 'idle';
-  for (const s of sessions) if (RANK[s.status] > RANK[top]) top = s.status;
+  for (const s of sessions) {
+    const st = displayStatus(s);
+    if (RANK[st] > RANK[top]) top = st;
+  }
   return top;
 }
 
@@ -112,6 +123,13 @@ export function mostUrgent(sessions: readonly Session[]): SessionId | null {
   return best?.id ?? null;
 }
 
+/** An agent session still `unknown` this long after it started has no hook or status signal. */
+export const NO_SIGNAL_MS = 10_000;
+
+/** Show the "No live status yet" hint: a Claude Code / Codex / OpenCode session that is still detecting. */
+export const noLiveStatus = (s: Session, now: number): boolean =>
+  s.status === 'unknown' && s.agent !== 'terminal' && now - s.created_at >= NO_SIGNAL_MS;
+
 /** Whole-list signature of everything the clock changes in the sidebar (see `useCoarseNow`). */
 export const timeSignature = (sessions: readonly Session[], now: number): string =>
-  sessions.map((s) => sessionAge(s, now)).join('|');
+  sessions.map((s) => sessionAge(s, now) + (noLiveStatus(s, now) ? '!' : '')).join('|');

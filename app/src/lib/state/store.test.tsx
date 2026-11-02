@@ -131,6 +131,21 @@ describe('reduceEvent', () => {
     expect(git.sessions.find((s) => s.id === 'a1')?.git.ahead).toBe(9);
   });
 
+  it('sub_agents_changed replaces the list (start and stop); sub_agent_status updates one row', async () => {
+    const started = await apply({
+      event: 'sub_agents_changed',
+      data: { session_id: 'a2', sub_agents: [{ id: 'a2-s1', name: 'schema-check', status: 'run' }] },
+    });
+    expect(started.sessions.find((s) => s.id === 'a2')?.sub_agents).toEqual([{ id: 'a2-s1', name: 'schema-check', status: 'run' }]);
+    const stopped = reduceEvent(started, { event: 'sub_agent_status', data: { session_id: 'a2', sub_agent_id: 'a2-s1', status: 'done' } });
+    expect(stopped.sessions.find((s) => s.id === 'a2')?.sub_agents.map((x) => x.status)).toEqual(['done']);
+    const cleared = reduceEvent(stopped, { event: 'sub_agents_changed', data: { session_id: 'a2', sub_agents: [] } });
+    expect(cleared.sessions.find((s) => s.id === 'a2')?.sub_agents).toEqual([]);
+    // a status for a sub-agent that was never announced adds no row
+    const stray = reduceEvent(cleared, { event: 'sub_agent_status', data: { session_id: 'a2', sub_agent_id: 'ghost', status: 'run' } });
+    expect(stray.sessions.find((s) => s.id === 'a2')?.sub_agents).toEqual([]);
+  });
+
   it('ignores events for sessions it does not know', async () => {
     const before = await base();
     const after = reduceEvent(before, { event: 'sub_agent_status', data: { session_id: 'zzz', sub_agent_id: 'x', status: 'done' } });

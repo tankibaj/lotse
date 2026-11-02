@@ -33,11 +33,16 @@ const SHAPES: Record<Status, ReactNode> = {
     </>
   ),
   idle: <circle cx="8" cy="8" r="6" fill="none" stroke="var(--gray)" strokeWidth="1.5" />,
-  unknown: <circle cx="8" cy="8" r="6" fill="none" stroke="var(--gray)" strokeWidth="1.5" strokeDasharray="2.5 2.5" />,
+  // Detecting: dashed ring around a dot, static (a spinner would read as work in progress).
+  unknown: (
+    <>
+      <circle cx="8" cy="8" r="6" fill="none" stroke="var(--gray)" strokeWidth="1.5" strokeDasharray="2.5 2.5" />
+      <circle cx="8" cy="8" r="1.5" fill="var(--gray)" />
+    </>
+  ),
 };
 
-export function StatusGlyph({ status, size = 14 }: { status: Status; size?: 14 | 12 }) {
-  const label = STATUS_LABEL[status];
+export function StatusGlyph({ status, size = 14, label = STATUS_LABEL[status] }: { status: Status; size?: 14 | 12; label?: string }) {
   return (
     <svg
       className={`inline-block flex-none align-[-2px] ${status === 'run' ? 'spin' : ''}`}

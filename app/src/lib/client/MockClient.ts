@@ -21,6 +21,7 @@ import type {
   Settings,
   Snapshot,
   Status,
+  SubAgent,
 } from './types';
 import { DaemonError, PROTO_VERSION } from './types';
 
@@ -63,6 +64,19 @@ export const DEFAULT_SCRIPT: ScriptStep[] = [
     run: (c) => c.setStatus('a1', 'perm', { tool: 'Bash', summary: 'npm test -- totals' }),
   },
   { at: 40_000, run: (c) => void c.resolvePermission('a1', 'allow') },
+];
+
+/**
+ * Sub-agents start and stop on a Claude Code (a1), a Codex (a2) and an OpenCode (a6) session: the list
+ * arrives as `sub_agents_changed`, each stop as `sub_agent_status`. Use as `script: SUB_AGENT_SCRIPT`.
+ */
+export const SUB_AGENT_SCRIPT: ScriptStep[] = [
+  { at: 1_000, run: (c) => c.setSubAgents('a1', [...c.subAgentsOf('a1'), { id: 'a1-s3', name: 'lint-fixer', status: 'run' }]) },
+  { at: 2_000, run: (c) => c.setSubAgents('a2', [{ id: 'a2-s1', name: 'schema-check', status: 'run' }]) },
+  { at: 3_000, run: (c) => c.setSubAgents('a6', [{ id: 'a6-s1', name: 'docs-scan', status: 'run' }]) },
+  { at: 5_000, run: (c) => c.setSubAgent('a1', 'a1-s3', 'done') },
+  { at: 6_000, run: (c) => c.setSubAgent('a2', 'a2-s1', 'done') },
+  { at: 7_000, run: (c) => c.setSubAgent('a6', 'a6-s1', 'done') },
 ];
 
 export interface MockClientOptions {
@@ -146,6 +160,18 @@ export class MockClient implements DaemonClient {
     if (status === 'perm' || status === 'fail' || status === 'done') {
       this.notify(s, status, status === 'perm' && s.perm ? `${s.perm.tool}(${s.perm.summary})` : null);
     }
+  }
+
+  /** Replace a session's sub-agent list (what the daemon sends when sub-agents start or stop). */
+  setSubAgents(sessionId: SessionId, subAgents: SubAgent[]): void {
+    const s = this.must(sessionId);
+    s.sub_agents = clone(subAgents);
+    s.last_activity = this.now();
+    this.emit({ event: 'sub_agents_changed', data: { session_id: s.id, sub_agents: clone(s.sub_agents) } });
+  }
+
+  subAgentsOf(sessionId: SessionId): SubAgent[] {
+    return clone(this.must(sessionId).sub_agents);
   }
 
   setSubAgent(sessionId: SessionId, subAgentId: string, status: Status): void {

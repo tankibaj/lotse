@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import requests from '../../../../crates/lotse-proto/fixtures/requests.json';
-import { DEFAULT_SCRIPT, FIXTURE_NOW, MockClient } from './MockClient';
+import { DEFAULT_SCRIPT, FIXTURE_NOW, MockClient, SUB_AGENT_SCRIPT } from './MockClient';
 import type { DaemonEvent, Status } from './types';
 import { DaemonError, PROTO_VERSION } from './types';
 
@@ -216,5 +216,20 @@ describe('DaemonClient mirrors the proto', () => {
       expect(name, `no mapping for ${m}`).toBeDefined();
       expect(typeof c[name as string], `DaemonClient.${name}`).toBe('function');
     }
+  });
+});
+
+describe('SUB_AGENT_SCRIPT', () => {
+  it('starts and stops sub-agents on a Claude, a Codex and an OpenCode session', async () => {
+    const c = new MockClient({ now: () => FIXTURE_NOW, script: SUB_AGENT_SCRIPT, tickMs: 0 });
+    const events = collect(c);
+    c.tick(10_000);
+    const names = events.map((e) => e.event);
+    expect(names.filter((n) => n === 'sub_agents_changed')).toHaveLength(3);
+    expect(names.filter((n) => n === 'sub_agent_status')).toHaveLength(3);
+    const byId = new Map((await c.listSessions()).map((s) => [s.id, s]));
+    expect(['a1', 'a2', 'a6'].map((id) => byId.get(id)?.agent)).toEqual(['claude_code', 'codex', 'opencode']);
+    expect(byId.get('a2')?.sub_agents).toEqual([{ id: 'a2-s1', name: 'schema-check', status: 'done' }]);
+    expect(byId.get('a6')?.sub_agents).toEqual([{ id: 'a6-s1', name: 'docs-scan', status: 'done' }]);
   });
 });

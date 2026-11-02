@@ -1,6 +1,7 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { MockClient, SUB_AGENT_SCRIPT } from '../lib/client/MockClient';
 import { onUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId } from '../lib/ui/selection';
 import { hostBridge, setHostBridge } from '../sheets/hostBridge';
@@ -109,6 +110,101 @@ describe('roll-up (collapsed only)', () => {
     expect(row(/dotfiles/).querySelector('[data-rollup="done"]')).not.toBeNull();
     await userEvent.click(row(/notes/));
     expect(row(/notes/).querySelector('[data-rollup]')).toBeNull(); // idle shows nothing
+  });
+});
+
+const glyph = (id: string) => {
+  const el = card(id).querySelector<SVGElement>('[data-status]');
+  if (!el) throw new Error(`card ${id} has no status glyph`);
+  return el;
+};
+
+describe('status glyphs', () => {
+  it('every status has its own icon, an accessible label and a plain-words tooltip', async () => {
+    const { client } = await ready();
+    const s = await client.createSession({ project_id: 'p1', agent: 'claude_code', command: null, title: null, worktree: null, first_prompt: null });
+    await waitFor(() => expect(document.querySelector(`[data-sid="${s.id}"]`)).not.toBeNull());
+    const seen: Record<string, string> = {
+      a1: 'Running',
+      a3: 'Needs permission',
+      a4: 'Failed',
+      a6: 'Done',
+      a2: 'Idle',
+      [s.id]: 'Detecting…',
+    };
+    const shapes = new Set<string>();
+    for (const [id, label] of Object.entries(seen)) {
+      const g = glyph(id);
+      expect(g).toHaveAccessibleName(label);
+      expect(g.querySelector('title')?.textContent).toBe(label);
+      shapes.add(g.innerHTML);
+    }
+    expect(shapes.size).toBe(6);
+    expect(glyph(s.id).getAttribute('class')).not.toMatch(/spin/); // unknown is not a spinner
+    expect(glyph('a1').getAttribute('class')).toMatch(/spin/);
+  });
+
+  it('unknown agent session: no hint at first, "No live status yet" after 10 s; terminals never', async () => {
+    const { client } = await ready();
+    const s = await client.createSession({ project_id: 'p1', agent: 'codex', command: null, title: null, worktree: null, first_prompt: null });
+    const t = await client.createSession({ project_id: 'p5', agent: 'terminal', command: null, title: null, worktree: null, first_prompt: null });
+    await waitFor(() => expect(document.querySelector(`[data-sid="${s.id}"]`)).not.toBeNull());
+    expect(within(card(s.id)).queryByText('No live status yet')).toBeNull();
+    vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 11_000);
+    await waitFor(() => expect(within(card(s.id)).getByText('No live status yet')).toBeInTheDocument(), { timeout: 2500 });
+    expect(within(card(s.id)).queryByRole('button', { name: /live status|hook|install/i })).toBeNull(); // no config-writing buttons
+    expect(within(card(t.id)).queryByText('No live status yet')).toBeNull();
+    expect(within(card('a2')).queryByText('No live status yet')).toBeNull();
+  });
+});
+
+describe('sub-agent rows', () => {
+  const scripted = async () => {
+    const client = new MockClient({ script: SUB_AGENT_SCRIPT, tickMs: 0 });
+    const view = mount(<Sidebar />, client);
+    await screen.findByText('billing-api');
+    return view;
+  };
+  const rows = (id: string) => [...card(id).querySelectorAll('[data-sub-agent]')].map((r) => [r.querySelector('span')?.textContent, r.querySelector('[data-status]')?.getAttribute('data-status')]);
+
+  it('appear and update for Claude Code, Codex and OpenCode sessions, with their own status icons', async () => {
+    const { client } = await scripted();
+    act(() => client.tick(3_000)); // all three start
+    expect(rows('a1')).toEqual([['explore-repo', 'done'], ['test-runner', 'run'], ['lint-fixer', 'run']]); // selected
+    await userEvent.click(cardMain('a2')); // folded cards list their sub-agents when selected
+    expect(rows('a2')).toEqual([['schema-check', 'run']]);
+    expect(card('a2').querySelector('[data-sub-agent] [data-status]')).toHaveAccessibleName('Running');
+    await userEvent.click(cardMain('a6'));
+    expect(rows('a6')).toEqual([['docs-scan', 'run']]);
+
+    act(() => client.tick(10_000)); // all three stop
+    expect(rows('a6')).toEqual([['docs-scan', 'done']]);
+    expect(card('a6').querySelector('[data-sub-agent] [data-status]')).toHaveAccessibleName('Done');
+    await userEvent.click(cardMain('a2'));
+    expect(rows('a2')).toEqual([['schema-check', 'done']]);
+    await userEvent.click(cardMain('a1'));
+    expect(rows('a1')).toEqual([['explore-repo', 'done'], ['test-runner', 'run'], ['lint-fixer', 'done']]);
+  });
+
+  it('running-lead rule: an idle or done lead shows run while a sub-agent runs, and settles after', async () => {
+    const { client } = await scripted();
+    expect(glyph('a2')).toHaveAccessibleName('Idle');
+    expect(glyph('a6')).toHaveAccessibleName('Done');
+    act(() => client.tick(3_000));
+    expect(glyph('a2')).toHaveAccessibleName('Running');
+    expect(glyph('a6')).toHaveAccessibleName('Running');
+    expect(within(card('a2')).getByText('1 sub-agent · 1 running')).toBeInTheDocument();
+    act(() => client.tick(10_000));
+    expect(glyph('a2')).toHaveAccessibleName('Idle');
+    expect(glyph('a6')).toHaveAccessibleName('Done');
+  });
+
+  it('a collapsed project rolls up as run while only a sub-agent runs', async () => {
+    const { client } = await scripted();
+    await userEvent.click(row(/dotfiles/)); // a6 done -> done roll-up
+    expect(row(/dotfiles/).querySelector('[data-rollup="done"]')).not.toBeNull();
+    act(() => client.tick(3_000));
+    expect(row(/dotfiles/).querySelector('[data-rollup="run"]')).not.toBeNull();
   });
 });
 

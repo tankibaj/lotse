@@ -2,7 +2,7 @@ import { FolderGit2, GitBranch, RotateCcw } from 'lucide-react';
 import { memo } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { PermDecision, Project, Session, SessionId } from '../lib/client/types';
-import { AGENT_LABEL, sessionAge, shortBranch } from '../lib/state/selectors';
+import { AGENT_LABEL, displayStatus, noLiveStatus, sessionAge, shortBranch } from '../lib/state/selectors';
 import { InlineEdit } from './InlineEdit';
 import { StatusGlyph } from './StatusGlyph';
 
@@ -42,6 +42,20 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, onSelec
   const showSubs = selected || needsSub;
   const running = s.sub_agents.filter((x) => x.status === 'run').length;
   const fail = s.status === 'fail';
+  const noSignal = noLiveStatus(s, now);
+  // Fixed-size inline hint on line 2 (no new row, no layout shift when it appears).
+  const hint = noSignal ? (
+    <>
+      <span className="mx-0.5 shrink-0 opacity-40">·</span>
+      <span
+        data-part="no-signal"
+        className="min-w-0 truncate italic"
+        title="No hook or status signal has arrived from this agent yet. Check that its Lotse integration is installed."
+      >
+        No live status yet
+      </span>
+    </>
+  ) : null;
   const timeTitle =
     s.status === 'run' && s.running_since !== null
       ? `Running ${mmss(now - s.running_since)} · details in Usage & time (⇧⌘U)`
@@ -73,7 +87,7 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, onSelec
       }}
     >
       <div className="flex items-center gap-2">
-        <StatusGlyph status={s.status} />
+        <StatusGlyph status={displayStatus(s)} label={noSignal ? 'Detecting… no live status yet' : undefined} />
         {renaming ? (
           <InlineEdit value={s.title} label="Session title" onCommit={(t) => onRename(s.id, t)} onCancel={onCancelRename} />
         ) : (
@@ -139,9 +153,13 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, onSelec
               ±{s.git.dirty}
             </span>
           )}
+          {hint}
         </div>
       ) : (
-        <div className="truncate pl-[22px] text-[11px] text-dim">{agent}</div>
+        <div className="truncate pl-[22px] text-[11px] text-dim">
+          {agent}
+          {hint}
+        </div>
       )}
 
       {s.status === 'perm' && (
@@ -175,7 +193,7 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, onSelec
       )}
       {showSubs &&
         s.sub_agents.map((x) => (
-          <div key={x.id} className="mt-0.5 flex items-center gap-2 pl-[22px] text-[12px] text-dim">
+          <div key={x.id} data-sub-agent={x.id} className="mt-0.5 flex items-center gap-2 pl-[22px] text-[12px] text-dim">
             <StatusGlyph status={x.status} size={12} />
             <span className="min-w-0 truncate" title={x.name}>
               {x.name}

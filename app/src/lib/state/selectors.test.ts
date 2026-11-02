@@ -2,16 +2,20 @@ import { describe, expect, it } from 'vitest';
 import type { Session, Status } from '../client/types';
 import {
   coarseAge,
+  displayStatus,
   filterGroups,
   groupSessions,
   mostUrgent,
   needsYou,
+  noLiveStatus,
+  NO_SIGNAL_MS,
   needYouCount,
   nextNeedYou,
   rollup,
   rollupSummary,
   sessionAge,
   shortBranch,
+  STATUS_LABEL,
   timeSignature,
   visibleSessionIds,
 } from './selectors';
@@ -145,4 +149,57 @@ describe('coarse time', () => {
 it('drops the lotse/ branch prefix', () => {
   expect(shortBranch('lotse/fix-rounding')).toBe('fix-rounding');
   expect(shortBranch('feature/x')).toBe('feature/x');
+});
+
+const sub = (id: string, status: Status) => ({ id, name: id, status });
+
+describe('running-lead rule', () => {
+  it('a lead below run shows run while any sub-agent runs; perm and fail stay', () => {
+    const running = [sub('x', 'done'), sub('y', 'run')];
+    for (const st of ['idle', 'unknown', 'done'] as const) {
+      expect(displayStatus(session('a', st, { sub_agents: running }))).toBe('run');
+    }
+    expect(displayStatus(session('a', 'perm', { sub_agents: running }))).toBe('perm');
+    expect(displayStatus(session('a', 'fail', { sub_agents: running }))).toBe('fail');
+    expect(displayStatus(session('a', 'idle', { sub_agents: [sub('x', 'done')] }))).toBe('idle');
+    expect(displayStatus(session('a', 'unknown'))).toBe('unknown');
+  });
+
+  it('the collapsed roll-up uses it, so an idle lead with a running sub-agent rolls up as run', () => {
+    expect(rollup([session('a', 'idle', { sub_agents: [sub('y', 'run')] })])).toBe('run');
+    expect(rollupSummary([session('a', 'unknown', { sub_agents: [sub('y', 'run')] })]).top).toBe('run');
+  });
+});
+
+describe('status labels', () => {
+  it('are plain words and distinct; unknown reads as detecting', () => {
+    expect(STATUS_LABEL).toEqual({
+      run: 'Running',
+      perm: 'Needs permission',
+      fail: 'Failed',
+      done: 'Done',
+      idle: 'Idle',
+      unknown: 'Detecting…',
+    });
+  });
+});
+
+describe('no live status hint', () => {
+  const s = (over: Partial<Session> = {}) => session('a', 'unknown', { created_at: 1000, source: 'process', ...over });
+  it('appears for an unknown agent session after 10 s without a signal, never for terminals or known states', () => {
+    expect(noLiveStatus(s(), 1000 + NO_SIGNAL_MS - 1)).toBe(false);
+    expect(noLiveStatus(s(), 1000 + NO_SIGNAL_MS)).toBe(true);
+    for (const agent of ['claude_code', 'codex', 'opencode'] as const) {
+      expect(noLiveStatus(s({ agent }), 20_000)).toBe(true);
+    }
+    expect(noLiveStatus(s({ agent: 'terminal' }), 20_000)).toBe(false);
+    expect(noLiveStatus(session('a', 'idle', { created_at: 0 }), 20_000)).toBe(false);
+  });
+
+  it('flips the time signature once, so the sidebar re-renders once and not per second', () => {
+    const list = [s()];
+    expect(timeSignature(list, 5_000)).toBe(timeSignature(list, 9_000));
+    expect(timeSignature(list, 9_000)).not.toBe(timeSignature(list, 12_000));
+    expect(timeSignature(list, 12_000)).toBe(timeSignature(list, 15_000));
+  });
 });
