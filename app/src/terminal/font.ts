@@ -1,8 +1,11 @@
 export const DEFAULT_FONT_SIZE = 13;
 export const MIN_FONT_SIZE = 9;
 export const MAX_FONT_SIZE = 32;
-/** xterm multiplies the glyph height; 1.35 gives about the mock's 19.5 px row at 13 px (CSS `line-height: 1.5` is relative to the font size). */
-export const LINE_HEIGHT = 1.35;
+/** xterm multiplies the glyph height; 1.3 gives the mock's 19.5 px row at 13 px on a 2x display (CSS `line-height: 1.5` is relative to the font size). */
+export const LINE_HEIGHT = 1.3;
+/** 500 where the family has a Medium face (SF Mono, JetBrains Mono): WKWebView draws text lighter than Chrome. Menlo has none and stays Regular. */
+export const FONT_WEIGHT = '500';
+export const FONT_WEIGHT_BOLD = '700';
 
 /** Behind a user-chosen family. The mock's `.mono` stack starts with `ui-monospace`, which canvas fonts (WebGL renderer) do not resolve, so SF Mono and Menlo are named. */
 const FALLBACK = '"SF Mono", Menlo, Monaco, monospace';

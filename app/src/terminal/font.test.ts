@@ -54,8 +54,8 @@ describe('links', () => {
 });
 
 describe('wantsWebgl', () => {
-  it('is on unless the user forced the DOM renderer', () => {
-    expect(wantsWebgl()).toBe(true);
+  it('is off (DOM renderer) unless the user opted in', () => {
+    expect(wantsWebgl()).toBe(false);
     localStorage.setItem(RENDERER_KEY, 'dom');
     expect(wantsWebgl()).toBe(false);
     localStorage.setItem(RENDERER_KEY, 'webgl');

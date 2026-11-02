@@ -36,6 +36,22 @@ describe('Shell', () => {
     expect(bars[1]?.querySelector('[data-slot="tabs"]')).not.toBeNull();
   });
 
+  it('shows the mock\'s five panel buttons, inert with a "Coming soon" tooltip until the Beta panels land', async () => {
+    mount();
+    const bar = screen.getByRole('toolbar', { name: 'Panels' });
+    const buttons = [...bar.querySelectorAll('button')];
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Session', 'Changes', 'Files', 'Transcript', 'Usage and time']);
+    for (const b of buttons) {
+      expect(b).toHaveAttribute('aria-disabled', 'true');
+      expect(b.title).toMatch(/Coming soon$/);
+    }
+    const commands = vi.fn();
+    const off = (['openSettings', 'openPalette', 'openNewSession', 'openAddProject', 'toggleSidebar'] as const).map((c) => onUiCommand(c, commands));
+    await userEvent.click(buttons[0]!);
+    expect(commands).not.toHaveBeenCalled();
+    off.forEach((f) => f());
+  });
+
   it('the settings and search buttons raise UI commands without knowing who listens', async () => {
     const settings = vi.fn();
     const palette = vi.fn();

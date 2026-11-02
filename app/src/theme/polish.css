@@ -1,0 +1,182 @@
+/* macOS polish on top of the mock's tokens: nothing here changes a colour, size or layout of the mock.
+   Unlayered rules on purpose: they must beat Tailwind's `utilities` layer for the few classes they refine. */
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+  overscroll-behavior: none; /* no rubber-band on the window chrome */
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* The UI is chrome, not a document: arrow cursor, nothing selectable except fields and the terminal. */
+body {
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+input,
+textarea,
+select,
+[contenteditable='true'],
+.xterm {
+  -webkit-user-select: text;
+  user-select: text;
+}
+input,
+textarea {
+  cursor: text;
+}
+input[type='checkbox'],
+input[type='radio'],
+input[type='range'],
+select,
+button,
+[role='button'],
+[role='tab'],
+[role='menuitem'],
+[role='menuitemcheckbox'],
+:disabled {
+  cursor: default;
+}
+.cursor-pointer {
+  cursor: pointer;
+}
+.cursor-text {
+  cursor: text;
+}
+.cursor-col-resize {
+  cursor: col-resize;
+}
+img,
+svg {
+  -webkit-user-drag: none;
+}
+::selection {
+  background: color-mix(in srgb, var(--blue) 30%, transparent);
+}
+
+/* Focus: the mock's 2 px blue outline for controls; the macOS soft halo for text fields. */
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--blue) 38%, transparent);
+  outline-offset: 0;
+}
+
+/* Thin, quiet scrollbars (overlay style); the thumb darkens under the pointer. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--txt) 24%, transparent) transparent;
+}
+
+/* Hover and selection changes ease in; the mock's own transition utilities (chevron, perm buttons) keep theirs. */
+button,
+input,
+select,
+textarea,
+[role='button'],
+[role='tab'],
+[role='menuitem'],
+[role='menuitemcheckbox'],
+[data-sid],
+[data-pid] {
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    border-color 120ms ease,
+    opacity 140ms ease,
+    box-shadow 140ms ease,
+    outline-color 140ms ease;
+}
+button.bg-blue:active:not(:disabled) {
+  filter: brightness(0.92);
+}
+
+/* Sidebar and status bar: the mock's --side at 92 % over a blur, so a transparent window (vibrancy) shows through
+   and, on the solid window, the colour stays within one step of the mock. */
+.lotse-glass {
+  background-color: color-mix(in srgb, var(--side) 92%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(24px);
+  backdrop-filter: saturate(180%) blur(24px);
+}
+
+/* Real vibrancy (Tauri only, `html[data-vibrancy]`): the window is transparent over NSVisualEffectView's sidebar
+   material. Only the sidebar and status bar stay see-through; everything else paints the mock's solid --win. */
+html[data-vibrancy],
+html[data-vibrancy] body,
+html[data-vibrancy] [data-testid='shell'] {
+  background: transparent;
+}
+html[data-vibrancy] main {
+  background: var(--win);
+}
+html[data-vibrancy] .lotse-glass {
+  background-color: color-mix(in srgb, var(--side) 62%, transparent);
+}
+
+/* Overlays arrive, they do not pop. Menus fade only: their position is measured on open. */
+@keyframes lotse-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes lotse-pop {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.985);
+  }
+}
+[data-testid='overlay-backdrop'] {
+  animation: lotse-fade 140ms ease-out backwards;
+}
+[role='dialog'] {
+  animation: lotse-pop 160ms cubic-bezier(0.2, 0.9, 0.3, 1) backwards;
+}
+[role='menu'] {
+  animation: lotse-fade 120ms ease-out backwards;
+}
+
+/* Retina: 1 css px borders and rings become 1 device px hairlines (0.5 css px), like native separators. */
+@media (min-resolution: 2dppx), (-webkit-min-device-pixel-ratio: 2) {
+  .border {
+    border-width: 0.5px;
+  }
+  .border-t {
+    border-top-width: 0.5px;
+  }
+  .border-r {
+    border-right-width: 0.5px;
+  }
+  .border-b {
+    border-bottom-width: 0.5px;
+  }
+  .border-0 {
+    border-width: 0;
+  }
+  .border-b-0 {
+    border-bottom-width: 0;
+  }
+  .border-2 {
+    border-width: 2px;
+  }
+  .ring-1:not(:focus-within) {
+    --tw-ring-shadow: 0 0 0 0.5px var(--tw-ring-color, currentcolor);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .spin {
+    animation: none !important;
+  }
+}

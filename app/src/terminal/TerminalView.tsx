@@ -6,7 +6,7 @@ import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useClient } from '../lib/client';
 import type { SessionId } from '../lib/client';
-import { DEFAULT_FONT_SIZE, LINE_HEIGHT, terminalFontFamily } from './font';
+import { DEFAULT_FONT_SIZE, FONT_WEIGHT, FONT_WEIGHT_BOLD, LINE_HEIGHT, terminalFontFamily } from './font';
 import { moveFocusOut } from './focus';
 import { isLinkClick, openExternal } from './links';
 import { wantsWebgl } from './renderer';
@@ -79,6 +79,8 @@ export function TerminalView({
         fontFamily: initialFont.current.fontFamily,
         fontSize: initialFont.current.fontSize,
         lineHeight: LINE_HEIGHT,
+        fontWeight: FONT_WEIGHT,
+        fontWeightBold: FONT_WEIGHT_BOLD,
         // OSC 8 hyperlinks: xterm's default handler uses confirm() + window.open(), a no-op in WKWebView.
         linkHandler: {
           activate: (e, uri) => {
