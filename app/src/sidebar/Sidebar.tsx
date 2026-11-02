@@ -15,6 +15,7 @@ import {
   visibleSessionIds,
 } from '../lib/state';
 import { emitUiCommand } from '../lib/ui/commands';
+import { NewSessionMenu } from '../lib/ui/NewSessionMenu';
 import { hostBridge } from '../sheets/hostBridge';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { ConfirmDialog } from './ConfirmDialog';
@@ -23,7 +24,8 @@ import { projectMenu, sessionMenu } from './menus';
 import { ProjectRow } from './ProjectRow';
 import { SessionCard } from './SessionCard';
 
-type Menu = { kind: 'project' | 'session'; id: string; x: number; y: number };
+/** `newSession`: the new-session dropdown for project `id`. */
+type Menu = { kind: 'project' | 'session' | 'newSession'; id: string; x: number; y: number };
 type Target = { kind: 'project' | 'session'; id: string };
 
 const noop = () => {};
@@ -242,7 +244,14 @@ export function Sidebar() {
               {open && list.length === 0 && (
                 <div className="py-1 pl-[38px] text-[12px] text-dim">
                   No sessions ·{' '}
-                  <button className="text-blue" onClick={() => emitUiCommand('openNewSession')}>
+                  <button
+                    className="text-blue"
+                    aria-haspopup="menu"
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setMenu({ kind: 'newSession', id: project.id, x: r.left, y: r.bottom + 4 });
+                    }}
+                  >
                     New session
                   </button>
                 </div>
@@ -276,7 +285,8 @@ export function Sidebar() {
           y={menu.y}
           label={`${menuProject.name} actions`}
           entries={projectMenu(menuProject, settings, client, {
-            newSession: () => emitUiCommand('openNewSession', menuProject.id),
+            // the project menu closes first, then the dropdown opens where it was
+            newSession: () => setMenu({ kind: 'newSession', id: menuProject.id, x: menu.x, y: menu.y }),
             changeStyle: () => emitUiCommand('openProjectStyle', menuProject.id),
             reveal: hostBridge().revealInFinder
               ? () => void hostBridge().revealInFinder?.(menuProject.path)?.catch(noop)
@@ -286,6 +296,9 @@ export function Sidebar() {
           })}
           onClose={() => setMenu(null)}
         />
+      )}
+      {menu?.kind === 'newSession' && (
+        <NewSessionMenu x={menu.x} y={menu.y} projectId={menu.id} heading={projectById.get(menu.id)?.name} onClose={() => setMenu(null)} />
       )}
       {menu && menuSession && (
         <ContextMenu

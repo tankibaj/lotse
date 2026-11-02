@@ -79,7 +79,7 @@ export function Sheets() {
 
   return (
     <>
-      {overlay?.name === 'newSession' && <NewSessionSheet />}
+      {overlay?.name === 'newSession' && <NewSessionSheet key={overlay.projectId ?? ''} />}
       {overlay?.name === 'addProject' && <AddProjectSheet key={overlay.repos?.root ?? 'home'} />}
       {overlay?.name === 'shortcuts' && <ShortcutsSheet />}
       {overlay?.name === 'projectStyle' && <ProjectStylePicker key={overlay.projectId} />}
