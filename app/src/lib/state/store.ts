@@ -110,7 +110,8 @@ export class WorkspaceStore {
     this.queue = [];
     if (import.meta.env.DEV && typeof window !== 'undefined') {
       // Dev-only handle so Playwright can seed many projects against the MockClient.
-      (window as unknown as { __lotse?: { client: DaemonClient } }).__lotse = { client: this.client };
+      const w = window as unknown as { __lotse?: { client?: DaemonClient } };
+      w.__lotse = { ...w.__lotse, client: this.client };
     }
     this.stops = [
       this.client.onEvent((e) => (this.queue ? this.queue.push(e) : this.commit(reduceEvent(this.state, e)))),

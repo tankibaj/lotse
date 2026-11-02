@@ -34,7 +34,10 @@ export function Sheets() {
     };
     addEventListener('keydown', onKey);
     // Dev server only: the picker is opened from the sidebar menu (WP3), so e2e needs a way in.
-    if (import.meta.env.DEV) (window as unknown as { __lotse?: object }).__lotse = { openProjectStylePicker };
+    if (import.meta.env.DEV) {
+      const w = window as unknown as { __lotse?: object };
+      w.__lotse = { ...w.__lotse, openProjectStylePicker };
+    }
     return () => {
       offs.forEach((off) => off());
       removeEventListener('keydown', onKey);
