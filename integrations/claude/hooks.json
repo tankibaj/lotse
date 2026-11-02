@@ -1,0 +1,18 @@
+{
+  "doc": "Hooks Lotse installs into Claude Code's user settings.json (`lotse-hook integration claude install`). Event names: https://code.claude.com/docs/en/hooks (Unverified against the live page when written; see crates/lotse-detect/src/claude.rs).",
+  "marker": "# lotse:managed",
+  "timeout_seconds": 5,
+  "events": [
+    { "event": "SessionStart" },
+    { "event": "SessionEnd" },
+    { "event": "UserPromptSubmit" },
+    { "event": "PreToolUse", "matcher": "*" },
+    { "event": "PostToolUse", "matcher": "*" },
+    { "event": "PostToolUseFailure", "matcher": "*" },
+    { "event": "PermissionRequest", "matcher": "*" },
+    { "event": "Stop" },
+    { "event": "StopFailure" },
+    { "event": "SubagentStart" },
+    { "event": "SubagentStop" }
+  ]
+}

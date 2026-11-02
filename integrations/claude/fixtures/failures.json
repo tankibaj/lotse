@@ -1,0 +1,11 @@
+{
+  "description": "StopFailure ends the turn as fail; a failing tool does not (the error goes back to the model and the turn continues).",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent. StopFailure payload fields (e.g. an error type) are Unverified and not read",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "go"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "post_tool_failure.lead", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUseFailure", "tool_name": "Bash", "tool_input": {"command": "npm test"}, "tool_use_id": "t1", "error": "Command exited with non-zero status code 1"}, "update": false, "status": "run"},
+    {"row": "stop_failure.lead", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "StopFailure"}, "update": true, "status": "fail", "running_since": null},
+    {"row": "prompt", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "retry"}, "update": true, "status": "run", "running_since": 4000},
+    {"row": "stop", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": true, "status": "done"}
+  ]
+}

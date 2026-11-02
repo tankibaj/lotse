@@ -1,0 +1,15 @@
+{
+  "description": "A failing sub-agent is fail on its own row; the lead keeps its state. A failing lead shows fail even while a sub-agent runs.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent. StopFailure inside a sub-agent (agent_id set) follows Orca's Claude integration and is Unverified",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "go"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "subagent_start", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStart", "agent_id": "ag-1", "agent_type": "worker"}, "update": true, "status": "run"},
+    {"row": "stop_failure.sub", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "StopFailure", "agent_id": "ag-1", "agent_type": "worker"}, "update": true, "status": "run", "sub_agents": [{"id": "ag-1", "name": "worker", "status": "fail"}]},
+    {"row": "subagent_stop", "at": 3500, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStop", "agent_id": "ag-1", "agent_type": "worker"}, "update": false, "status": "run", "sub_agents": [{"id": "ag-1", "name": "worker", "status": "fail"}]},
+    {"row": "stop", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": true, "status": "done"},
+    {"row": "prompt.drops_finished_subs", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "again"}, "update": true, "status": "run", "sub_agents": []},
+    {"row": "subagent_start", "at": 6000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStart", "agent_id": "ag-2", "agent_type": "worker"}, "update": true, "status": "run"},
+    {"row": "derived.fail_over_running_sub", "at": 7000, "payload": {"session_id": "c0ffee", "hook_event_name": "StopFailure"}, "update": true, "status": "fail", "running_since": null, "sub_agents": [{"id": "ag-2", "name": "worker", "status": "run"}]},
+    {"row": "subagent_stop", "at": 8000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStop", "agent_id": "ag-2", "agent_type": "worker"}, "update": true, "status": "fail"}
+  ]
+}

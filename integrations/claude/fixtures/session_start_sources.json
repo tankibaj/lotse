@@ -1,0 +1,12 @@
+{
+  "description": "SessionStart: startup/resume/clear reset to idle; compact (auto-compaction can run mid-turn) changes nothing.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent. The `source` values are Unverified (Orca's and herdr's installers match startup|resume|clear|compact|fork)",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "long task"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "session_start.compact", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "SessionStart", "source": "compact"}, "update": false, "status": "run"},
+    {"row": "session_start.startup_resume_clear", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "SessionStart", "source": "clear"}, "update": true, "status": "idle", "running_since": null},
+    {"row": "prompt", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "again"}, "update": true, "status": "run"},
+    {"row": "session_start.startup_resume_clear", "at": 5000, "payload": {"session_id": "c0ffee2", "hook_event_name": "SessionStart", "source": "resume"}, "update": true, "status": "idle"},
+    {"row": "session_start.startup_resume_clear", "at": 6000, "payload": {"session_id": "c0ffee2", "hook_event_name": "SessionStart", "source": "startup"}, "update": false, "status": "idle"}
+  ]
+}
