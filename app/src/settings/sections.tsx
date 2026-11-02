@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { AgentKind, AppearanceSettings, EventPrefs, NotificationSettings } from '../lib/client/types';
 import { integrationBridge } from './integration';
 import type { IntegrationId, IntegrationState } from './integration';
 import { setTheme, getThemePref } from '../theme';
 import type { ThemePref } from '../theme';
 import { AGENTS } from '../sheets/validation';
-import { INTERFACE_FONTS, INTERFACE_SIZE, TERMINAL_FONTS, TERMINAL_SIZE, interfaceStack, terminalStack } from './appearance';
+import { INTERFACE_SIZE, SYSTEM_FONT, TERMINAL_SIZE, cssFamily, interfaceStack, terminalStack } from './appearance';
+import { useInstalledFonts } from './fonts';
 import type { SettingsDraft } from './useSettings';
 
 const dim = 'text-dim';
@@ -162,22 +164,28 @@ const THEMES: { pref: ThemePref; label: string }[] = [
   { pref: 'auto', label: 'Auto' },
 ];
 
+/** One family, drawn in itself where the platform's select menu allows it (WebKit may ignore it). */
+const fontOption = (f: string) => <option key={f} value={f} style={{ fontFamily: cssFamily(f) }}>{f}</option>;
+
+/** The stored font when it is not among `known`: it stays selectable instead of silently changing. */
+const missingOption = (font: string, known: readonly string[]) =>
+  known.includes(font) ? null : <option key={`missing-${font}`} value={font}>{font} (not installed)</option>;
+
 function FontPicker(props: {
   title: string;
-  fonts: string[];
   font: string;
   size: number;
   range: { min: number; max: number };
   onFont(v: string): void;
   onSize(v: number): void;
+  children: ReactNode;
 }) {
-  const { title, fonts, font, size, range } = props;
-  const options = fonts.includes(font) ? fonts : [font, ...fonts];
+  const { title, font, size, range } = props;
   return (
     <div>
       <label htmlFor={`font-${title}`} className={`mb-1.5 block text-[12px] ${dim}`}>{title}</label>
       <select id={`font-${title}`} className="w-full rounded-md bg-side px-2 py-1.5" value={font} onChange={(e) => props.onFont(e.target.value)}>
-        {options.map((f) => <option key={f}>{f}</option>)}
+        {props.children}
       </select>
       <div className="mt-2 flex items-center gap-2 text-[12px]">
         Size
@@ -191,6 +199,11 @@ function FontPicker(props: {
 export function AppearanceSection({ draft }: { draft: SettingsDraft }) {
   const { settings, update } = draft;
   const [theme, setThemeState] = useState<ThemePref>(getThemePref);
+  const installed = useInstalledFonts();
+  const otherFonts = useMemo(() => {
+    const mono = new Set(installed.monospace);
+    return installed.families.filter((f) => !mono.has(f));
+  }, [installed]);
   if (!settings) return null;
   const a: AppearanceSettings = settings.appearance;
   const set = (patch: Partial<AppearanceSettings>, delay?: number) => update((s) => { Object.assign(s.appearance, patch); }, delay);
@@ -215,10 +228,18 @@ export function AppearanceSection({ draft }: { draft: SettingsDraft }) {
           </div>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <FontPicker title="Interface font" fonts={INTERFACE_FONTS} font={a.interface_font} size={a.interface_font_size} range={INTERFACE_SIZE}
-            onFont={(v) => set({ interface_font: v })} onSize={(v) => set({ interface_font_size: v }, 300)} />
-          <FontPicker title="Terminal font" fonts={TERMINAL_FONTS} font={a.terminal_font} size={a.terminal_font_size} range={TERMINAL_SIZE}
-            onFont={(v) => set({ terminal_font: v })} onSize={(v) => set({ terminal_font_size: v }, 300)} />
+          <FontPicker title="Interface font" font={a.interface_font} size={a.interface_font_size} range={INTERFACE_SIZE}
+            onFont={(v) => set({ interface_font: v })} onSize={(v) => set({ interface_font_size: v }, 300)}>
+            <option value={SYSTEM_FONT}>{SYSTEM_FONT}</option>
+            {missingOption(a.interface_font, [SYSTEM_FONT, ...installed.families])}
+            {installed.families.map(fontOption)}
+          </FontPicker>
+          <FontPicker title="Terminal font" font={a.terminal_font} size={a.terminal_font_size} range={TERMINAL_SIZE}
+            onFont={(v) => set({ terminal_font: v })} onSize={(v) => set({ terminal_font_size: v }, 300)}>
+            {missingOption(a.terminal_font, installed.families)}
+            <optgroup label="Monospace">{installed.monospace.map(fontOption)}</optgroup>
+            {otherFonts.length > 0 && <optgroup label="Other fonts">{otherFonts.map(fontOption)}</optgroup>}
+          </FontPicker>
         </div>
         <div
           className="rounded-md border bg-term p-3 text-[13px]"

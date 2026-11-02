@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { useClient } from '../lib/client';
 import type { AppearanceSettings } from '../lib/client/types';
 import { getThemePref, setTheme } from '../theme';
-import { onUiCommand } from '../lib/ui/commands';
+import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
 import { inTauri } from '../sheets/hostBridge';
 import { closeOverlay, openSettings, useOverlay } from '../sheets/overlay';
 import type { SettingsSection } from '../sheets/overlay';
 import { useDialogFocus } from '../sheets/ui';
+import { onMenuSettings } from './appMenu';
 import { applyAppearance } from './appearance';
+import { resetInstalledFonts } from './fonts';
 import { AgentsSection, AppearanceSection, NotificationsSection, PrivacySection, RemoteSection, ShortcutsSection } from './sections';
 import { useSettings } from './useSettings';
 
@@ -26,6 +28,10 @@ function SettingsView({ initial }: { initial: SettingsSection }) {
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
   }, []);
+
+  // The installed fonts are asked once per Settings open (the Appearance pickers load them on first
+  // use); closing forgets them, so fonts installed meanwhile show up next time.
+  useEffect(() => resetInstalledFonts, []);
 
   return (
     <div ref={box} onKeyDown={trap} className="absolute inset-0 z-30 flex bg-win text-txt" role="dialog" aria-modal="true" aria-label="Settings" data-testid="settings-page">
@@ -74,7 +80,11 @@ export function SettingsPage() {
 
   useEffect(() => {
     const off = onUiCommand('openSettings', () => openSettings());
+    // ⌘, has one path per environment so it cannot fire twice: in the app it is the accelerator of the
+    // menu's "Settings…" item (the event below); in the browser, which has no menu, this key handler.
+    const offMenu = onMenuSettings(() => emitUiCommand('openSettings'));
     const onKey = (e: KeyboardEvent) => {
+      if (inTauri()) return;
       if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'Comma') {
         e.preventDefault();
         openSettings();
@@ -83,6 +93,7 @@ export function SettingsPage() {
     addEventListener('keydown', onKey);
     return () => {
       off();
+      offMenu();
       removeEventListener('keydown', onKey);
     };
   }, []);

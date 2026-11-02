@@ -1,8 +1,11 @@
 //! Tauri shell: the bridge between the webview and `lotsed` (see [`daemon`]), host commands
-//! ([`host`]), notifications and the Dock badge ([`notify`]).
+//! ([`host`]), installed fonts ([`fonts`]), the app menu ([`menu`]), notifications and the Dock badge
+//! ([`notify`]).
 
 pub mod daemon;
+pub mod fonts;
 pub mod host;
+pub mod menu;
 pub mod notify;
 
 use std::sync::Arc;
@@ -37,8 +40,10 @@ pub fn run() {
             let sink = Arc::new(daemon::TauriSink::new(app.handle().clone()));
             app.state::<Arc<daemon::Bridge>>().set_sink(sink.clone());
             app.manage(sink);
+            app.set_menu(menu::build(app.handle())?)?;
             Ok(())
         })
+        .on_menu_event(menu::on_menu_event)
         .invoke_handler(tauri::generate_handler![
             daemon::daemon_connect,
             daemon::daemon_request,
@@ -52,6 +57,7 @@ pub fn run() {
             host::reveal_in_finder,
             host::integration_status,
             host::integration_uninstall,
+            fonts::list_fonts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lotse");
