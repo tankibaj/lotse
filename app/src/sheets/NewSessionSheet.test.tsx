@@ -12,7 +12,7 @@ const open = async () => {
 };
 
 describe('New session sheet', () => {
-  it('opens on the UI command and ⌘T, defaulting to Terminal in the current session\'s project', async () => {
+  it('opens on the UI command, defaulting to Terminal in the current session\'s project', async () => {
     const { client } = mountWp5();
     await client.getSnapshot();
     selectSession('a3');
@@ -24,8 +24,6 @@ describe('New session sheet', () => {
     expect(screen.queryByLabelText('Worktree branch name')).toBeNull();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(getOverlay()).toBeNull();
-    fireEvent.keyDown(window, { code: 'KeyT', metaKey: true });
-    expect(await screen.findByRole('dialog', { name: 'New session' })).toBeInTheDocument();
   });
 
   it('shows the configured command and the first prompt for agents only', async () => {
@@ -107,7 +105,7 @@ describe('New session sheet', () => {
     expect(getSelectedSessionId()).toBe(created?.id);
   });
 
-  it('a slow createSession does not close an overlay opened meanwhile; ⌘T twice still closes after submit', async () => {
+  it('a slow createSession does not close an overlay opened meanwhile; opening it twice still closes after submit', async () => {
     const { client } = mountWp5();
     const real = client.createSession.bind(client);
     let release: () => void = () => {};
@@ -117,7 +115,7 @@ describe('New session sheet', () => {
       return real(n);
     });
     await open();
-    act(() => openOverlay({ name: 'newSession' })); // ⌘T again while open: same sheet, new entry
+    act(() => openOverlay({ name: 'newSession' })); // opened again while open: same sheet, new entry
     await screen.findByLabelText('Project');
     await userEvent.click(screen.getByRole('button', { name: /Start/ }));
     act(() => openOverlay({ name: 'shortcuts' }));

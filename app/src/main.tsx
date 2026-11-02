@@ -2,10 +2,12 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './index.css';
 import { ClientProvider, createClient } from './lib/client';
+import { installContextMenuGuard } from './lib/ui/contextMenuGuard';
 import { Shell } from './shell';
 import { initTheme } from './theme';
 
 initTheme();
+installContextMenuGuard();
 const client = createClient();
 
 const root = document.getElementById('root');

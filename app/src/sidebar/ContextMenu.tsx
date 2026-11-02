@@ -14,6 +14,8 @@ export type MenuEntry =
       label: ReactNode;
       /** Right-aligned key hint, or the reason it is unavailable ("Beta"). */
       hint?: string;
+      /** Small glyph in the leading column (instead of the ✓ slot). */
+      icon?: ReactNode;
       disabled?: boolean;
       checked?: boolean;
       danger?: boolean;
@@ -70,8 +72,8 @@ function Entries({ entries, onHoverItem, onPick }: {
                 : `cursor-default hover:bg-blue hover:text-white focus:bg-blue focus:text-white ${e.danger ? 'text-red' : ''}`
             }`}
           >
-            <span className="w-3 text-center" aria-hidden="true">
-              {e.checked ? '✓' : ''}
+            <span className={e.icon ? 'grid w-4 place-items-center' : 'w-3 text-center'} aria-hidden="true">
+              {e.icon ?? (e.checked ? '✓' : '')}
             </span>
             <span className="flex-1">{e.label}</span>
             <span className="text-[12px] opacity-60">{e.submenu ? '›' : e.hint}</span>

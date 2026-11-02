@@ -1,14 +1,15 @@
 import { useEffect } from 'react';
 import { useClient } from '../client/context';
 import { getSelectedSessionId, selectSession } from '../ui/selection';
-import { togglePausedNotifications } from './actions';
+import { projectTabs } from '../ui/tabOrder';
+import { startSession, togglePausedNotifications } from './actions';
 import { nextNeedYou } from './selectors';
 import { useWorkspaceStore } from './store';
 
 /**
  * Global session shortcuts (mounted by the status bar, which is always on screen, so they work with
- * the sidebar hidden): ⌘J next session that needs you, ⌘1…9 nth session of the current project,
- * ⌥⌘N pause notifications.
+ * the sidebar hidden): ⌘J next session that needs you, ⌘1…9 nth tab of the current project,
+ * ⌥⌘N pause notifications, ⌘T new terminal, ⌥⌘T new Claude Code session.
  */
 export function useSessionShortcuts(): void {
   const client = useClient();
@@ -32,10 +33,16 @@ export function useSessionShortcuts(): void {
         togglePausedNotifications(client).catch(() => {});
         return;
       }
+      // ⌘T a new terminal, ⌥⌘T a new Claude Code session, in the current project (physical key, like ⌥⌘N).
+      if (e.code === 'KeyT' && !e.shiftKey) {
+        e.preventDefault();
+        startSession(client, store.getState(), e.altKey ? 'claude_code' : 'terminal').catch(() => {});
+        return;
+      }
       const digit = /^Digit([1-9])$/.exec(e.code);
       if (digit && !e.shiftKey && !e.altKey) {
         const current = sessions.find((s) => s.id === getSelectedSessionId());
-        const target = sessions.filter((s) => s.project_id === current?.project_id)[Number(digit[1]) - 1];
+        const target = projectTabs(sessions, current?.project_id)[Number(digit[1]) - 1];
         if (target) {
           e.preventDefault();
           selectSession(target.id);

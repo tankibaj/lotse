@@ -38,7 +38,11 @@ const surfaces: Surface[] = [
   {
     name: 'new',
     mock: (p) => p.evaluate(() => (window as unknown as MockWindow).openNew()),
-    app: (p) => p.keyboard.press('Meta+t'),
+    // ⌘T now starts a terminal; the sheet is the "+" menu's "New session…"
+    app: async (p) => {
+      await p.getByRole('button', { name: 'New session', exact: true }).click();
+      await p.getByRole('menuitem', { name: 'New session…' }).click();
+    },
   },
   {
     name: 'add',

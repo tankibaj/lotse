@@ -1,8 +1,9 @@
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MockClient } from '../lib/client';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
+import { saveTabOrder } from '../lib/ui/tabOrder';
 import { mount } from '../sidebar/testUtils';
 import { StatusBar } from './StatusBar';
 
@@ -92,6 +93,35 @@ describe('session shortcuts (work with the sidebar hidden)', () => {
     key('Digit2');
     expect(getSelectedSessionId()).toBe('a2');
     key('Digit9'); // no 9th session: unchanged
+    expect(getSelectedSessionId()).toBe('a2');
+  });
+
+  it('⌘T starts a terminal and ⌥⌘T a Claude Code session in the current project, and selects it', async () => {
+    const { client } = await ready();
+    await waitFor(() => expect(getSelectedSessionId()).toBe('a1'));
+    const spy = vi.spyOn(client, 'createSession');
+    const dispatched = fireEvent.keyDown(window, { code: 'KeyT', key: 't', metaKey: true });
+    expect(dispatched).toBe(false); // default (WebKit new tab / macOS) prevented
+    expect(spy).toHaveBeenLastCalledWith({ project_id: 'p1', agent: 'terminal', command: null, title: null, worktree: null, first_prompt: null });
+    await waitFor(() => expect(getSelectedSessionId()).toBe('a8'));
+    key('KeyT', { key: '†', altKey: true }); // ⌥ changes the typed character on macOS
+    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ project_id: 'p1', agent: 'claude_code' }));
+    await waitFor(() => expect(getSelectedSessionId()).toBe('a9'));
+  });
+
+  it('⇧⌘T (Transcript panel) and T without ⌘ start nothing', async () => {
+    const { client } = await ready();
+    const spy = vi.spyOn(client, 'createSession');
+    key('KeyT', { shiftKey: true });
+    act(() => void fireEvent.keyDown(window, { code: 'KeyT', key: 't' }));
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('⌘1…9 count the tabs in the order the user dragged them to', async () => {
+    saveTabOrder('p1', ['a2', 'a1']);
+    await ready();
+    await waitFor(() => expect(getSelectedSessionId()).toBe('a1'));
+    key('Digit1');
     expect(getSelectedSessionId()).toBe('a2');
   });
 

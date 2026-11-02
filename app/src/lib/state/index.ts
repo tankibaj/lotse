@@ -2,5 +2,5 @@
 export * from './selectors';
 export * from './store';
 export { useCoarseNow } from './clock';
-export { togglePausedNotifications } from './actions';
+export { startSession, togglePausedNotifications } from './actions';
 export { useSessionShortcuts } from './shortcuts';

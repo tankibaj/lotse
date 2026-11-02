@@ -259,7 +259,8 @@ export function PrivacySection() {
 const KEYS: [string, string][] = [
   ['Command palette', '⌘K'],
   ['Next session that needs you', '⌘J'],
-  ['New session', '⌘T'],
+  ['New terminal', '⌘T'],
+  ['New Claude Code session', '⌥⌘T'],
   ['Add a project', '⇧⌘O'],
   ['Settings', '⌘,'],
   ['Toggle sidebar', '⌃⌘S'],
