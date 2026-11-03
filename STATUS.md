@@ -1,3 +1,33 @@
+# Lotse status
+
+## Beta (Release 2, MLP): current
+
+Updated 2026-11-03 22:05. Handover for a fresh session: `docs/handover/beta-waves-20261103-2158.md`.
+
+- **Plan:** `docs/plan/beta.md`, with WP docs in `docs/plan/beta-wp/`.
+- **Next plan:** `docs/plan/beta-mod-and-child-sessions.md` (wave 5).
+- These docs are untracked, local only.
+
+| Wave | WPs | State | Merge |
+|---|---|---|---|
+| 0 contracts | wp01 proto v4, wp02 client mirror, wp03 shell + composer + Dictation spike | merged | in `2d271f4` |
+| 1 providers | wp04 git/PR, wp05 files, wp06 history/usage, wp07 transcript/export, wp08 session info/connectors, wp09 notifications, wp10 editor core; fixes fixa–fixf (live-walk findings) | merged; local CI green (cargo 645, vitest 619); harnex gate closed round 2 | `2d271f4` (main, **not pushed**: ahead 37) |
+| 2 panels | wp11 changes, wp12 editor pane, wp13 files, wp14 usage, wp15 transcript + export UI, wp16 session, wp17 review + comments | **running**, 7 parallel delegates since 21:58 | — |
+| 3 | wp18 pane status bars + columns, wp19 voice mic (only if the Dictation spike passes; needs Naim at the Mac) | pending | — |
+| 4 | wp20 actions coverage | pending | — |
+| 5 | mod (14 features, hooks fallback) + child sessions (stdio MCP) | planned (draft); gates G1–G4 wait on the mod probe | — |
+
+**Wave-1 items not yet verified:** the built-app re-walk of the fixed journeys. It needs computer use (desktop app only). The journeys are:
+- Claude background sub-agents shown in the sidebar
+- sub-agent permission prompt shows perm
+- footer tokens and cost
+- transcript `<task-notification>` cards
+- composer multi-line send
+- Codex trust prompt
+- Settings nav highlight
+
+**Escaped bug:** wave-1 shortcut ⌥⌘D for review toggled the macOS Dock. It was moved to ⇧⌘R in `8fbd713`.
+
 # Lotse Alpha status
 
 Orchestrator ledger and the truth after compaction. Plan: [ALPHA_PLAN.md](ALPHA_PLAN.md). Spec: [spec/](spec/). Live per-WP progress written by the agents: [status/](status/) (one file per WP).
