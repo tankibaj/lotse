@@ -6,6 +6,7 @@
 //! Pure state over a caller-supplied clock: the caller feeds it events and status changes and asks
 //! for the due ones.
 
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use lotse_proto::{Event, NotificationKind, SessionId, Status};
@@ -23,6 +24,8 @@ struct Held {
 #[derive(Default)]
 pub struct Quiet {
     held: Vec<Held>,
+    /// The last status seen per session: a trigger can reach [`Quiet::hold`] after the status moved on.
+    status: HashMap<SessionId, Status>,
 }
 
 /// The session status a notification is about; `None`: it stands on its own.
@@ -47,6 +50,12 @@ impl Quiet {
             return;
         };
         let (session, kind) = (session_id.clone(), *kind);
+        // the session may have left the status before its trigger got here
+        if let (Some(&known), Some(needed)) = (self.status.get(&session), needs(kind))
+            && known != needed
+        {
+            return;
+        }
         match self
             .held
             .iter_mut()
@@ -64,8 +73,15 @@ impl Quiet {
 
     /// The session's status is now `status`: drop what it no longer applies to.
     pub fn status_changed(&mut self, session: &SessionId, status: Status) {
+        self.status.insert(session.clone(), status);
         self.held
             .retain(|h| h.session != *session || needs(h.kind).is_none_or(|s| s == status));
+    }
+
+    /// The session is gone: forget its status and what is held for it.
+    pub fn forget(&mut self, session: &SessionId) {
+        self.status.remove(session);
+        self.held.retain(|h| h.session != *session);
     }
 
     /// The held events that are due, oldest first.
@@ -213,6 +229,33 @@ mod tests {
         q.hold(t0, note("a", NotificationKind::Done, "d"));
         q.status_changed(&a, Status::Run);
         assert!(q.release(after(t0, 1500)).is_empty());
+    }
+
+    #[test]
+    fn a_notification_for_a_status_already_left_is_not_held() {
+        let t0 = Instant::now();
+        let a = SessionId::new("a");
+        let mut q = Quiet::default();
+        // the status moved on before the trigger got here
+        q.status_changed(&a, Status::Run);
+        q.hold(t0, note("a", NotificationKind::Perm, "p-1"));
+        assert_eq!(q.next_due(), None);
+        q.status_changed(&a, Status::Perm);
+        q.hold(t0, note("a", NotificationKind::Perm, "p-2"));
+        assert_eq!(q.release(after(t0, 1500)).len(), 1);
+    }
+
+    #[test]
+    fn a_closed_session_is_forgotten() {
+        let t0 = Instant::now();
+        let a = SessionId::new("a");
+        let mut q = Quiet::default();
+        q.hold(t0, note("a", NotificationKind::Perm, "p-1"));
+        q.status_changed(&a, Status::Perm);
+        q.forget(&a);
+        assert!(q.release(after(t0, 2000)).is_empty());
+        q.hold(t0, note("a", NotificationKind::Perm, "p-2"));
+        assert_eq!(q.next_due(), Some(after(t0, 1500)), "no stale status left");
     }
 
     #[test]

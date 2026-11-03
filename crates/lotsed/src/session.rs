@@ -741,7 +741,7 @@ impl SessionHandle {
                 &trigger,
                 now_ms(),
             ) {
-                self.ctx.hub.broadcast(event);
+                self.ctx.hub.notify(event);
             }
         }
     }
