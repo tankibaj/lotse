@@ -270,6 +270,19 @@ describe('today\'s usage text', () => {
     ]);
   });
 
+  it('rounds first, then picks the unit: no 1000k, no 10.0k', () => {
+    expect([9_949, 9_950, 9_999, 10_499, 10_500, 999_499, 999_500, 999_999].map(formatTokens)).toEqual([
+      '9.9k',
+      '10k',
+      '10k',
+      '10k',
+      '11k',
+      '999k',
+      '1M',
+      '1M',
+    ]);
+  });
+
   it('reads like the mock: Today 412k tokens · $4.18', () => {
     expect(formatUsage(usage(412_000, 4_180_000)).text).toBe('Today 412k tokens · $4.18');
     expect(formatUsage(usage(0, 0)).text).toBe('Today 0 tokens · $0.00');
