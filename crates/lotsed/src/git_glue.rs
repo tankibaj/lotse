@@ -11,11 +11,7 @@ pub fn info(dir: &Path) -> GitInfo {
         tracing::debug!("git info for {}: {e}", dir.display());
         GitInfo {
             is_git: is_git_repo(dir),
-            branch: String::new(),
-            ahead: 0,
-            dirty: 0,
-            worktree: false,
-            worktree_path: None,
+            ..GitInfo::default()
         }
     })
 }

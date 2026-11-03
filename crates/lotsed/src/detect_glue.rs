@@ -454,10 +454,10 @@ pub fn resolve(
     kind: NotificationKind,
 ) -> Option<bool> {
     let global = match kind {
-        NotificationKind::Perm => settings.perm,
-        NotificationKind::Fail => settings.fail,
-        NotificationKind::Done => settings.done,
-        NotificationKind::SubAgentDone => settings.sub_agent_done,
+        NotificationKind::Perm => &settings.perm,
+        NotificationKind::Fail => &settings.fail,
+        NotificationKind::Done => &settings.done,
+        NotificationKind::SubAgentDone => &settings.sub_agent_done,
     };
     let banner = match mode {
         NotificationMode::Mute => return None,
@@ -489,6 +489,10 @@ pub fn notification(
 ) -> Option<Event> {
     let kind = trigger.kind();
     let sound = resolve(settings, mode, kind)?;
+    let prompt_id = match trigger {
+        Trigger::Perm(Some(p)) => p.id.clone(),
+        _ => None,
+    };
     let (subtitle, body) = match trigger {
         Trigger::Perm(Some(p)) => (
             "Needs permission",
@@ -505,7 +509,11 @@ pub fn notification(
         title: format!("{project_name} · {}", session.agent.label()),
         subtitle: subtitle.into(),
         body,
+        // TODO(beta-wp09): sound-only (`banner: false`) and `sound_name` from the settings
+        banner: true,
         sound,
+        sound_name: None,
+        prompt_id,
         at,
     })
 }
@@ -574,6 +582,7 @@ mod tests {
                     tool: "Bash".into(),
                     summary: format!("cmd {n}"),
                     always: None,
+                    id: None,
                 };
                 limiter.allow(&Trigger::Perm(Some(req)), t0)
             })
@@ -774,6 +783,7 @@ mod tests {
             tool: "Bash".into(),
             summary: "npx playwright test e2e/patients".into(),
             always: None,
+            id: Some("p-1".into()),
         }));
         let Some(Event::Notification {
             title,
@@ -799,6 +809,12 @@ mod tests {
             Some("Bash(npx playwright test e2e/patients)")
         );
         assert!(sound);
+        // the banner's Allow/Deny answers this prompt only
+        let again = notification(&settings(), &NotificationMode::Global, "p", &s, &perm, 1);
+        assert!(matches!(
+            again,
+            Some(Event::Notification { prompt_id: Some(ref id), banner: true, .. }) if id == "p-1"
+        ));
         // done: banner, no sound; sub-agent done: off
         let done = notification(
             &settings(),
@@ -823,6 +839,7 @@ mod tests {
                 banner: false,
                 sound: true,
                 allow_deny: false,
+                sound_name: None,
             },
             ..settings()
         };
@@ -872,6 +889,7 @@ mod tests {
                 banner: false,
                 sound: true,
                 allow_deny: false,
+                sound_name: None,
             },
             ..settings()
         };

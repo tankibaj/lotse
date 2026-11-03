@@ -5,8 +5,9 @@ mod common;
 
 use common::*;
 use lotse_proto::{
-    AgentKind, DiffStatus, ErrorCode, Event, NewSession, Project, ProjectId, Request, Response,
-    Session, Snapshot, Transcript, TranscriptRole, UsageToday, Workspace, WorkspaceId,
+    AgentKind, DiffBase, DiffStatus, ErrorCode, Event, NewSession, Project, ProjectId, Request,
+    Response, Session, Snapshot, Transcript, TranscriptRole, TranscriptSource, UsageToday,
+    Workspace, WorkspaceId,
 };
 use std::path::Path;
 use std::process::Command;
@@ -197,6 +198,7 @@ fn get_diff_returns_the_session_folders_changes() {
 
     let Response::Diff(diff) = c.request(Request::GetDiff {
         session_id: session.id.clone(),
+        base: DiffBase::Head,
     }) else {
         panic!("no diff")
     };
@@ -216,12 +218,14 @@ fn get_diff_without_git_and_for_an_unknown_session() {
     let session = c.create_session(&plain, Some("/bin/sh"));
     let Response::Diff(diff) = c.request(Request::GetDiff {
         session_id: session.id,
+        base: DiffBase::Head,
     }) else {
         panic!("no diff")
     };
     assert!(!diff.is_git && diff.files.is_empty());
     let r = c.request(Request::GetDiff {
         session_id: "nope".into(),
+        base: DiffBase::Head,
     });
     assert_eq!(error_code(r), ErrorCode::NotFound);
 }
@@ -309,7 +313,8 @@ fn a_claude_transcript_announced_by_a_hook_can_be_shown() {
         Transcript {
             available: false,
             turns: vec![],
-            truncated: false
+            truncated: false,
+            source: TranscriptSource::Claude,
         }
     );
 

@@ -562,6 +562,8 @@ fn resolve(c: &mut Client, s: &Session, decision: PermDecision) -> Response {
     c.request(Request::ResolvePermission {
         session_id: s.id.clone(),
         decision,
+        via: None,
+        prompt_id: None,
     })
 }
 

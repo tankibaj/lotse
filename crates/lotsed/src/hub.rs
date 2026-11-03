@@ -4,7 +4,7 @@
 use lotse_proto::{Event, Frame, Message};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use tokio::sync::{Notify, mpsc};
 
 /// Encoded frame, shared between clients.
@@ -68,10 +68,15 @@ impl ClientTx {
     }
 }
 
+/// Sees every broadcast event, on the thread that broadcasts it: keep it quick, never block, and
+/// never call back into the hub.
+pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
+
 #[derive(Default)]
 pub struct Hub {
     clients: Mutex<HashMap<u64, Arc<ClientTx>>>,
     next_id: AtomicU64,
+    observers: RwLock<Vec<Observer>>,
 }
 
 impl Hub {
@@ -92,8 +97,24 @@ impl Hub {
         self.lock().remove(&id);
     }
 
-    /// Push an event to every connected client.
+    /// Register an in-process listener for every event (the history recorder). Lives as long as the hub.
+    pub fn observe(&self, observer: Observer) {
+        self.observers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(observer);
+    }
+
+    /// Push an event to every connected client (and every observer, in registration order).
     pub fn broadcast(&self, event: Event) {
+        for observer in self
+            .observers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            observer(&event);
+        }
         let Ok(bytes) = lotse_proto::encode(&Frame::Control(Message::Event(event))) else {
             return;
         };
@@ -111,5 +132,49 @@ impl Hub {
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u64, Arc<ClientTx>>> {
         self.clients.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lotse_proto::SessionId;
+
+    fn closed(id: &str) -> Event {
+        Event::SessionClosed {
+            session_id: SessionId::new(id),
+        }
+    }
+
+    #[test]
+    fn every_observer_sees_every_event_in_order_even_without_clients() {
+        let hub = Hub::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        for tag in ["a", "b"] {
+            let seen = seen.clone();
+            hub.observe(Box::new(move |e| {
+                seen.lock().unwrap().push((tag, e.name()));
+            }));
+        }
+        hub.broadcast(closed("s1"));
+        hub.broadcast(Event::SettingsChanged(Default::default()));
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                ("a", "session_closed"),
+                ("b", "session_closed"),
+                ("a", "settings_changed"),
+                ("b", "settings_changed")
+            ]
+        );
+    }
+
+    #[test]
+    fn an_observer_does_not_disturb_the_clients() {
+        let hub = Hub::default();
+        hub.observe(Box::new(|_| {}));
+        let (_client, mut rx) = hub.register("test".into());
+        hub.broadcast(closed("s1"));
+        assert!(rx.try_recv().is_ok(), "the client still gets the event");
     }
 }

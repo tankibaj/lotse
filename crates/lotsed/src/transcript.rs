@@ -12,7 +12,9 @@
 //!   available (tests never run an agent). An unreadable line is skipped, never an error.
 //! - OpenCode: its plugin payload carries no transcript path, so there is nothing to read.
 
-use lotse_proto::{AgentKind, Transcript, TranscriptRole, TranscriptTool, TranscriptTurn, UnixMs};
+use lotse_proto::{
+    AgentKind, Transcript, TranscriptRole, TranscriptSource, TranscriptTool, TranscriptTurn, UnixMs,
+};
 use serde_json::Value;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -97,7 +99,18 @@ pub fn read_turns(
         available: true,
         turns,
         truncated,
+        source: source_of(agent),
     })
+}
+
+/// Where `agent`'s transcript comes from (Beta adds OpenCode and scrollback in `transcript_sources`).
+pub fn source_of(agent: AgentKind) -> TranscriptSource {
+    match agent {
+        AgentKind::Codex => TranscriptSource::Codex,
+        AgentKind::OpenCode => TranscriptSource::OpenCode,
+        AgentKind::ClaudeCode => TranscriptSource::Claude,
+        AgentKind::Terminal => TranscriptSource::Scrollback,
+    }
 }
 
 fn parse_line(agent: AgentKind, line: &str) -> Vec<TranscriptTurn> {
@@ -121,6 +134,8 @@ fn turn(role: TranscriptRole, text: &str, at: Option<UnixMs>) -> Option<Transcri
         text: clip(text, MAX_TEXT),
         tool: None,
         at,
+        approval: None,
+        sub_agent: None,
     })
 }
 
@@ -131,8 +146,12 @@ fn tool_turn(name: &str, summary: &str, at: Option<UnixMs>) -> TranscriptTurn {
         tool: Some(TranscriptTool {
             name: clip(name, 60),
             summary: clip(summary.trim(), MAX_SUMMARY),
+            status: None,
+            result: None,
         }),
         at,
+        approval: None,
+        sub_agent: None,
     }
 }
 

@@ -81,6 +81,8 @@ pub enum SessionError {
     NotAtPrompt,
     #[error("the permission prompt has no option for this decision")]
     NoSuchChoice,
+    #[error("that permission prompt is no longer the open one")]
+    StalePrompt,
 }
 
 struct Launched {
@@ -603,12 +605,19 @@ impl SessionHandle {
         for mut update in updates {
             let prev = g.meta.status;
             let prev_perm = g.meta.perm.clone();
-            // the engine knows the request, not the prompt's options: keep what the screen said
-            if let (Some(p), Some(old)) = (update.perm.as_mut(), prev_perm.as_ref())
-                && p.tool == old.tool
-                && p.summary == old.summary
-            {
-                p.always = old.always;
+            // The engine knows the request, not the prompt's options or its id: the same request
+            // keeps what the screen said and its id, any other request is a new prompt.
+            if let Some(p) = update.perm.as_mut() {
+                match prev_perm
+                    .as_ref()
+                    .filter(|old| p.tool == old.tool && p.summary == old.summary)
+                {
+                    Some(old) => {
+                        p.always = old.always;
+                        p.id.clone_from(&old.id);
+                    }
+                    None => p.id = Some(uuid::Uuid::new_v4().to_string()),
+                }
             }
             if update.perm != prev_perm {
                 g.perm_options_stale = true;
@@ -860,10 +869,22 @@ impl SessionHandle {
     /// Answer the permission prompt on screen with the keys a user would type. Only while the
     /// session is `perm` and its screen shows a prompt the agent's layout can be read from; the
     /// status is not touched, the agent's hook or the next screen sample moves it on.
-    pub fn resolve_permission(&self, decision: PermDecision) -> Result<(), SessionError> {
+    ///
+    /// `prompt_id` (a notification's or card's `PermRequest::id`) must be the open prompt's, so a
+    /// stale banner cannot answer a newer prompt; `None` skips the check.
+    pub fn resolve_permission(
+        &self,
+        decision: PermDecision,
+        prompt_id: Option<&str>,
+    ) -> Result<(), SessionError> {
         let mut g = self.lock();
         if g.meta.status != Status::Perm {
             return Err(SessionError::NotAtPrompt);
+        }
+        if let Some(id) = prompt_id
+            && g.meta.perm.as_ref().and_then(|p| p.id.as_deref()) != Some(id)
+        {
+            return Err(SessionError::StalePrompt);
         }
         let agent = prompt_agent(&g);
         let rows = g.detector.screen_rows();
@@ -1063,14 +1084,7 @@ mod tests {
             command: "sh".into(),
             status: Status::Idle,
             sub_agents: Vec::new(),
-            git: GitInfo {
-                is_git: false,
-                branch: String::new(),
-                ahead: 0,
-                dirty: 0,
-                worktree: false,
-                worktree_path: None,
-            },
+            git: GitInfo::default(),
             created_at: 0,
             last_activity: 0,
             running_since: None,

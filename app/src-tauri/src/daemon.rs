@@ -632,6 +632,6 @@ mod tests {
             (v["event"].as_str(), v["data"]["workspace_id"].as_str()),
             (Some("workspace_removed"), Some("w2"))
         );
-        assert_eq!(PROTO_VERSION, 3);
+        assert_eq!(PROTO_VERSION, 4);
     }
 }

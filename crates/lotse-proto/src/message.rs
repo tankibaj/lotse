@@ -67,6 +67,13 @@ pub struct ResponseEnvelope {
 /// | `get_git_info` | `git_info` |
 /// | `get_diff` | `diff` |
 /// | `get_transcript` | `transcript` |
+/// | `get_review` | `review` |
+/// | `list_files` | `file_tree` |
+/// | `read_file`, `write_file` | `file` |
+/// | `get_usage` | `usage` |
+/// | `export_transcript` | `export` |
+/// | `get_session_info` | `session_info` |
+/// | `list_connectors`, `check_connectors` | `connectors` |
 /// | everything else | `ok` |
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params", rename_all = "snake_case")]
@@ -129,10 +136,16 @@ pub enum Request {
         session_id: SessionId,
     },
     /// Allow / Always / Deny on a permission card: the daemon types the matching option into the pane.
-    /// `conflict` when the session is not at a prompt it can read, or the prompt has no such option.
+    /// `conflict` when the session is not at a prompt it can read, or the prompt has no such option,
+    /// or `prompt_id` is not the open prompt's `PermRequest::id` (a stale banner). `via` is recorded
+    /// with the decision; both are optional and new in proto 4.
     ResolvePermission {
         session_id: SessionId,
         decision: PermDecision,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<PermVia>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_id: Option<String>,
     },
 
     // terminal
@@ -170,16 +183,68 @@ pub enum Request {
         project_id: ProjectId,
         session_id: Option<SessionId>,
     },
-    /// Show Changes: `git diff` of the session's folder against `HEAD` (staged and unstaged) plus
-    /// the names of untracked files, capped in size (since proto 3).
+    /// Show Changes: `git diff` of the session's folder against `base` (default `HEAD`; staged and
+    /// unstaged) plus the names of untracked files, capped in size (since proto 3; `base` since 4).
     GetDiff {
         session_id: SessionId,
+        #[serde(default)]
+        base: DiffBase,
     },
     /// Show Transcript: the last `limit` turns (default 50, at most 200) of the session's agent
     /// transcript. `unavailable` for agents without one (since proto 3).
     GetTranscript {
         session_id: SessionId,
         limit: Option<u32>,
+    },
+
+    // beta (since proto 4); every handler is `unavailable` until its work package lands
+    /// Branch against its base: ahead, behind, the commits ahead → `Response::Review`.
+    GetReview {
+        session_id: SessionId,
+    },
+    /// Files of the session's folder (only the changed ones with `changed_only`) → `Response::FileTree`.
+    ListFiles {
+        session_id: SessionId,
+        changed_only: bool,
+    },
+    /// A file of the session's folder, at `rev` (a git revision) or as it is on disk → `Response::File`.
+    ReadFile {
+        session_id: SessionId,
+        path: String,
+        rev: Option<String>,
+    },
+    /// Replace a file's text; `conflict` when `expected_sha` is not the file's current sha → `Response::File`.
+    WriteFile {
+        session_id: SessionId,
+        path: String,
+        text: String,
+        expected_sha: Option<String>,
+    },
+    /// Time, tokens and spend of the session → `Response::Usage`.
+    GetUsage {
+        session_id: SessionId,
+    },
+    /// The session's transcript as a document, secrets masked → `Response::Export`.
+    ExportTranscript {
+        session_id: SessionId,
+        format: ExportFormat,
+    },
+    /// Session panel data → `Response::SessionInfo`.
+    GetSessionInfo {
+        session_id: SessionId,
+    },
+    /// SIGTERM to a background task of the session (the pid must be one `get_session_info` listed).
+    StopTask {
+        session_id: SessionId,
+        pid: u32,
+    },
+    /// MCP servers from the agents' config files → `Response::Connectors`.
+    ListConnectors {
+        session_id: SessionId,
+    },
+    /// Like `list_connectors`, with live status where `Settings::external.mcp_live` allows it.
+    CheckConnectors {
+        session_id: SessionId,
     },
 
     /// From `lotse-hook`: an agent hook payload. Forwarded as received, except that `lotse-hook`
@@ -224,6 +289,16 @@ impl Request {
         "get_git_info",
         "get_diff",
         "get_transcript",
+        "get_review",
+        "list_files",
+        "read_file",
+        "write_file",
+        "get_usage",
+        "export_transcript",
+        "get_session_info",
+        "stop_task",
+        "list_connectors",
+        "check_connectors",
         "hook_event",
         "shutdown",
     ];
@@ -258,6 +333,16 @@ impl Request {
             Request::GetGitInfo { .. } => "get_git_info",
             Request::GetDiff { .. } => "get_diff",
             Request::GetTranscript { .. } => "get_transcript",
+            Request::GetReview { .. } => "get_review",
+            Request::ListFiles { .. } => "list_files",
+            Request::ReadFile { .. } => "read_file",
+            Request::WriteFile { .. } => "write_file",
+            Request::GetUsage { .. } => "get_usage",
+            Request::ExportTranscript { .. } => "export_transcript",
+            Request::GetSessionInfo { .. } => "get_session_info",
+            Request::StopTask { .. } => "stop_task",
+            Request::ListConnectors { .. } => "list_connectors",
+            Request::CheckConnectors { .. } => "check_connectors",
             Request::HookEvent { .. } => "hook_event",
             Request::Shutdown => "shutdown",
         }
@@ -282,6 +367,13 @@ pub enum Response {
     Workspace(Workspace),
     Diff(GitDiff),
     Transcript(Transcript),
+    Review(Review),
+    FileTree(FileTree),
+    File(File),
+    Usage(Usage),
+    Export(Export),
+    SessionInfo(SessionInfo),
+    Connectors(Vec<Connector>),
     Error(ProtoError),
 }
 
@@ -301,6 +393,13 @@ impl Response {
         "workspace",
         "diff",
         "transcript",
+        "review",
+        "file_tree",
+        "file",
+        "usage",
+        "export",
+        "session_info",
+        "connectors",
         "error",
     ];
 
@@ -320,9 +419,20 @@ impl Response {
             Response::Workspace(_) => "workspace",
             Response::Diff(_) => "diff",
             Response::Transcript(_) => "transcript",
+            Response::Review(_) => "review",
+            Response::FileTree(_) => "file_tree",
+            Response::File(_) => "file",
+            Response::Usage(_) => "usage",
+            Response::Export(_) => "export",
+            Response::SessionInfo(_) => "session_info",
+            Response::Connectors(_) => "connectors",
             Response::Error(_) => "error",
         }
     }
+}
+
+fn banner_default() -> bool {
+    true
 }
 
 /// Daemon → every client. Pushed state changes.
@@ -387,7 +497,17 @@ pub enum Event {
         subtitle: String,
         /// `Bash(npx playwright test e2e/patients)`
         body: Option<String>,
+        /// Show a banner. `false` with `sound: true` is sound only. Since proto 4; a v3 event is a banner.
+        #[serde(default = "banner_default")]
+        banner: bool,
         sound: bool,
+        /// macOS system sound to play (`EventPrefs::sound_name`). Since proto 4.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound_name: Option<String>,
+        /// The `PermRequest::id` a `perm` notification is about; its Allow/Deny answers with it.
+        /// Since proto 4.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        prompt_id: Option<String>,
         at: UnixMs,
     },
 }

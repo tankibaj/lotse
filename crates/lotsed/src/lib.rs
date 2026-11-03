@@ -15,6 +15,11 @@
 //! - [`db`]: SQLite schema and migrations
 //! - [`transcript`]: agent transcript files (path validation, last turns)
 //! - [`usage`]: today's tokens and cost from the Claude Code transcripts
+//!
+//! Beta stubs (proto 4), one per work package. The requests of [`review`], [`files`],
+//! [`session_usage`], [`export`], [`session_info`] and [`mcp`] are routed to their `handle` and
+//! answer `unavailable` until the package lands; [`pr`], [`history`], [`transcript_sources`],
+//! [`redact`] and [`quiet`] are empty.
 
 #![deny(unsafe_code)]
 
@@ -22,17 +27,28 @@ pub mod agent_env;
 pub mod config;
 pub mod db;
 pub mod detect_glue;
+pub mod export;
+pub mod files;
 pub mod git;
 pub mod git_glue;
+pub mod history;
 pub mod hub;
 pub mod launch;
 pub mod lifecycle;
+pub mod mcp;
 pub mod perm_answer;
+pub mod pr;
+pub mod quiet;
+pub mod redact;
+pub mod review;
 pub mod ring;
 pub mod secure;
 pub mod server;
 pub mod session;
+pub mod session_info;
+pub mod session_usage;
 pub mod state;
 pub mod title;
 pub mod transcript;
+pub mod transcript_sources;
 pub mod usage;

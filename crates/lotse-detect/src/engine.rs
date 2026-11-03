@@ -247,6 +247,7 @@ mod tests {
                 tool: "Bash".into(),
                 summary: "ls".into(),
                 always: None,
+                id: None,
             }),
             ..det(source, Status::Perm, at)
         }

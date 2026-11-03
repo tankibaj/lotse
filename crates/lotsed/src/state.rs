@@ -11,9 +11,10 @@ use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
 use crate::transcript;
 use crate::usage::{DayBounds, UsageTracker};
+use crate::{export, files, mcp, review, session_info, session_usage};
 use lotse_proto::{
-    AgentKind, DaemonInfo, DetectSource, ErrorCode, Event, Frame, Message, NewProject, NewSession,
-    PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
+    AgentKind, DaemonInfo, DetectSource, DiffBase, ErrorCode, Event, Frame, Message, NewProject,
+    NewSession, PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
     ResponseEnvelope, Session, SessionId, Settings, Snapshot, Transcript, Workspace, WorkspaceId,
 };
 use std::collections::HashMap;
@@ -52,6 +53,14 @@ fn err(code: ErrorCode, message: impl Into<String>) -> Response {
     })
 }
 
+/// What a Beta request answers until its work package lands.
+pub(crate) fn unavailable(method: &str) -> Response {
+    err(
+        ErrorCode::Unavailable,
+        format!("{method} is not available yet"),
+    )
+}
+
 fn internal(e: impl std::fmt::Display) -> Response {
     tracing::error!("{e}");
     err(ErrorCode::Internal, "internal error")
@@ -80,7 +89,8 @@ fn session_err(e: SessionError) -> Response {
         SessionError::Exited
         | SessionError::StillRunning
         | SessionError::NotAtPrompt
-        | SessionError::NoSuchChoice => ErrorCode::Conflict,
+        | SessionError::NoSuchChoice
+        | SessionError::StalePrompt => ErrorCode::Conflict,
         SessionError::BadSize => ErrorCode::InvalidRequest,
     };
     err(code, e.to_string())
@@ -136,6 +146,14 @@ impl State {
         }))
     }
 
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+
+    pub fn db(&self) -> &Arc<Db> {
+        &self.db
+    }
+
     /// Resolves once a client asked for `shutdown`.
     pub async fn shutdown_requested(&self) {
         self.shutdown.notified().await;
@@ -171,14 +189,14 @@ impl State {
         }
     }
 
-    fn settings(&self) -> Settings {
+    pub(crate) fn settings(&self) -> Settings {
         self.settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
-    fn session(&self, id: &SessionId) -> Option<Arc<SessionHandle>> {
+    pub(crate) fn session(&self, id: &SessionId) -> Option<Arc<SessionHandle>> {
         self.sessions
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -283,14 +301,17 @@ impl State {
                 }
             },
             // Types the answer into the pane; Conflict when there is nothing to answer (the UI
-            // ignores it). The status moves on by the agent's hook or the screen, never here.
+            // ignores it) or `prompt_id` names an older prompt. The status moves on by the agent's
+            // hook or the screen, never here. `via` is for the history recorder (wp06).
             Request::ResolvePermission {
                 session_id,
                 decision,
+                via: _,
+                prompt_id,
             } => match self.session(&session_id) {
                 None => not_found("session"),
                 Some(h) => h
-                    .resolve_permission(decision)
+                    .resolve_permission(decision, prompt_id.as_deref())
                     .map_or_else(session_err, |()| Response::Ok),
             },
             Request::Attach {
@@ -351,9 +372,27 @@ impl State {
                 project_id,
                 session_id,
             } => self.git_info(&project_id, session_id.as_ref()).await,
-            Request::GetDiff { session_id } => self.get_diff(&session_id).await,
+            Request::GetDiff {
+                session_id,
+                base: DiffBase::Head,
+            } => self.get_diff(&session_id).await,
             Request::GetTranscript { session_id, limit } => {
                 self.get_transcript(&session_id, limit).await
+            }
+            // Beta (proto 4): each module answers `unavailable` until its work package lands.
+            req @ (Request::GetDiff { .. } | Request::GetReview { .. }) => {
+                review::handle(self, req).await
+            }
+            req @ (Request::ListFiles { .. }
+            | Request::ReadFile { .. }
+            | Request::WriteFile { .. }) => files::handle(self, req).await,
+            req @ Request::GetUsage { .. } => session_usage::handle(self, req).await,
+            req @ Request::ExportTranscript { .. } => export::handle(self, req).await,
+            req @ (Request::GetSessionInfo { .. } | Request::StopTask { .. }) => {
+                session_info::handle(self, req).await
+            }
+            req @ (Request::ListConnectors { .. } | Request::CheckConnectors { .. }) => {
+                mcp::handle(self, req).await
             }
             Request::HookEvent {
                 agent,
@@ -531,11 +570,14 @@ impl State {
                     ErrorCode::Unavailable,
                     format!("Not available for {}", a.label()),
                 ),
-                AgentKind::ClaudeCode | AgentKind::Codex => Response::Transcript(Transcript {
-                    available: false,
-                    turns: Vec::new(),
-                    truncated: false,
-                }),
+                a @ (AgentKind::ClaudeCode | AgentKind::Codex) => {
+                    Response::Transcript(Transcript {
+                        available: false,
+                        turns: Vec::new(),
+                        truncated: false,
+                        source: transcript::source_of(a),
+                    })
+                }
             };
         };
         let Some(home) = self.cfg.home.clone() else {

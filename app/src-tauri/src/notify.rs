@@ -61,10 +61,10 @@ pub struct Focus {
 
 fn prefs(settings: &NotificationSettings, kind: NotificationKind) -> lotse_proto::EventPrefs {
     match kind {
-        NotificationKind::Perm => settings.perm,
-        NotificationKind::Fail => settings.fail,
-        NotificationKind::Done => settings.done,
-        NotificationKind::SubAgentDone => settings.sub_agent_done,
+        NotificationKind::Perm => settings.perm.clone(),
+        NotificationKind::Fail => settings.fail.clone(),
+        NotificationKind::Done => settings.done.clone(),
+        NotificationKind::SubAgentDone => settings.sub_agent_done.clone(),
     }
 }
 

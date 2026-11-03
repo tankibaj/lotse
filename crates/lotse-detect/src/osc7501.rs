@@ -390,6 +390,7 @@ impl Record {
             tool: self.kind.map_or("blocked", ReportKind::as_str).to_owned(),
             summary: summary.chars().take(SUMMARY_MAX_CHARS).collect(),
             always: None,
+            id: None,
         }
     }
 }
@@ -805,6 +806,7 @@ mod tests {
                 tool: "question".into(),
                 summary: "Which db?".into(),
                 always: None,
+                id: None,
             })
         );
         let subs = d.sub_agents.as_ref().unwrap();

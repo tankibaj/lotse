@@ -238,8 +238,188 @@ fn snapshot_mock_reproduces_the_mock_states() {
 }
 
 #[test]
-fn proto_version_is_3() {
-    assert_eq!(PROTO_VERSION, 3);
+fn proto_version_is_4() {
+    assert_eq!(PROTO_VERSION, 4);
+}
+
+/// The TypeScript mirror and the Tauri bridge rely on these exact v4 shapes.
+#[test]
+fn v4_messages_have_the_documented_wire_shape() {
+    use serde_json::json;
+    let sid = SessionId::new("a1");
+
+    let req = Request::GetDiff {
+        session_id: sid.clone(),
+        base: DiffBase::MergeBase,
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        json!({"method": "get_diff", "params": {"session_id": "a1", "base": "merge_base"}})
+    );
+    let req = Request::ListFiles {
+        session_id: sid.clone(),
+        changed_only: true,
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        json!({"method": "list_files", "params": {"session_id": "a1", "changed_only": true}})
+    );
+    let req = Request::ResolvePermission {
+        session_id: sid.clone(),
+        decision: PermDecision::Allow,
+        via: Some(PermVia::Notification),
+        prompt_id: Some("p-1".into()),
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        json!({"method": "resolve_permission", "params": {"session_id": "a1", "decision": "allow",
+            "via": "notification", "prompt_id": "p-1"}})
+    );
+    let req = Request::ExportTranscript {
+        session_id: sid.clone(),
+        format: ExportFormat::JsonLines,
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        json!({"method": "export_transcript", "params": {"session_id": "a1", "format": "json_lines"}})
+    );
+
+    let resp = Response::Connectors(vec![Connector {
+        agent: AgentKind::ClaudeCode,
+        name: "github".into(),
+        transport: "stdio".into(),
+        config_path: "/p/.mcp.json".into(),
+        status: ConnectorStatus::Connected { tools: 12 },
+    }]);
+    assert_eq!(
+        serde_json::to_value(&resp).unwrap(),
+        json!({"kind": "connectors", "data": [{"agent": "claude_code", "name": "github",
+            "transport": "stdio", "config_path": "/p/.mcp.json",
+            "status": {"state": "connected", "tools": 12}}]})
+    );
+    let failed = serde_json::to_value(ConnectorStatus::Failed {
+        reason: "timeout".into(),
+    })
+    .unwrap();
+    assert_eq!(failed, json!({"state": "failed", "reason": "timeout"}));
+    assert_eq!(
+        serde_json::to_value(ConnectorStatus::NeedsAuth).unwrap(),
+        json!({"state": "needs_auth"})
+    );
+
+    let ev = Event::Notification {
+        session_id: sid,
+        kind: NotificationKind::Perm,
+        title: "t".into(),
+        subtitle: "s".into(),
+        body: None,
+        banner: false,
+        sound: true,
+        sound_name: Some("Glass".into()),
+        prompt_id: Some("p-1".into()),
+        at: 7,
+    };
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({"event": "notification", "data": {"session_id": "a1", "kind": "perm", "title": "t",
+            "subtitle": "s", "body": null, "banner": false, "sound": true, "sound_name": "Glass",
+            "prompt_id": "p-1", "at": 7}})
+    );
+}
+
+/// QA: a v3-shaped message, without any field v4 added, still parses and takes the defaults.
+#[test]
+fn v3_shaped_json_without_the_new_fields_still_parses() {
+    use serde_json::{from_value, json};
+
+    let git: GitInfo = from_value(json!({"is_git": true, "branch": "main", "ahead": 1,
+        "dirty": 2, "worktree": false, "worktree_path": null}))
+    .unwrap();
+    assert_eq!(
+        (git.behind, git.added, git.removed, git.pr),
+        (0, 0, 0, None)
+    );
+
+    let perm: PermRequest = from_value(json!({"tool": "Bash", "summary": "ls"})).unwrap();
+    assert_eq!(perm.id, None);
+
+    let req: Request = from_value(
+        json!({"method": "resolve_permission", "params": {"session_id": "a1", "decision": "deny"}}),
+    )
+    .unwrap();
+    assert_eq!(
+        req,
+        Request::ResolvePermission {
+            session_id: SessionId::new("a1"),
+            decision: PermDecision::Deny,
+            via: None,
+            prompt_id: None,
+        }
+    );
+    let req: Request =
+        from_value(json!({"method": "get_diff", "params": {"session_id": "a1"}})).unwrap();
+    assert_eq!(
+        req,
+        Request::GetDiff {
+            session_id: SessionId::new("a1"),
+            base: DiffBase::Head,
+        }
+    );
+
+    let file: DiffFile = from_value(
+        json!({"path": "a.rs", "old_path": null, "status": "modified",
+        "binary": false, "truncated": false, "diff": ""}),
+    )
+    .unwrap();
+    assert_eq!((file.added, file.removed), (0, 0));
+
+    let turn: TranscriptTurn = from_value(json!({"role": "tool", "text": "", "at": null,
+            "tool": {"name": "Bash", "summary": "ls"}}))
+    .unwrap();
+    assert_eq!((turn.approval, turn.sub_agent), (None, None));
+    let tool = turn.tool.unwrap();
+    assert_eq!((tool.status, tool.result), (None, None));
+    let t: Transcript =
+        from_value(json!({"available": true, "turns": [], "truncated": false})).unwrap();
+    assert_eq!(t.source, TranscriptSource::Claude);
+
+    let ev: Event = from_value(json!({"event": "notification", "data": {"session_id": "a1",
+        "kind": "done", "title": "t", "subtitle": "s", "body": null, "sound": false, "at": 1}}))
+    .unwrap();
+    let Event::Notification {
+        banner,
+        sound_name,
+        prompt_id,
+        ..
+    } = ev
+    else {
+        unreachable!()
+    };
+    assert!(banner, "a v3 notification is always a banner");
+    assert_eq!((sound_name, prompt_id), (None, None));
+
+    let prefs: EventPrefs =
+        from_value(json!({"banner": true, "sound": true, "allow_deny": false})).unwrap();
+    assert_eq!(prefs.sound_name, None);
+    let v3_settings = json!({
+        "launch_commands": {"terminal": "$SHELL -l", "claude_code": "claude", "codex": "codex",
+            "opencode": "opencode"},
+        "notifications": {
+            "perm": {"banner": true, "sound": true, "allow_deny": true},
+            "fail": {"banner": true, "sound": true, "allow_deny": false},
+            "done": {"banner": true, "sound": false, "allow_deny": false},
+            "sub_agent_done": {"banner": false, "sound": false, "allow_deny": false},
+            "only_when_unfocused": true, "paused": false},
+        "appearance": {"theme": "auto", "interface_font": "System (SF Pro)",
+            "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13},
+        "scrollback_bytes": 4194304
+    });
+    let s: Settings = from_value(v3_settings).unwrap();
+    assert_eq!(s, Settings::default());
+    assert!(
+        !s.external.pr_status && !s.external.mcp_live,
+        "opt-in: off by default"
+    );
 }
 
 /// The TypeScript mirror and the Tauri bridge rely on these exact shapes.

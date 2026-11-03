@@ -8,6 +8,9 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod review;
+mod tree;
+
 pub use lotse_proto::{DiffFile, DiffStatus, GitDiff, GitInfo};
 
 #[derive(Debug, thiserror::Error)]
@@ -32,7 +35,7 @@ pub enum GitError {
 
 /// `git -C dir …` with a stable environment: English output, no prompts, and no optional index
 /// locks (the status refresh must never race an agent's own `git` calls).
-fn command(dir: &Path) -> Command {
+pub(crate) fn command(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
@@ -70,7 +73,7 @@ where
 
 /// Like [`run`], but reads at most `cap` bytes of stdout: a command that would print more is
 /// stopped. Returns the bytes and whether the output was cut. Errors when git fails on its own.
-fn run_capped<I, S>(dir: &Path, args: I, cap: usize) -> Result<(Vec<u8>, bool), GitError>
+pub(crate) fn run_capped<I, S>(dir: &Path, args: I, cap: usize) -> Result<(Vec<u8>, bool), GitError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -115,14 +118,7 @@ fn stderr(o: &Output) -> String {
 }
 
 fn no_git() -> GitInfo {
-    GitInfo {
-        is_git: false,
-        branch: String::new(),
-        ahead: 0,
-        dirty: 0,
-        worktree: false,
-        worktree_path: None,
-    }
+    GitInfo::default()
 }
 
 /// Where `dir` sits in a repository: work-tree root, own git dir, shared git dir.
@@ -201,6 +197,11 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         dirty,
         worktree,
         worktree_path: worktree.then(|| l.toplevel.to_string_lossy().into_owned()),
+        // TODO(beta-wp04): behind and +/- from `review`; `pr` is filled by lotsed (opt-in)
+        behind: 0,
+        added: 0,
+        removed: 0,
+        pr: None,
     })
 }
 
@@ -294,6 +295,8 @@ pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitD
         binary: false,
         truncated: false,
         diff: String::new(),
+        added: 0,
+        removed: 0,
     }));
     Ok(GitDiff {
         is_git: true,
@@ -375,6 +378,9 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
         binary,
         truncated: !binary && diff.len() < section.len(),
         diff,
+        // TODO(beta-wp04): count the +/- lines of the section
+        added: 0,
+        removed: 0,
     }
 }
 
