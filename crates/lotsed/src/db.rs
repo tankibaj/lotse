@@ -4,11 +4,14 @@
 //! A database written by a newer daemon is refused, never downgraded.
 
 use lotse_proto::{
-    AgentKind, NotificationMode, Project, ProjectId, SessionId, Settings, UnixMs, Workspace,
-    WorkspaceId,
+    AgentKind, NotificationMode, PermDecision, PermVia, Project, ProjectId, SessionId, Settings,
+    Status, UnixMs, Workspace, WorkspaceId,
 };
 use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 pub const DEFAULT_WORKSPACE: &str = "w1";
@@ -52,6 +55,31 @@ const MIGRATIONS: &[&str] = &[
          path TEXT PRIMARY KEY,
          seen_at INTEGER NOT NULL
      );",
+    // v3 (beta): history. No foreign keys to `sessions`: those rows are dropped at every daemon
+    // start, the history stays for 30 days. `to_ms` NULL = still open. `sub_agent_id` NULL = the
+    // session's own agent. Forward-only; rollback = restore `lotse.db.bak-v2` (written before this runs).
+    "CREATE TABLE status_spans (
+         id INTEGER PRIMARY KEY,
+         session_id TEXT NOT NULL,
+         sub_agent_id TEXT,
+         status TEXT NOT NULL,
+         from_ms INTEGER NOT NULL,
+         to_ms INTEGER
+     );
+     CREATE INDEX status_spans_session ON status_spans(session_id, from_ms);
+     CREATE TABLE perm_events (
+         id INTEGER PRIMARY KEY,
+         session_id TEXT NOT NULL,
+         prompt_id TEXT NOT NULL,
+         tool TEXT NOT NULL,
+         summary TEXT NOT NULL,
+         asked_at INTEGER NOT NULL,
+         decided_at INTEGER,
+         decision TEXT,
+         via TEXT
+     );
+     CREATE UNIQUE INDEX perm_events_prompt ON perm_events(session_id, prompt_id);
+     ALTER TABLE transcripts ADD COLUMN session_id TEXT;",
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -85,15 +113,49 @@ pub struct SessionRow {
     pub last_activity: UnixMs,
 }
 
+/// One stretch of a session's (or one sub-agent's) status. `to_ms: None` = still open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanRow {
+    pub sub_agent_id: Option<String>,
+    pub status: Status,
+    pub from_ms: UnixMs,
+    pub to_ms: Option<UnixMs>,
+}
+
+/// A permission prompt and how it ended. `decision`/`via` stay `None` when it was answered in the
+/// terminal (`decided_at` is then when the prompt went away) or when the daemon stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermEventRow {
+    pub session_id: SessionId,
+    pub prompt_id: String,
+    pub tool: String,
+    pub summary: String,
+    pub asked_at: UnixMs,
+    pub decided_at: Option<UnixMs>,
+    pub decision: Option<PermDecision>,
+    pub via: Option<PermVia>,
+}
+
 pub struct Db {
     conn: Mutex<Connection>,
+    /// Set by the first [`Db::claim_history_recorder`].
+    recorder_claimed: AtomicBool,
+    /// Set by [`Db::close_all_open`] when the daemon stops.
+    history_stopped: AtomicBool,
 }
 
 impl Db {
-    /// Open (creating with mode 0600) and migrate.
+    /// Open (creating with mode 0600) and migrate. An existing database that is about to be
+    /// migrated is copied to `<path>.bak-v<old version>` first (0600, same folder); without the
+    /// copy the migration does not run.
     pub fn open(path: &Path) -> DbResult<Self> {
         crate::secure::open_private(path)?;
-        Self::init(Connection::open(path)?)
+        let conn = Connection::open(path)?;
+        let current: u32 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if current > 0 && (current as usize) < MIGRATIONS.len() {
+            back_up(path, current)?;
+        }
+        Self::init(conn)
     }
 
     pub fn open_in_memory() -> DbResult<Self> {
@@ -105,6 +167,8 @@ impl Db {
         migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            recorder_claimed: AtomicBool::new(false),
+            history_stopped: AtomicBool::new(false),
         })
     }
 
@@ -217,6 +281,300 @@ impl Db {
         let mut stmt = conn.prepare("SELECT path FROM transcripts ORDER BY seen_at, path")?;
         let rows = stmt.query_map([], |r| r.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Remember which session announced a transcript (usage per session, spend per project).
+    pub fn tag_transcript(&self, path: &str, session: &SessionId) -> DbResult<()> {
+        self.conn().execute(
+            "UPDATE transcripts SET session_id = ?2 WHERE path = ?1 AND session_id IS NOT ?2",
+            params![path, session.as_str()],
+        )?;
+        Ok(())
+    }
+
+    /// Every remembered transcript path (unlike [`Self::recent_transcripts`], drops nothing).
+    pub fn all_transcripts(&self) -> DbResult<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT path FROM transcripts ORDER BY seen_at, path")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    // history: status spans and permission events
+
+    /// Move the lane (`sub_agent` `None` = the session's own agent) to `status` at `at`: the open
+    /// span ends and a new one begins. The status it already has changes nothing. A span never ends
+    /// before it began (`at` earlier than its start is taken as its start).
+    pub fn transition_span(
+        &self,
+        session: &SessionId,
+        sub_agent: Option<&str>,
+        status: Status,
+        at: UnixMs,
+    ) -> DbResult<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let open: Option<(String, i64)> = tx
+            .query_row(
+                "SELECT status, from_ms FROM status_spans
+                 WHERE session_id = ?1 AND sub_agent_id IS ?2 AND to_ms IS NULL
+                 ORDER BY id DESC LIMIT 1",
+                params![session.as_str(), sub_agent],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let status = enum_str(&status);
+        let mut from = at as i64;
+        if let Some((current, began)) = open {
+            if current == status {
+                return Ok(());
+            }
+            from = from.max(began);
+            tx.execute(
+                "UPDATE status_spans SET to_ms = max(?3, from_ms)
+                 WHERE session_id = ?1 AND sub_agent_id IS ?2 AND to_ms IS NULL",
+                params![session.as_str(), sub_agent, from],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO status_spans (session_id, sub_agent_id, status, from_ms) VALUES (?1, ?2, ?3, ?4)",
+            params![session.as_str(), sub_agent, status, from],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// End every open span of the session (its own agent and sub-agents) at `at`.
+    pub fn close_session_spans(&self, session: &SessionId, at: UnixMs) -> DbResult<usize> {
+        Ok(self.conn().execute(
+            "UPDATE status_spans SET to_ms = max(?2, from_ms) WHERE session_id = ?1 AND to_ms IS NULL",
+            params![session.as_str(), at as i64],
+        )?)
+    }
+
+    /// End the open sub-agent spans of the session whose sub-agent is not in `keep`.
+    pub fn close_other_sub_agent_spans(
+        &self,
+        session: &SessionId,
+        keep: &[&str],
+        at: UnixMs,
+    ) -> DbResult<usize> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT sub_agent_id FROM status_spans
+             WHERE session_id = ?1 AND sub_agent_id IS NOT NULL AND to_ms IS NULL",
+        )?;
+        let open: Vec<String> = stmt
+            .query_map([session.as_str()], |r| r.get(0))?
+            .collect::<Result<_, _>>()?;
+        let mut closed = 0;
+        for id in open.iter().filter(|id| !keep.contains(&id.as_str())) {
+            closed += conn.execute(
+                "UPDATE status_spans SET to_ms = max(?3, from_ms)
+                 WHERE session_id = ?1 AND sub_agent_id = ?2 AND to_ms IS NULL",
+                params![session.as_str(), id, at as i64],
+            )?;
+        }
+        Ok(closed)
+    }
+
+    /// The daemon is stopping: every open span ends at `at`, and the recorder writes nothing more
+    /// (the sessions' exit events must not open spans again or "answer" a prompt). Open permission
+    /// questions stay as they are: undecided, `decided_at` `None`.
+    pub fn close_all_open(&self, at: UnixMs) -> DbResult<usize> {
+        self.history_stopped.store(true, Ordering::Release);
+        Ok(self.conn().execute(
+            "UPDATE status_spans SET to_ms = max(?1, from_ms) WHERE to_ms IS NULL",
+            [at as i64],
+        )?)
+    }
+
+    /// The daemon starts and finds spans the previous run never closed (it crashed, or the machine
+    /// went down): each ends at the last time its session recorded anything (a span or a question
+    /// begun or ended), not at this start, so the dead time is not counted. Open questions stay
+    /// undecided. Returns the spans closed.
+    pub fn close_leftover_spans(&self) -> DbResult<usize> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let sessions: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT DISTINCT session_id FROM status_spans WHERE to_ms IS NULL")?;
+            stmt.query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        let mut closed = 0;
+        for session in sessions {
+            let latest = |sql: &str| -> rusqlite::Result<i64> {
+                tx.query_row(sql, [&session], |r| r.get::<_, Option<i64>>(0))
+                    .map(|v| v.unwrap_or(0))
+            };
+            let last = [
+                latest("SELECT max(from_ms) FROM status_spans WHERE session_id = ?1")?,
+                latest("SELECT max(to_ms) FROM status_spans WHERE session_id = ?1")?,
+                latest("SELECT max(asked_at) FROM perm_events WHERE session_id = ?1")?,
+                latest("SELECT max(decided_at) FROM perm_events WHERE session_id = ?1")?,
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+            closed += tx.execute(
+                "UPDATE status_spans SET to_ms = max(?2, from_ms)
+                 WHERE session_id = ?1 AND to_ms IS NULL",
+                params![session, last],
+            )?;
+        }
+        tx.commit()?;
+        Ok(closed)
+    }
+
+    /// After [`Self::close_all_open`]: the history is final for this run.
+    pub fn history_stopped(&self) -> bool {
+        self.history_stopped.load(Ordering::Acquire)
+    }
+
+    /// `true` once per database object: the caller is the one that installs the history recorder.
+    pub fn claim_history_recorder(&self) -> bool {
+        !self.recorder_claimed.swap(true, Ordering::AcqRel)
+    }
+
+    /// The session's spans in time order, every lane.
+    pub fn list_spans(&self, session: &SessionId) -> DbResult<Vec<SpanRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT sub_agent_id, status, from_ms, to_ms FROM status_spans
+             WHERE session_id = ?1 ORDER BY from_ms, id",
+        )?;
+        let rows = stmt.query_map([session.as_str()], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (sub_agent_id, status, from, to) = row?;
+            out.push(SpanRow {
+                sub_agent_id,
+                status: enum_from(&status)?,
+                from_ms: from as u64,
+                to_ms: to.map(|t| t as u64),
+            });
+        }
+        Ok(out)
+    }
+
+    /// A prompt was put to the user. The same prompt again changes nothing; a new prompt ends a
+    /// question of the session that is still open (the old one went away without a word to us).
+    pub fn insert_perm_event(
+        &self,
+        session: &SessionId,
+        prompt_id: &str,
+        tool: &str,
+        summary: &str,
+        asked_at: UnixMs,
+    ) -> DbResult<()> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE perm_events SET decided_at = max(?3, asked_at)
+             WHERE session_id = ?1 AND decided_at IS NULL AND prompt_id != ?2",
+            params![session.as_str(), prompt_id, asked_at as i64],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO perm_events (session_id, prompt_id, tool, summary, asked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session.as_str(), prompt_id, tool, summary, asked_at as i64],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Stamp the decision and where it came from on the prompt it answered (`prompt_id`, else the
+    /// session's latest one without a decision). `decided_at` keeps an earlier stamp (the prompt went
+    /// away first). `false` when no such prompt is on record.
+    pub fn decide_perm_event(
+        &self,
+        session: &SessionId,
+        prompt_id: Option<&str>,
+        decision: PermDecision,
+        via: Option<PermVia>,
+        at: UnixMs,
+    ) -> DbResult<bool> {
+        let n = self.conn().execute(
+            "UPDATE perm_events
+             SET decision = ?3, via = ?4, decided_at = max(COALESCE(decided_at, ?5), asked_at)
+             WHERE id = (SELECT id FROM perm_events
+                         WHERE session_id = ?1 AND decision IS NULL AND (?2 IS NULL OR prompt_id = ?2)
+                         ORDER BY id DESC LIMIT 1)",
+            params![
+                session.as_str(),
+                prompt_id,
+                enum_str(&decision),
+                via.map(|v| enum_str(&v)),
+                at as i64
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// The prompt went away without a decision from Lotse (answered in the terminal, or the session
+    /// ended): stamp `decided_at` on the session's open questions.
+    pub fn end_perm_events(&self, session: &SessionId, at: UnixMs) -> DbResult<usize> {
+        Ok(self.conn().execute(
+            "UPDATE perm_events SET decided_at = max(?2, asked_at)
+             WHERE session_id = ?1 AND decided_at IS NULL",
+            params![session.as_str(), at as i64],
+        )?)
+    }
+
+    pub fn list_perm_events(&self, session: &SessionId) -> DbResult<Vec<PermEventRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT prompt_id, tool, summary, asked_at, decided_at, decision, via
+             FROM perm_events WHERE session_id = ?1 ORDER BY asked_at, id",
+        )?;
+        let rows = stmt.query_map([session.as_str()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (prompt_id, tool, summary, asked_at, decided_at, decision, via) = row?;
+            out.push(PermEventRow {
+                session_id: session.clone(),
+                prompt_id,
+                tool,
+                summary,
+                asked_at: asked_at as u64,
+                decided_at: decided_at.map(|t| t as u64),
+                decision: decision.as_deref().map(enum_from).transpose()?,
+                via: via.as_deref().map(enum_from).transpose()?,
+            });
+        }
+        Ok(out)
+    }
+
+    /// Drop history that ended before `before` (spans by their end, questions by when asked).
+    pub fn prune_history(&self, before: UnixMs) -> DbResult<usize> {
+        let conn = self.conn();
+        let spans = conn.execute(
+            "DELETE FROM status_spans WHERE to_ms IS NOT NULL AND to_ms < ?1",
+            [before as i64],
+        )?;
+        let asked = conn.execute(
+            "DELETE FROM perm_events WHERE asked_at < ?1",
+            [before as i64],
+        )?;
+        Ok(spans + asked)
     }
 
     // projects
@@ -424,6 +782,31 @@ fn migrate(conn: &Connection) -> DbResult<()> {
     Ok(())
 }
 
+/// Copy the database next to itself before a migration (rollback = stop lotsed, put it back).
+fn back_up(path: &Path, version: u32) -> DbResult<()> {
+    let name = path.file_name().map_or_else(
+        || "lotse.db".to_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let target = path.with_file_name(format!("{name}.bak-v{version}"));
+    std::fs::copy(path, &target)?;
+    crate::secure::set_mode(&target, 0o600)?;
+    Ok(())
+}
+
+/// The snake_case name an enum serializes to (how `AgentKind` is stored too).
+fn enum_str<T: Serialize>(v: &T) -> String {
+    serde_json::to_value(v)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+
+fn enum_from<T: DeserializeOwned>(s: &str) -> DbResult<T> {
+    serde_json::from_value(serde_json::Value::String(s.to_owned()))
+        .map_err(|_| DbError::Corrupt(format!("unknown value {s:?}")))
+}
+
 fn workspace_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Workspace> {
     Ok(Workspace {
         id: WorkspaceId::new(r.get::<_, String>(0)?),
@@ -617,7 +1000,7 @@ mod tests {
         let version: u32 = conn
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, 3, "migrate runs every later migration too");
         let projects: i64 = conn
             .query_row("SELECT count(*) FROM projects", [], |r| r.get(0))
             .unwrap();
@@ -627,8 +1010,12 @@ mod tests {
                 .is_err(),
             "names are unique, case-insensitive"
         );
-        conn.execute("INSERT INTO transcripts VALUES ('/x.jsonl', 1)", [])
-            .unwrap();
+        // named columns: v3 added `session_id` to this table
+        conn.execute(
+            "INSERT INTO transcripts (path, seen_at) VALUES ('/x.jsonl', 1)",
+            [],
+        )
+        .unwrap();
     }
 
     #[test]

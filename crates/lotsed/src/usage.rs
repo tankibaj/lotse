@@ -251,6 +251,8 @@ struct Inner {
     files: HashMap<PathBuf, FileState>,
     persisted: HashMap<PathBuf, Instant>,
     last: UsageToday,
+    /// Cost of the priced messages only (`last.cost_micros` is `None` when any is unpriced).
+    priced_micros: u64,
 }
 
 /// See the module docs. Cheap to share: every method takes `&self`.
@@ -276,6 +278,7 @@ impl UsageTracker {
                     cost_micros: Some(0),
                     ..UsageToday::default()
                 },
+                priced_micros: 0,
             }),
         }
     }
@@ -302,6 +305,13 @@ impl UsageTracker {
     /// The total of the last [`Self::refresh`] (no file access).
     pub fn current(&self) -> UsageToday {
         self.lock().last.clone()
+    }
+
+    /// The cost of the last [`Self::refresh`] over the messages that have a price, in millionths of
+    /// a dollar: [`UsageToday::cost_micros`] without the all-or-nothing `None` (the per-session
+    /// panel shows a partial figure next to `priced: false`).
+    pub fn priced_micros(&self) -> u64 {
+        self.lock().priced_micros
     }
 
     /// Read what changed in the followed transcripts and recompute today's total. `Some(total)` when
@@ -352,6 +362,7 @@ impl UsageTracker {
             cache_write_tokens: total.cache_write,
             cost_micros: (!total.unpriced).then_some((total.cost / 1_000_000) as u64),
         };
+        g.priced_micros = (total.cost / 1_000_000) as u64;
         if usage == g.last {
             return None;
         }
