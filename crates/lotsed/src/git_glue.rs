@@ -1,6 +1,8 @@
 //! `lotse-git` wired into the daemon: git line of a session, isolated worktrees.
 
 use crate::git::is_git_repo;
+use crate::launch::LaunchEnv;
+use crate::pr;
 use lotse_proto::GitInfo;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +16,19 @@ pub fn info(dir: &Path) -> GitInfo {
             ..GitInfo::default()
         }
     })
+}
+
+/// [`info`] plus the branch's pull request. `pr_env` is `Some` only while Settings › External ›
+/// PR status is on; then this may run `gh` / `glab` (see [`crate::pr::status`]: up to 5 s on a
+/// cache miss, one miss per branch and minute), so it stays off the async runtime too.
+pub fn info_with_pr(dir: &Path, pr_env: Option<&LaunchEnv>) -> GitInfo {
+    let mut git = info(dir);
+    if git.is_git
+        && let Some(env) = pr_env
+    {
+        git.pr = pr::status(dir, &git.branch, env);
+    }
+    git
 }
 
 /// The folder a new session runs in: `repo` itself, or a new isolated worktree for `branch`
