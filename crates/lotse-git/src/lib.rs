@@ -6,7 +6,7 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 pub mod review;
 mod tree;
@@ -86,16 +86,32 @@ where
         .stderr(Stdio::null())
         .spawn()
         .map_err(spawn_error)?;
+    let stdout: Box<dyn Read> = match child.stdout.take() {
+        Some(stdout) => Box::new(stdout),
+        None => Box::new(std::io::empty()),
+    };
+    collect_capped(&mut child, stdout, cap)
+}
+
+/// The body of [`run_capped`]: reads `stdout` of `child`, then kills (when the output was cut or
+/// unreadable) and reaps it on every path: an early return would leave a zombie.
+fn collect_capped(
+    child: &mut Child,
+    stdout: impl Read,
+    cap: usize,
+) -> Result<(Vec<u8>, bool), GitError> {
     let mut out = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        stdout.take(cap as u64 + 1).read_to_end(&mut out)?;
-    }
+    let read = stdout.take(cap as u64 + 1).read_to_end(&mut out);
     let cut = out.len() > cap;
     if cut {
         out.truncate(cap);
+    }
+    if cut || read.is_err() {
         let _ = child.kill();
     }
-    let status = child.wait()?;
+    let status = child.wait();
+    read?;
+    let status = status?;
     if !cut && !status.success() {
         return Err(GitError::Command(format!("git exited with {status}")));
     }
@@ -350,6 +366,69 @@ fn cut_text(s: &str, max: usize) -> &str {
     head.rfind('\n').map_or(head, |i| &head[..=i])
 }
 
+/// A path git wrote C-quoted at the start of `s` (`"a/notes \"draft\".md"`, even with
+/// `core.quotepath=false`: a quote, backslash, tab or control character quotes it): the path, and
+/// the bytes of `s` it took, closing quote included. `None` when `s` does not start with a
+/// well-formed quoted path.
+fn unquote_prefix(s: &str) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'"') {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut i = 1;
+    while i < b.len() {
+        match b[i] {
+            b'"' => return Some((String::from_utf8_lossy(&out).into_owned(), i + 1)),
+            b'\\' => {
+                i += 1;
+                match *b.get(i)? {
+                    b'a' => out.push(7),
+                    b'b' => out.push(8),
+                    b't' => out.push(b'\t'),
+                    b'n' => out.push(b'\n'),
+                    b'v' => out.push(11),
+                    b'f' => out.push(12),
+                    b'r' => out.push(b'\r'),
+                    c @ (b'\\' | b'"') => out.push(c),
+                    // three octal digits: one byte (a multi-byte character is several)
+                    b'0'..=b'3' => {
+                        let digits = b.get(i..i + 3)?;
+                        if !digits.iter().all(|d| (b'0'..=b'7').contains(d)) {
+                            return None;
+                        }
+                        out.push(digits.iter().fold(0, |v, d| v << 3 | (d - b'0')));
+                        i += 2;
+                    }
+                    _ => return None,
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A path as git prints it after a keyword, quoted or not.
+fn unquote(s: &str) -> String {
+    match unquote_prefix(s) {
+        Some((path, n)) if n == s.len() => path,
+        _ => s.to_string(),
+    }
+}
+
+/// The path of a `--- a/<path>` / `+++ b/<path>` header (`p` is what follows the three signs and
+/// the space), quoted or not; `None` for `/dev/null`.
+fn side_path(p: &str, prefix: &str) -> Option<String> {
+    match unquote_prefix(p) {
+        Some((path, _)) => path.strip_prefix(prefix).map(str::to_string),
+        None => p
+            .strip_prefix(prefix)
+            .map(|path| path.trim_end_matches('\t').to_string()),
+    }
+}
+
 fn parse_section(section: &str, max_file: usize) -> DiffFile {
     let (mut status, mut binary) = (DiffStatus::Modified, false);
     let (mut rename_from, mut rename_to, mut minus, mut plus) = (None, None, None, None);
@@ -358,17 +437,17 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
             break; // the headers end at the first hunk
         }
         if let Some(p) = line.strip_prefix("rename from ") {
-            rename_from = Some(p.to_string());
+            rename_from = Some(unquote(p));
         } else if let Some(p) = line.strip_prefix("rename to ") {
-            rename_to = Some(p.to_string());
+            rename_to = Some(unquote(p));
         } else if line.starts_with("new file mode") {
             status = DiffStatus::Added;
         } else if line.starts_with("deleted file mode") {
             status = DiffStatus::Deleted;
-        } else if let Some(p) = line.strip_prefix("--- a/") {
-            minus = Some(p.trim_end_matches('\t').to_string());
-        } else if let Some(p) = line.strip_prefix("+++ b/") {
-            plus = Some(p.trim_end_matches('\t').to_string());
+        } else if let Some(p) = line.strip_prefix("--- ") {
+            minus = side_path(p, "a/");
+        } else if let Some(p) = line.strip_prefix("+++ ") {
+            plus = side_path(p, "b/");
         } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
             binary = true;
         }
@@ -376,11 +455,20 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
     if rename_to.is_some() {
         status = DiffStatus::Renamed;
     }
-    // `diff --git a/<path> b/<path>`: both halves are equal unless the file was renamed
+    // `diff --git a/<path> b/<path>` (each half quoted on its own when it needs it): both halves
+    // are equal unless the file was renamed; the new side is read
     let from_header = || {
-        let rest = section.lines().next()?.strip_prefix("diff --git a/")?;
-        rest.get(..rest.len().checked_sub(3)? / 2)
-            .map(str::to_string)
+        let rest = section.lines().next()?.strip_prefix("diff --git ")?;
+        let new_side = if rest.starts_with('"') {
+            let (_, n) = unquote_prefix(rest)?;
+            rest[n..].strip_prefix(' ')?
+        } else if let Some(i) = rest.find(" \"") {
+            &rest[i + 1..]
+        } else {
+            let half = rest.len().checked_sub(1)? / 2;
+            rest.get(half + 1..)?
+        };
+        side_path(new_side, "b/")
     };
     let path = rename_to
         .or(plus)
@@ -878,6 +966,80 @@ mod tests {
         let bin = file(&diff, "img.bin");
         assert!(bin.binary && bin.diff.is_empty(), "{bin:?}");
         assert_eq!(bin.status, DiffStatus::Modified);
+    }
+
+    /// git C-quotes a path with a quote, backslash, tab or control character even with
+    /// `core.quotepath=false`: `--- "a/notes \"draft\".md"`.
+    #[test]
+    fn diff_unquotes_paths_git_quotes() {
+        let d = repo();
+        let odd = ["notes \"draft\".md", "tab\there.md", "back\\slash.md"];
+        for name in odd {
+            write(d.path(), name, "one\n");
+        }
+        write(
+            d.path(),
+            "old \"q\".md",
+            "same content\nline two\nline three\n",
+        );
+        git(d.path(), &["add", "."]);
+        git(d.path(), &["commit", "-q", "-m", "odd names"]);
+        for name in odd {
+            write(d.path(), name, "two\n"); // `---` / `+++` header lines
+        }
+        git(d.path(), &["mv", "old \"q\".md", "new \"q\".md"]);
+        write(d.path(), "empty \"new\".txt", ""); // no `---` / `+++`: only the `diff --git` line
+        git(d.path(), &["add", "empty \"new\".txt"]);
+        let diff = diff(d.path()).unwrap();
+        let paths: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
+        for name in odd {
+            assert!(paths.contains(&name), "{name:?} not in {paths:?}");
+            let f = file(&diff, name);
+            assert_eq!((f.status, f.added, f.removed), (DiffStatus::Modified, 1, 1));
+        }
+        let renamed = file(&diff, "new \"q\".md");
+        assert_eq!(renamed.status, DiffStatus::Renamed);
+        assert_eq!(renamed.old_path.as_deref(), Some("old \"q\".md"));
+        let empty = file(&diff, "empty \"new\".txt");
+        assert_eq!(empty.status, DiffStatus::Added);
+        assert!(diff.files.iter().all(|f| !f.path.is_empty()), "{paths:?}");
+    }
+
+    #[test]
+    fn a_stdout_read_error_still_kills_and_reaps_the_child() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("boom"))
+            }
+        }
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert!(matches!(
+            collect_capped(&mut child, Broken, 10),
+            Err(GitError::Io(_))
+        ));
+        // reaped already (a child left running or unwaited answers `None` or is still alive)
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "the child was left running"
+        );
+    }
+
+    #[test]
+    fn git_quoting_is_undone_like_git_does_it() {
+        let q = unquote_prefix;
+        assert_eq!(q(r#""a\"b" tail"#), Some(("a\"b".to_string(), 6)));
+        assert_eq!(q(r#""t\tn\nb\\""#), Some(("t\tn\nb\\".to_string(), 11)));
+        // octal escapes are bytes: `é` is \303\251
+        assert_eq!(q(r#""caf\303\251""#), Some(("café".to_string(), 13)));
+        assert_eq!(q("plain"), None);
+        assert_eq!(q(r#""open"#), None);
+        assert_eq!(q(r#""bad\q""#), None);
+        assert_eq!(q(r#""\4""#), None);
     }
 
     #[test]

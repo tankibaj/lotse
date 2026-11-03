@@ -23,7 +23,7 @@ use nix::unistd::Pid;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -225,6 +225,39 @@ struct Inner {
     /// Feeds the status engine (hooks, OSC 7501, screen, process).
     detector: Detector,
     limiter: NotifyLimiter,
+    /// Hook payloads handed to the detector so far: a foreground sample older than the latest one
+    /// is stale (see [`FgSample`]).
+    hooks_applied: u64,
+}
+
+/// A transcript a hook announced: the string as announced and the validated (canonical) path.
+struct Announced {
+    agent: AgentKind,
+    /// Compared with the next hook's string: the canonical `path` differs from it whenever the
+    /// announced one goes through a link (`/var` → `/private/var`).
+    raw: String,
+    path: PathBuf,
+}
+
+/// A foreground process group read under the lock, before its (slow) name lookup.
+#[derive(Clone, Copy)]
+struct FgSample {
+    pgid: i32,
+    /// `Inner::hooks_applied` when it was read.
+    hooks: u64,
+}
+
+impl Inner {
+    fn foreground_pgid(&self) -> Option<i32> {
+        self.live
+            .as_ref()
+            .and_then(|l| l.master.process_group_leader())
+    }
+
+    /// `true` when no hook was applied and the foreground group did not change since `sample`.
+    fn is_current(&self, sample: &FgSample) -> bool {
+        self.hooks_applied == sample.hooks && self.foreground_pgid() == Some(sample.pgid)
+    }
 }
 
 pub struct SessionHandle {
@@ -232,7 +265,7 @@ pub struct SessionHandle {
     ctx: Ctx,
     activity: Activity,
     /// The agent's transcript file, as its latest hook announced it (validated).
-    transcript: Mutex<Option<(AgentKind, PathBuf)>>,
+    transcript: Mutex<Option<Announced>>,
     inner: Mutex<Inner>,
 }
 
@@ -331,6 +364,7 @@ impl SessionHandle {
                 closing: false,
                 got_output: false,
                 perm_options_stale: false,
+                hooks_applied: 0,
                 spec,
             }),
         });
@@ -458,6 +492,7 @@ impl SessionHandle {
             if g.closing || g.live.is_none() {
                 return;
             }
+            g.hooks_applied += 1;
             let update = g.detector.on_hook(agent, payload, at);
             self.apply(&mut g, update.into_iter().collect())
         };
@@ -473,21 +508,25 @@ impl SessionHandle {
         let Some(raw) = payload.get("transcript_path").and_then(|v| v.as_str()) else {
             return;
         };
-        if self
-            .transcript()
-            .is_some_and(|(a, p)| a == agent && p == Path::new(raw))
-        {
-            return; // the same file as the last hook: already checked
-        }
-        let Some(path) = self
-            .ctx
-            .home
-            .as_deref()
-            .and_then(|home| transcript::validate_path(raw, home))
-        else {
+        // the same string as the last hook: already validated (no `canonicalize` per hook)
+        let known = self
+            .transcript
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|t| t.agent == agent && t.raw == raw)
+            .map(|t| t.path.clone());
+        let repeat = known.is_some();
+        let Some(path) = known.or_else(|| {
+            self.ctx
+                .home
+                .as_deref()
+                .and_then(|home| transcript::validate_path(raw, home))
+        }) else {
             tracing::debug!("session {}: transcript path refused", self.id);
             return;
         };
+        // a repeat too: the tracker decides when the path is worth writing again (retention)
         if agent == AgentKind::ClaudeCode && self.ctx.usage.add(path.clone()) {
             let now = now_ms();
             if let Err(e) = self
@@ -498,7 +537,13 @@ impl SessionHandle {
                 tracing::warn!("remembering a transcript path: {e}");
             }
         }
-        *self.transcript.lock().unwrap_or_else(|e| e.into_inner()) = Some((agent, path));
+        if !repeat {
+            *self.transcript.lock().unwrap_or_else(|e| e.into_inner()) = Some(Announced {
+                agent,
+                raw: raw.to_owned(),
+                path,
+            });
+        }
     }
 
     /// The agent and transcript file its hooks announced, once one has.
@@ -506,11 +551,17 @@ impl SessionHandle {
         self.transcript
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .as_ref()
+            .map(|t| (t.agent, t.path.clone()))
     }
 
     /// About every 100 ms: foreground process, screen sample, clock tick.
     pub fn tick(&self) {
+        self.tick_with(process_name);
+    }
+
+    /// [`Self::tick`] with the executable-name lookup (a `ps`, run off the lock) swapped out.
+    fn tick_with(&self, name_of: impl FnOnce(i32) -> Option<String>) {
         let seen = self.activity.count();
         if self.activity.skip_tick() {
             return;
@@ -530,21 +581,27 @@ impl SessionHandle {
                 self.activity.ticked(seen, true);
                 return;
             }
-            let pgid = g
-                .live
-                .as_ref()
-                .and_then(|l| l.master.process_group_leader());
-            (pgid != g.detector.fg_pgid).then_some(pgid).flatten()
+            let pgid = g.foreground_pgid();
+            (pgid != g.detector.fg_pgid)
+                .then_some(pgid)
+                .flatten()
+                .map(|pgid| FgSample {
+                    pgid,
+                    hooks: g.hooks_applied,
+                })
         };
-        let name = changed.map(|pgid| (pgid, process_name(pgid)));
+        let name = changed.map(|sample| (sample, name_of(sample.pgid)));
         let (triggers, quiet) = {
             let mut g = self.lock();
             if g.closing || g.live.is_none() {
                 return;
             }
             let mut updates = Vec::new();
-            if let Some((pgid, name)) = name {
-                g.detector.fg_pgid = Some(pgid);
+            // A sample that a hook or a foreground change overtook while `ps` ran is stale: it
+            // must not undo what the hook just said (OpenCode forgets its sub-agents on a shell).
+            // The next tick takes a fresh one.
+            if let Some((sample, name)) = name.filter(|(sample, _)| g.is_current(sample)) {
+                g.detector.fg_pgid = Some(sample.pgid);
                 if let Some(name) = name {
                     updates.extend(g.detector.on_foreground(name, at));
                 }
@@ -1063,6 +1120,7 @@ fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
 mod tests {
     use super::*;
     use lotse_proto::{ProjectId, SessionId};
+    use std::path::Path;
 
     #[test]
     fn git_refresh_is_due_first_then_only_after_activity() {
@@ -1099,6 +1157,10 @@ mod tests {
             usage: Arc::new(UsageTracker::new()),
             home: None,
         };
+        spawn_sh_in(ctx, script)
+    }
+
+    fn spawn_sh_in(ctx: Ctx, script: &str) -> Arc<SessionHandle> {
         let meta = Session {
             id: SessionId::new("s-1"),
             project_id: ProjectId::new("p-1"),
@@ -1129,6 +1191,92 @@ mod tests {
             assert!(Instant::now() < end, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_foreground_sample_overtaken_by_a_hook_is_dropped_and_retaken() {
+        let h = spawn_sh("sleep 5");
+        let prompt = || serde_json::json!({"hook_event_name": "UserPromptSubmit"});
+        h.on_hook(AgentKind::ClaudeCode, prompt());
+        assert_eq!(h.snapshot().status, Status::Run);
+
+        // a hook lands while the name lookup (`ps`) runs: its "sh" is older than the hook
+        h.tick_with(|_| {
+            h.on_hook(AgentKind::ClaudeCode, prompt());
+            Some("sh".into())
+        });
+        assert_eq!(
+            h.snapshot().status,
+            Status::Run,
+            "the stale shell sample won"
+        );
+        assert_eq!(h.lock().detector.fg_pgid, None, "retaken on the next tick");
+
+        // nothing overtook this one: the agent is gone back to the shell
+        h.tick_with(|_| Some("sh".into()));
+        assert_eq!(h.snapshot().status, Status::Idle);
+        assert!(h.lock().detector.fg_pgid.is_some());
+    }
+
+    /// A Claude session whose home holds one transcript; the tracker wants a write on every add.
+    fn claude_with_transcript() -> (Arc<SessionHandle>, Ctx, tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join("t.jsonl");
+        std::fs::write(&file, "").unwrap();
+        let ctx = Ctx {
+            hub: Arc::new(Hub::default()),
+            db: Arc::new(Db::open_in_memory().unwrap()),
+            settings: Arc::new(RwLock::new(Settings::default())),
+            usage: Arc::new(UsageTracker::with_persist_every(Duration::ZERO)),
+            home: Some(home.path().to_path_buf()),
+        };
+        (spawn_sh_in(ctx.clone(), "sleep 5"), ctx, home, file)
+    }
+
+    fn announce(h: &SessionHandle, raw: &Path) {
+        h.on_hook(
+            AgentKind::ClaudeCode,
+            serde_json::json!({"hook_event_name": "Stop", "transcript_path": raw}),
+        );
+    }
+
+    fn remembered(ctx: &Ctx) -> Vec<String> {
+        // `recent_transcripts` drops the rows older than `since`: this takes what was written
+        // since the last call and clears the rest
+        let rows = ctx.db.recent_transcripts(0).unwrap();
+        ctx.db.recent_transcripts(u64::MAX / 2).unwrap();
+        rows
+    }
+
+    #[test]
+    fn a_repeated_transcript_path_still_reaches_the_usage_tracker_for_its_rewrite() {
+        let (h, ctx, _home, file) = claude_with_transcript();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        announce(&h, &canonical);
+        assert_eq!(remembered(&ctx), [canonical.to_string_lossy()]);
+        // the same path again: the tracker (asked to write on every add) refreshes it
+        announce(&h, &canonical);
+        assert_eq!(remembered(&ctx), [canonical.to_string_lossy()]);
+    }
+
+    #[test]
+    fn a_path_through_a_link_is_validated_once_and_compared_as_announced() {
+        let (h, ctx, home, file) = claude_with_transcript();
+        // announced through a link: the same file as `file`, a different string than its canonical path
+        let link = home.path().join("link");
+        std::os::unix::fs::symlink(home.path(), &link).unwrap();
+        let raw = link.join("t.jsonl");
+        assert_ne!(std::fs::canonicalize(&raw).unwrap(), raw);
+        announce(&h, &raw);
+        assert_eq!(
+            h.transcript().map(|(_, p)| p),
+            std::fs::canonicalize(&file).ok()
+        );
+        remembered(&ctx);
+        // gone from disk: a hook that validated again would refuse it and the tracker not hear of it
+        std::fs::remove_file(&file).unwrap();
+        announce(&h, &raw);
+        assert_eq!(remembered(&ctx).len(), 1, "the repeat was validated again");
     }
 
     #[test]

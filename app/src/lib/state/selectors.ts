@@ -114,8 +114,10 @@ export function groupWorkspaces(workspaces: readonly Workspace[], groups: readon
 export function formatTokens(n: number): string {
   const trim = (x: number) => x.toFixed(1).replace(/\.0$/, '');
   if (n < 1_000) return String(n);
-  if (n < 10_000) return `${trim(n / 1_000)}k`;
-  if (n < 1_000_000) return `${Math.round(n / 1_000)}k`;
+  // round first, then pick the unit: 999_500 is `1M`, not `1000k`
+  const k = n / 1_000;
+  if (k < 9.95) return `${trim(k)}k`;
+  if (Math.round(k) < 1_000) return `${Math.round(k)}k`;
   return `${trim(n / 1_000_000)}M`;
 }
 

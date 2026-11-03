@@ -258,6 +258,9 @@ struct Inner {
 /// See the module docs. Cheap to share: every method takes `&self`.
 pub struct UsageTracker {
     inner: Mutex<Inner>,
+    /// Held for a whole [`UsageTracker::refresh`]; `inner` only for its short lock-held steps.
+    refreshing: Mutex<()>,
+    persist_every: Duration,
 }
 
 impl Default for UsageTracker {
@@ -268,7 +271,13 @@ impl Default for UsageTracker {
 
 impl UsageTracker {
     pub fn new() -> Self {
+        Self::with_persist_every(PERSIST_EVERY)
+    }
+
+    /// [`Self::add`] asks for a database write of a known path after `persist_every`.
+    pub fn with_persist_every(persist_every: Duration) -> Self {
         Self {
+            persist_every,
             inner: Mutex::new(Inner {
                 day: None,
                 files: HashMap::new(),
@@ -280,6 +289,7 @@ impl UsageTracker {
                 },
                 priced_micros: 0,
             }),
+            refreshing: Mutex::new(()),
         }
     }
 
@@ -294,7 +304,7 @@ impl UsageTracker {
         g.files.entry(path.clone()).or_default();
         let now = Instant::now();
         match g.persisted.get(&path) {
-            Some(at) if now.duration_since(*at) < PERSIST_EVERY => false,
+            Some(at) if now.duration_since(*at) < self.persist_every => false,
             _ => {
                 g.persisted.insert(path, now);
                 true
@@ -317,34 +327,39 @@ impl UsageTracker {
     /// Read what changed in the followed transcripts and recompute today's total. `Some(total)` when
     /// it differs from the previous one.
     pub fn refresh(&self, day: DayBounds) -> Option<UsageToday> {
-        let mut g = self.lock();
-        if g.day != Some(day) {
-            // a new day: everything counted so far belonged to yesterday
-            g.day = Some(day);
-            for f in g.files.values_mut() {
-                *f = FileState::default();
+        self.refresh_with(day, scan_file)
+    }
+
+    /// [`Self::refresh`] with the per-file `stat` and read swapped out. They run without the
+    /// tracker lock, so [`Self::current`] (the snapshot) and [`Self::add`] (the hook path) never
+    /// wait on file I/O: the file states are taken out, scanned, and put back.
+    fn refresh_with(
+        &self,
+        day: DayBounds,
+        scan: impl Fn(&Path, &mut FileState, DayBounds),
+    ) -> Option<UsageToday> {
+        // one refresh at a time: a second would find the taken-out states empty and re-read them
+        let _one = self.refreshing.lock().unwrap_or_else(|e| e.into_inner());
+        let mut work: Vec<(PathBuf, FileState)> = {
+            let mut g = self.lock();
+            if g.day != Some(day) {
+                // a new day: everything counted so far belonged to yesterday
+                g.day = Some(day);
+                for f in g.files.values_mut() {
+                    *f = FileState::default();
+                }
             }
+            g.files
+                .iter_mut()
+                .map(|(path, st)| (path.clone(), std::mem::take(st)))
+                .collect()
+        };
+        for (path, st) in &mut work {
+            scan(path, st, day);
         }
-        let day_start = UNIX_EPOCH + Duration::from_millis(day.start_ms);
-        for (path, st) in g.files.iter_mut() {
-            let Ok(meta) = std::fs::metadata(path) else {
-                continue;
-            };
-            let (len, mtime) = (meta.len(), meta.modified().ok());
-            if mtime.is_some_and(|m| m < day_start) {
-                continue; // last written before today: nothing of today in it
-            }
-            if st.mtime == mtime && st.len == len {
-                continue;
-            }
-            if len < st.offset {
-                *st = FileState::default(); // shorter than what was read: rewritten
-            }
-            if read_new_lines(path, st, day).is_ok() {
-                st.mtime = mtime;
-                st.len = len;
-                st.resum();
-            }
+        let mut g = self.lock();
+        for (path, st) in work {
+            g.files.insert(path, st);
         }
         let mut total = Sum::default();
         for st in g.files.values() {
@@ -368,6 +383,29 @@ impl UsageTracker {
         }
         g.last = usage.clone();
         Some(usage)
+    }
+}
+
+/// Bring one followed file up to date: a `stat`, and a read of what was appended if it changed.
+fn scan_file(path: &Path, st: &mut FileState, day: DayBounds) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return;
+    };
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    let day_start = UNIX_EPOCH + Duration::from_millis(day.start_ms);
+    if mtime.is_some_and(|m| m < day_start) {
+        return; // last written before today: nothing of today in it
+    }
+    if st.mtime == mtime && st.len == len {
+        return;
+    }
+    if len < st.offset {
+        *st = FileState::default(); // shorter than what was read: rewritten
+    }
+    if read_new_lines(path, st, day).is_ok() {
+        st.mtime = mtime;
+        st.len = len;
+        st.resum();
     }
 }
 
@@ -635,6 +673,32 @@ mod tests {
         assert_eq!((u.input_tokens, u.output_tokens), (100, 40));
         // 100 * $3/M + 40 * $5/M
         assert_eq!(u.cost_micros, Some(300 + 200));
+    }
+
+    #[test]
+    fn refresh_scans_files_without_holding_the_tracker_lock() {
+        let (t, d, path) = tracker_with(&line("a", "claude-sonnet-4-5", NOW, (100, 0, 0, 0)));
+        let late = d.path().join("late.jsonl");
+        write_file(&late, &line("b", "claude-sonnet-4-5", NOW, (5, 0, 0, 0)));
+        let scans = std::cell::Cell::new(0);
+        let u = t
+            .refresh_with(DAY, |p, st, day| {
+                assert!(t.inner.try_lock().is_ok(), "the lock is held during a read");
+                // the snapshot and the hook path answer mid-read
+                assert_eq!(t.current().input_tokens, 0);
+                t.add(late.clone());
+                scans.set(scans.get() + 1);
+                scan_file(p, st, day);
+            })
+            .unwrap();
+        assert_eq!(
+            u.input_tokens, 100,
+            "the file read mid-refresh is merged back"
+        );
+        assert_eq!(scans.get(), 1);
+        assert!(t.lock().files.contains_key(&path));
+        // a file added mid-refresh is followed from the next refresh on
+        assert_eq!(t.refresh(DAY).unwrap().input_tokens, 105);
     }
 
     #[test]
