@@ -871,12 +871,13 @@ impl SessionHandle {
     /// status is not touched, the agent's hook or the next screen sample moves it on.
     ///
     /// `prompt_id` (a notification's or card's `PermRequest::id`) must be the open prompt's, so a
-    /// stale banner cannot answer a newer prompt; `None` skips the check.
+    /// stale banner cannot answer a newer prompt; `None` skips the check. Returns the id of the
+    /// prompt that was answered.
     pub fn resolve_permission(
         &self,
         decision: PermDecision,
         prompt_id: Option<&str>,
-    ) -> Result<(), SessionError> {
+    ) -> Result<Option<String>, SessionError> {
         let mut g = self.lock();
         if g.meta.status != Status::Perm {
             return Err(SessionError::NotAtPrompt);
@@ -892,7 +893,8 @@ impl SessionHandle {
             AnswerError::NoPrompt => SessionError::NotAtPrompt,
             AnswerError::NoChoice => SessionError::NoSuchChoice,
         })?;
-        queue_input(g.live.as_ref(), keys.as_bytes())
+        queue_input(g.live.as_ref(), keys.as_bytes())?;
+        Ok(g.meta.perm.as_ref().and_then(|p| p.id.clone()))
     }
 
     /// Programmatic text (first prompt): written like input but never used as a title source.

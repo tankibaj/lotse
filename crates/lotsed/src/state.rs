@@ -5,7 +5,7 @@ use crate::config::Config;
 use crate::db::{DEFAULT_WORKSPACE, Db, DbError, SessionRow};
 use crate::git;
 use crate::git_glue;
-use crate::hub::{ClientTx, Hub};
+use crate::hub::{ClientTx, Hub, PermDecisionRecord};
 use crate::launch::{self, LaunchEnv};
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
@@ -302,17 +302,27 @@ impl State {
             },
             // Types the answer into the pane; Conflict when there is nothing to answer (the UI
             // ignores it) or `prompt_id` names an older prompt. The status moves on by the agent's
-            // hook or the screen, never here. `via` is for the history recorder (wp06).
+            // hook or the screen, never here. A typed answer goes to the hub's decision observers
+            // (the history recorder, wp06) with its `via`; a refused one is not published.
             Request::ResolvePermission {
                 session_id,
                 decision,
-                via: _,
+                via,
                 prompt_id,
             } => match self.session(&session_id) {
                 None => not_found("session"),
-                Some(h) => h
-                    .resolve_permission(decision, prompt_id.as_deref())
-                    .map_or_else(session_err, |()| Response::Ok),
+                Some(h) => match h.resolve_permission(decision, prompt_id.as_deref()) {
+                    Ok(answered) => {
+                        self.hub.publish_decision(&PermDecisionRecord {
+                            session_id,
+                            prompt_id: answered,
+                            decision,
+                            via,
+                        });
+                        Response::Ok
+                    }
+                    Err(e) => session_err(e),
+                },
             },
             Request::Attach {
                 session_id,

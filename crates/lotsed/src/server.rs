@@ -77,6 +77,7 @@ fn is_slow(req: &Request) -> bool {
             | Request::GetUsage { .. }
             | Request::ExportTranscript { .. }
             | Request::GetSessionInfo { .. }
+            | Request::StopTask { .. }
             | Request::ListConnectors { .. }
             | Request::CheckConnectors { .. }
     )
@@ -268,7 +269,8 @@ mod tests {
                 req.method()
             );
         }
-        assert!(!is_slow(&Request::StopTask {
+        // wp08 may re-run `ps` to check the pid before it signals it
+        assert!(is_slow(&Request::StopTask {
             session_id: s(),
             pid: 1
         }));

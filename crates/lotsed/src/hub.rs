@@ -1,7 +1,7 @@
 //! Connected clients and their outbound queues. Everything a client receives (responses, events,
 //! PTY frames) goes through one ordered queue, so an `attached` response always precedes the replay.
 
-use lotse_proto::{Event, Frame, Message};
+use lotse_proto::{Event, Frame, Message, PermDecision, PermVia, SessionId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -72,11 +72,25 @@ impl ClientTx {
 /// never call back into the hub.
 pub type Observer = Box<dyn Fn(&Event) + Send + Sync>;
 
+/// A permission answer the daemon typed into a pane. In-process only: never sent to clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermDecisionRecord {
+    pub session_id: SessionId,
+    /// `PermRequest::id` of the prompt that was answered.
+    pub prompt_id: Option<String>,
+    pub decision: PermDecision,
+    pub via: Option<PermVia>,
+}
+
+/// Same rules as [`Observer`].
+pub type DecisionObserver = Box<dyn Fn(&PermDecisionRecord) + Send + Sync>;
+
 #[derive(Default)]
 pub struct Hub {
     clients: Mutex<HashMap<u64, Arc<ClientTx>>>,
     next_id: AtomicU64,
     observers: RwLock<Vec<Observer>>,
+    decision_observers: RwLock<Vec<DecisionObserver>>,
 }
 
 impl Hub {
@@ -103,6 +117,26 @@ impl Hub {
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .push(observer);
+    }
+
+    /// Register an in-process listener for permission answers (`perm_events.via`). Lives as long as the hub.
+    pub fn observe_decisions(&self, observer: DecisionObserver) {
+        self.decision_observers
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(observer);
+    }
+
+    /// Tell the decision observers (not the clients) that a permission answer was typed.
+    pub fn publish_decision(&self, record: &PermDecisionRecord) {
+        for observer in self
+            .decision_observers
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            observer(record);
+        }
     }
 
     /// Push an event to every connected client (and every observer, in registration order).

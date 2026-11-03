@@ -433,7 +433,9 @@ impl NotifyLimiter {
             slot.window_start = Some(now);
             slot.sent = 0;
         }
-        let new_request = perm.is_some() && perm != slot.last_perm.as_ref();
+        // the same request is not new when only its prompt id changed (Perm, Run, Perm again)
+        let same = |a: &PermRequest, b: &PermRequest| a.tool == b.tool && a.summary == b.summary;
+        let new_request = perm.is_some_and(|p| slot.last_perm.as_ref().is_none_or(|l| !same(p, l)));
         let allowed = slot.sent == 0 || (new_request && slot.sent < MAX_DISTINCT_PERMS);
         if allowed {
             slot.sent += 1;
@@ -588,6 +590,27 @@ mod tests {
             })
             .count();
         assert_eq!(allowed, MAX_DISTINCT_PERMS as usize);
+    }
+
+    /// Perm(X), Run, Perm(X) hands out a new prompt id each time; it is still one request.
+    #[test]
+    fn the_same_request_with_a_new_prompt_id_gets_one_banner_per_window() {
+        let t0 = Instant::now();
+        let ask = |id: &str, summary: &str| {
+            Trigger::Perm(Some(PermRequest {
+                tool: "Bash".into(),
+                summary: summary.into(),
+                always: None,
+                id: Some(id.into()),
+            }))
+        };
+        let mut limiter = NotifyLimiter::default();
+        let allowed = (0..50)
+            .filter(|n| limiter.allow(&ask(&format!("id-{n}"), "ls"), t0))
+            .count();
+        assert_eq!(allowed, 1, "a flapping request is one banner");
+        // a different request still passes inside the window
+        assert!(limiter.allow(&ask("id-x", "rm -rf build"), t0));
     }
 
     #[test]
