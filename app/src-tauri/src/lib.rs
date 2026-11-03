@@ -1,5 +1,5 @@
 //! Tauri shell: the bridge between the webview and `lotsed` (see [`daemon`]), host commands
-//! ([`host`]), installed fonts ([`fonts`]), the app menu ([`menu`]), notifications and the Dock badge
+//! ([`host`]), installed fonts ([`fonts`]), SF Symbols ([`symbols`]), the app menu ([`menu`]), notifications and the Dock badge
 //! ([`notify`]).
 
 pub mod daemon;
@@ -7,6 +7,7 @@ pub mod fonts;
 pub mod host;
 pub mod menu;
 pub mod notify;
+pub mod symbols;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -58,6 +59,7 @@ pub fn run() {
             host::integration_status,
             host::integration_uninstall,
             fonts::list_fonts,
+            symbols::symbol_png,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lotse");

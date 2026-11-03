@@ -42,6 +42,7 @@ import {
   Zap,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
+import { ProjectIcon } from '../sheets/symbols';
 
 /** Swatch keys from the mock palette (`SW` in spec/mock.html). Project colours never use status hues by default. */
 export const SWATCHES: Record<string, string> = {
@@ -107,16 +108,15 @@ export const PROJECT_ICONS: Record<string, LucideIcon> = {
   key: Key,
 };
 
-/** Coloured rounded square with the project's symbol (16 px in the sidebar). */
+/** Coloured rounded square with the project's symbol (16 px in the sidebar): SF Symbol in the app, Lucide in the browser. */
 export function ProjectTile({ color, icon, size = 16 }: { color: string; icon: string; size?: number }) {
-  const Icon = PROJECT_ICONS[icon] ?? Folder;
   return (
     <span
       className="inline-grid flex-none place-items-center rounded-[5px] text-white"
       style={{ width: size, height: size, background: SWATCHES[color] ?? SWATCHES.gray }}
       aria-hidden="true"
     >
-      <Icon size={Math.round(size * 0.68)} strokeWidth={2.4} />
+      <ProjectIcon name={icon} size={Math.round(size * 0.68)} strokeWidth={2.4} />
     </span>
   );
 }

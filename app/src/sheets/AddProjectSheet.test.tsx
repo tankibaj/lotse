@@ -1,6 +1,7 @@
-import { act, screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import type { MockClient } from '../lib/client';
 import { emitUiCommand } from '../lib/ui/commands';
 import { mountWp5 } from './harness';
 import { setHostBridge } from './hostBridge';
@@ -21,6 +22,16 @@ const open = async () => {
   return screen.findByRole('dialog', { name: 'Add a project' });
 };
 
+/** After adding: the New Session sheet is open with the project added at `path` selected. */
+const expectNewSessionFor = async (client: MockClient, path: string) => {
+  const project = (await client.listProjects()).find((p) => p.path === path);
+  expect(project, `no project at ${path}`).toBeDefined();
+  await waitFor(() => expect(getOverlay()).toEqual({ name: 'newSession', projectId: project?.id }));
+  const dlg = await screen.findByRole('dialog', { name: 'New session' });
+  await waitFor(() => expect(within(dlg).getByLabelText('Project')).toHaveValue(project?.id));
+  expect(screen.queryByRole('dialog', { name: 'Add a project' })).toBeNull();
+};
+
 describe('Add project sheet', () => {
   it('lists the three ways to add, and the drag tip', async () => {
     mountWp5();
@@ -38,7 +49,7 @@ describe('Add project sheet', () => {
     await open();
     await userEvent.click(screen.getByRole('button', { name: /Browse folder/ }));
     await waitFor(() => expect(add).toHaveBeenCalledWith({ path: '/Users/naim/Repos/new-one', name: null, color: null, icon: null }));
-    await waitFor(() => expect(getOverlay()).toBeNull());
+    await expectNewSessionFor(client, '/Users/naim/Repos/new-one');
   });
 
   it('a cancelled picker leaves the sheet as it was', async () => {
@@ -73,6 +84,7 @@ describe('Add project sheet', () => {
     await userEvent.clear(input);
     await userEvent.type(input, '/Users/naim/Repos/fresh{Enter}');
     await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/Users/naim/Repos/fresh' })));
+    await expectNewSessionFor(client, '/Users/naim/Repos/fresh');
   });
 
   it('a folder with several repos offers each; only the ticked ones are added', async () => {
@@ -89,6 +101,19 @@ describe('Add project sheet', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add 2 projects ⏎' }));
     await waitFor(() => expect(add).toHaveBeenCalledTimes(2));
     expect(add.mock.calls.map((c) => c[0].path)).toEqual(['/w/a', '/w/c']);
+    await expectNewSessionFor(client, '/w/a'); // the first added
+  });
+
+  it('after a multi-repo add, New Session opens with the first repo that was ticked', async () => {
+    const repos = ['/w/a', '/w/b', '/w/c'];
+    setHostBridge(bridge({ pickFolder: async () => '/w', scanRepos: async () => ({ is_repo: false, repos }) }));
+    const { client } = mountWp5();
+    await open();
+    await userEvent.click(screen.getByRole('button', { name: /Browse folder/ }));
+    const boxes = await screen.findAllByRole('checkbox');
+    await userEvent.click(boxes[0] as HTMLElement); // not /w/a
+    await userEvent.click(screen.getByRole('button', { name: 'Add 2 projects ⏎' }));
+    await expectNewSessionFor(client, '/w/b');
   });
 
   it('a preset multi-repo list leaves out repos that are already projects', async () => {
@@ -102,6 +127,7 @@ describe('Add project sheet', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Add 2 projects ⏎' }));
     await waitFor(() => expect(add).toHaveBeenCalledTimes(2));
     expect(add.mock.calls.map((c) => c[0].path)).toEqual(['/Users/naim/Repos/fresh-a', '/Users/naim/Repos/fresh-b']);
+    await expectNewSessionFor(client, '/Users/naim/Repos/fresh-a');
   });
 
   it('rejects clone URLs that read as git options or yield an unusable folder name', async () => {
@@ -145,6 +171,7 @@ describe('Add project sheet', () => {
     await userEvent.click(screen.getByRole('button', { name: /Clone ⏎/ }));
     await waitFor(() => expect(cloneRepo).toHaveBeenCalledWith('https://github.com/owner/widget.git', '~/Repos/widget'));
     await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '~/Repos/widget' })));
+    await expectNewSessionFor(client, '~/Repos/widget');
   });
 
   it('shows a failing clone and does not add the project', async () => {
@@ -197,6 +224,7 @@ describe('Add project sheet', () => {
     await userEvent.click(screen.getByRole('button', { name: /Create ⏎/ }));
     await waitFor(() => expect(createProject).toHaveBeenCalledWith('/Users/naim/Repos/my-project', false));
     await waitFor(() => expect(add).toHaveBeenCalledWith(expect.objectContaining({ path: '/Users/naim/Repos/my-project' })));
+    await expectNewSessionFor(client, '/Users/naim/Repos/my-project');
   });
 
   it('keeps focus inside the dialog across view changes, starting on the first action', async () => {

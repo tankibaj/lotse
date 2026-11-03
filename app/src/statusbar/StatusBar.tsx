@@ -10,10 +10,11 @@ import {
   useWorkspace,
 } from '../lib/state';
 import { useSelectedSessionId } from '../lib/ui/selection';
+import { lanState } from '../settings/remote';
 import { NoGitIcon } from '../sidebar/NoGit';
 
 // Alpha status bar (spec/mock.html footer): need-you filter chip, git of the current session, daemon
-// state and session count, pause-notifications bell, LAN Off, today's tokens and cost (`—` until the first snapshot).
+// state and session count, pause-notifications bell, LAN state (`settings/remote`), today's tokens and cost (`—` until the first snapshot).
 
 const chip = 'rounded px-1.5 hover:bg-black/5 dark:hover:bg-white/10';
 
@@ -40,6 +41,7 @@ export function StatusBar() {
   const git = current?.git;
   const paused = settings?.notifications.paused ?? false;
   const up = connection === 'connected';
+  const lan = lanState();
 
   return (
     <footer className="flex h-7 shrink-0 items-center gap-4 border-t bg-side lotse-glass px-3 text-[11px] text-dim">
@@ -104,7 +106,7 @@ export function StatusBar() {
         <Bell off={paused} />
         {paused && ' Paused'}
       </button>
-      <span>LAN Off</span>
+      <span title={lan.tooltip}>{lan.label}</span>
       <span data-testid="status-usage" title={usage.title}>
         {usage.text}
       </span>
