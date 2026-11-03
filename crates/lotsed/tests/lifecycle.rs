@@ -73,6 +73,41 @@ fn a_second_daemon_on_the_same_data_dir_refuses_to_start() {
     assert!(matches!(c.request(Request::Ping), Response::Pong));
 }
 
+/// An isolated data dir whose socket path would exceed macOS' 104-byte `sun_path`: both the
+/// foreground and the `--detach` start fail at once, name the limit, and leave nothing behind.
+#[test]
+fn a_data_dir_with_a_too_long_socket_path_fails_fast_naming_the_limit() {
+    let base = tempfile::tempdir().unwrap();
+    let long = base.path().join("d".repeat(110));
+    for detach in [false, true] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_lotsed"));
+        if detach {
+            cmd.arg("--detach");
+        }
+        let out = cmd
+            .arg("--data-dir")
+            .arg(&long)
+            .arg("--no-login-env")
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(!out.status.success(), "detach={detach}");
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            text.contains("104 bytes") && text.contains("--data-dir"),
+            "detach={detach}: {text}"
+        );
+        assert!(
+            !long.exists(),
+            "nothing is created for a path that cannot work"
+        );
+    }
+}
+
 #[test]
 fn a_stale_socket_and_pidfile_do_not_block_a_start() {
     let d = Daemon::start();

@@ -25,7 +25,7 @@ use crate::db::SpanRow;
 use crate::session::now_ms;
 use crate::state::{State, unavailable};
 use crate::transcript::parse_iso_utc_ms;
-use crate::usage::{DayBounds, price_for};
+use crate::usage::{Counts, DayBounds, price_for};
 use lotse_proto::{
     AgentKind, ErrorCode, LaneKind, ProtoError, Request, Response, Session, Status, UnixMs, Usage,
     UsageLane, UsageSpan, UsageSpend, UsageTokens,
@@ -307,19 +307,23 @@ struct Scan {
 struct Message {
     model: String,
     tokens: UsageTokens,
+    /// Of `tokens.cache_write`, the 1-hour entries.
+    cache_write_1h: u64,
     at: u64,
 }
 
 impl Message {
     fn cost(&self) -> Cost {
         match price_for(&self.model) {
-            // cache reads cost a tenth of the input price, 5-minute cache writes 1.25 times (the
-            // same rules as `usage`)
+            // the same rules as `usage` (cache reads, 5-minute and 1-hour cache writes)
             Some(p) => Cost {
-                numerator: u128::from(self.tokens.input) * u128::from(p.input)
-                    + u128::from(self.tokens.output) * u128::from(p.output)
-                    + u128::from(self.tokens.cache_read) * u128::from(p.input / 10)
-                    + u128::from(self.tokens.cache_write) * u128::from(p.input / 4 * 5),
+                numerator: p.cost(Counts {
+                    input: self.tokens.input,
+                    output: self.tokens.output,
+                    cache_read: self.tokens.cache_read,
+                    cache_write: self.tokens.cache_write,
+                    cache_write_1h: self.cache_write_1h,
+                }),
                 unpriced: false,
             },
             None => Cost {
@@ -403,7 +407,20 @@ fn parse_line(line: &[u8]) -> Option<(String, Message)> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_owned();
-    Some((key, Message { model, tokens, at }))
+    let cache_write_1h = usage
+        .get("cache_creation")
+        .and_then(|c| c.get("ephemeral_1h_input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Some((
+        key,
+        Message {
+            model,
+            tokens,
+            cache_write_1h,
+            at,
+        },
+    ))
 }
 
 #[cfg(test)]
@@ -464,7 +481,7 @@ mod tests {
 
         text += &line(
             "b",
-            "claude-fable-9-9",
+            "claude-zephyr-9-9",
             "2026-11-02T10:00:01.000Z",
             (5, 0, 0, 0),
         );
@@ -472,7 +489,7 @@ mod tests {
         assert_eq!(s.all.micros(), None, "no price for one message: no cost");
         assert_eq!(s.all.micros_priced(), 3_000_000, "the priced part stays");
         assert_eq!(s.tokens.input, 1_000_005);
-        assert_eq!(s.model.as_deref(), Some("claude-fable-9-9"));
+        assert_eq!(s.model.as_deref(), Some("claude-zephyr-9-9"));
     }
 
     #[test]

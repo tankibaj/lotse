@@ -9,6 +9,11 @@
 //! `Status::Unknown` is "no signal" and never wins. A weaker source therefore cannot override a
 //! stronger one: a hook `perm` stays until the hook adapter clears it. Sub-agents and the permission
 //! request come from the strongest source that reported them / is the winning source.
+//!
+//! One exception, upwards: a permission dialog the screen adapter shows (`Perm`) counts even when a
+//! stronger source (the hooks) says something else, because hooks do not report every prompt (a
+//! background sub-agent's, a folder-trust dialog). It ends when the screen adapter's `Perm` does,
+//! and a hook `perm` takes the request over (the same prompt, better described).
 
 use crate::adapter::{Adapter, Detection, Observation};
 use crate::{claude, codex, opencode, osc7501, screen};
@@ -160,7 +165,7 @@ impl Engine {
             .sources
             .iter()
             .find(|(_, state)| matches!(state.status, Some(s) if s != Status::Unknown));
-        let (status, source, perm) = match winner {
+        let (mut status, mut source, mut perm) = match winner {
             Some((source, state)) => (
                 state.status.unwrap_or(Status::Unknown),
                 *source,
@@ -168,6 +173,18 @@ impl Engine {
             ),
             None => (Status::Unknown, DetectSource::Process, None),
         };
+        // A dialog on the screen is a question for the user whatever a stronger source says: hooks
+        // do not report every prompt (a background agent's, a folder-trust dialog). It lasts as long
+        // as the screen adapter shows it, and a hook `perm` that arrives takes the request over.
+        if status != Status::Perm
+            && source < DetectSource::Screen
+            && let Some(screen) = self.sources.get(&DetectSource::Screen)
+            && screen.status == Some(Status::Perm)
+        {
+            status = Status::Perm;
+            source = DetectSource::Screen;
+            perm = screen.perm.clone();
+        }
         let sub_agents = self
             .sources
             .values()
@@ -378,6 +395,56 @@ mod tests {
         let up = e.observe(tick(3)).unwrap();
         assert_eq!(up.status, Status::Run);
         assert_eq!(up.perm, None);
+    }
+
+    #[test]
+    fn a_screen_dialog_counts_as_perm_over_a_hook_that_says_done_and_ends_with_the_dialog() {
+        let screen_perm = |at| Detection {
+            perm: Some(PermRequest {
+                tool: "approval".into(),
+                summary: "Waiting for your input".into(),
+                always: None,
+                id: None,
+            }),
+            ..det(DetectSource::Screen, Status::Perm, at)
+        };
+        let mut e = engine_with(vec![
+            (
+                DetectSource::Hook,
+                vec![
+                    vec![det(DetectSource::Hook, Status::Done, 1)],
+                    vec![],
+                    vec![perm_det(DetectSource::Hook, 3)],
+                    vec![det(DetectSource::Hook, Status::Done, 4)],
+                    vec![],
+                ],
+            ),
+            (
+                DetectSource::Screen,
+                vec![
+                    vec![],
+                    vec![screen_perm(2)],
+                    vec![],
+                    vec![],
+                    vec![det(DetectSource::Screen, Status::Run, 5)],
+                ],
+            ),
+        ]);
+        assert_eq!(e.observe(tick(1)).unwrap().status, Status::Done);
+        // the dialog appears: perm, with the screen's request
+        let up = e.observe(tick(2)).unwrap();
+        assert_eq!((up.status, up.source), (Status::Perm, DetectSource::Screen));
+        assert_eq!(up.perm.unwrap().tool, "approval");
+        // the hook reports the same prompt: its request takes over, still perm
+        let up = e.observe(tick(3)).unwrap();
+        assert_eq!((up.status, up.source), (Status::Perm, DetectSource::Hook));
+        assert_eq!(up.perm.unwrap().tool, "Bash");
+        // the hook clears its perm while the dialog is still drawn: the screen keeps it perm
+        let up = e.observe(tick(4)).unwrap();
+        assert_eq!((up.status, up.source), (Status::Perm, DetectSource::Screen));
+        // the dialog leaves the screen: back to the hook's opinion
+        let up = e.observe(tick(5)).unwrap();
+        assert_eq!((up.status, up.perm), (Status::Done, None));
     }
 
     #[test]

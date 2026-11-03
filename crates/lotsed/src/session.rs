@@ -9,6 +9,7 @@ use crate::detect_glue::{Detector, NotifyLimiter, Trigger, notification, process
 use crate::hub::{Bytes, ClientTx, Hub};
 use crate::perm_answer::{AnswerError, always_option, answer_keys};
 use crate::ring::Ring;
+use crate::task_watch::TaskWatch;
 use crate::title::{LineTracker, derive_title};
 use crate::transcript;
 use crate::usage::UsageTracker;
@@ -266,6 +267,8 @@ pub struct SessionHandle {
     activity: Activity,
     /// The agent's transcript file, as its latest hook announced it (validated).
     transcript: Mutex<Option<Announced>>,
+    /// Tails the transcript for the report-backs of background sub-agents (see [`crate::task_watch`]).
+    task_watch: Mutex<TaskWatch>,
     inner: Mutex<Inner>,
 }
 
@@ -348,6 +351,7 @@ impl SessionHandle {
             ctx,
             activity: Activity::new(),
             transcript: Mutex::new(None),
+            task_watch: Mutex::new(TaskWatch::default()),
             inner: Mutex::new(Inner {
                 limiter: NotifyLimiter::default(),
                 detector,
@@ -525,14 +529,31 @@ impl SessionHandle {
             return;
         };
         // a repeat too: the tracker decides when the path is worth writing again (retention)
-        if agent == AgentKind::ClaudeCode && self.ctx.usage.add(path.clone()) {
-            let now = now_ms();
-            if let Err(e) = self
-                .ctx
-                .db
-                .remember_transcript(&path.to_string_lossy(), now)
-            {
-                tracing::warn!("remembering a transcript path: {e}");
+        if agent == AgentKind::ClaudeCode {
+            let new = self.ctx.usage.add(path.clone());
+            if new {
+                let now = now_ms();
+                if let Err(e) = self
+                    .ctx
+                    .db
+                    .remember_transcript(&path.to_string_lossy(), now)
+                {
+                    tracing::warn!("remembering a transcript path: {e}");
+                }
+            }
+            // a new transcript, or a turn that ended: today's total moved, push it now rather
+            // than with the next periodic read
+            let turn_event = payload
+                .get("hook_event_name")
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| {
+                    matches!(
+                        e,
+                        "Stop" | "StopFailure" | "SubagentStop" | "SessionEnd" | "UserPromptSubmit"
+                    )
+                });
+            if !repeat || turn_event {
+                self.ctx.usage.nudge();
             }
         }
         if !repeat {
@@ -612,6 +633,45 @@ impl SessionHandle {
         };
         self.activity.ticked(seen, quiet);
         self.notify(triggers);
+        self.watch_task_notifications();
+    }
+
+    /// While a Claude Code session has running sub-agents, look in its transcript for their
+    /// report-backs and feed each to the hook adapter: Claude may not run a hook for that turn.
+    fn watch_task_notifications(&self) {
+        let running = self
+            .lock()
+            .meta
+            .sub_agents
+            .iter()
+            .any(|s| s.status == Status::Run);
+        let path = self
+            .transcript()
+            .filter(|(agent, _)| *agent == AgentKind::ClaudeCode)
+            .map(|(_, path)| path);
+        let notes = {
+            let mut watch = self.task_watch.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(path) = path.filter(|_| running) else {
+                watch.idle();
+                return;
+            };
+            if !watch.due(Instant::now()) {
+                return;
+            }
+            watch.scan(&path)
+        };
+        for note in notes {
+            let triggers = {
+                let mut g = self.lock();
+                if g.closing || g.live.is_none() {
+                    return;
+                }
+                let payload = lotse_detect::claude::task_notification_event(&note);
+                let update = g.detector.on_hook(AgentKind::ClaudeCode, payload, now_ms());
+                self.apply(&mut g, update.into_iter().collect())
+            };
+            self.notify(triggers);
+        }
     }
 
     /// `Some(token)` when this session's folder deserves a git refresh: the process is alive and
@@ -698,10 +758,11 @@ impl SessionHandle {
             // The engine knows the request, not the prompt's options or its id: the same request
             // keeps what the screen said and its id, any other request is a new prompt.
             if let Some(p) = update.perm.as_mut() {
-                match prev_perm
-                    .as_ref()
-                    .filter(|old| p.tool == old.tool && p.summary == old.summary)
-                {
+                match prev_perm.as_ref().filter(|old| {
+                    (p.tool == old.tool && p.summary == old.summary)
+                        // the hook describes the prompt the screen reported: still that prompt
+                        || (is_placeholder_perm(old) && !is_placeholder_perm(p))
+                }) {
                     Some(old) => {
                         p.always = old.always;
                         p.id.clone_from(&old.id);
@@ -735,10 +796,20 @@ impl SessionHandle {
                     running_since: update.running_since,
                     at: update.at,
                 });
+                // The hook's request for the prompt the screen (or a bare notification) reported
+                // first: the same prompt, better described, not a new reason to look up.
+                let described = prev == Status::Perm
+                    && prev_perm.as_ref().is_some_and(is_placeholder_perm)
+                    && update
+                        .perm
+                        .as_ref()
+                        .is_some_and(|p| !is_placeholder_perm(p));
                 if notify {
                     let trigger = match update.status {
                         // a new request while one is open is a new reason to look up
-                        Status::Perm if prev != Status::Perm || update.perm != prev_perm => {
+                        Status::Perm
+                            if (prev != Status::Perm || update.perm != prev_perm) && !described =>
+                        {
                             Some(Trigger::Perm(update.perm.clone()))
                         }
                         Status::Fail if prev != Status::Fail => Some(Trigger::Fail),
@@ -1085,6 +1156,12 @@ fn prompt_agent(g: &Inner) -> AgentKind {
         AgentKind::Terminal => g.meta.agent,
         followed => followed,
     }
+}
+
+/// A request that only says an agent waits (what the screen adapter or a bare notification knows),
+/// before a hook describes it.
+fn is_placeholder_perm(p: &lotse_proto::PermRequest) -> bool {
+    p.summary == lotse_detect::claude::PLACEHOLDER_PERM_SUMMARY
 }
 
 fn forget_empty_group(g: &mut Inner) {

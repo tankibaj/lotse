@@ -350,11 +350,7 @@ struct Note<'a> {
 /// Show and play what `d` says. `Ok(true)`: a native banner is up (it can be removed again).
 fn deliver<R: Runtime>(app: &AppHandle<R>, d: Delivery, note: &Note) -> Result<bool, String> {
     if d.banner && un::is_active() {
-        let sound = match (d.sound, note.sound_name) {
-            (false, _) => un::Sound::Off,
-            (true, Some(name)) => un::Sound::Named(name.to_owned()),
-            (true, None) => un::Sound::Default,
-        };
+        let (sound, file) = banner_sound(d.sound, note.sound_name);
         un::show(&un::Banner {
             id: banner_id(note.session),
             title: note.title.to_owned(),
@@ -364,6 +360,11 @@ fn deliver<R: Runtime>(app: &AppHandle<R>, d: Delivery, note: &Note) -> Result<b
             category: note.category,
             prompt_id: note.prompt_id.map(str::to_owned),
         })?;
+        // the banner stays silent: `UNNotificationSound` only finds sounds in the app bundle, not
+        // `/System/Library/Sounds`, so the chosen system sound is played the way the sound-only path does
+        if let Some(file) = file {
+            play_file(file)?;
+        }
         Ok(true)
     } else if d.banner {
         // `tauri dev` and tests run unbundled: no UNUserNotificationCenter, so no buttons either
@@ -384,17 +385,36 @@ fn deliver<R: Runtime>(app: &AppHandle<R>, d: Delivery, note: &Note) -> Result<b
             .sound_name
             .and_then(system_sound_path)
             .unwrap_or_else(|| PathBuf::from(SOUND_FILE));
-        let mut child = std::process::Command::new("afplay")
-            .arg(file)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        std::thread::spawn(move || {
-            let _ = child.wait(); // reap, no zombie
-        });
+        play_file(file)?;
         Ok(false)
     } else {
         Ok(false)
     }
+}
+
+/// How a native banner sounds: the banner's own sound, and the system sound file to play beside it.
+/// A named system sound is played as a file with a silent banner (one sound, not two); no name (or
+/// one that is not a plain sound name) is the default banner sound.
+fn banner_sound(play: bool, name: Option<&str>) -> (un::Sound, Option<PathBuf>) {
+    if !play {
+        return (un::Sound::Off, None);
+    }
+    match name.and_then(system_sound_path) {
+        Some(file) => (un::Sound::Off, Some(file)),
+        None => (un::Sound::Default, None),
+    }
+}
+
+/// Play a sound file with `afplay`. A missing file is harmless.
+fn play_file(file: PathBuf) -> Result<(), String> {
+    let mut child = std::process::Command::new("afplay")
+        .arg(file)
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    std::thread::spawn(move || {
+        let _ = child.wait(); // reap, no zombie
+    });
+    Ok(())
 }
 
 /// Dock badge = need-you count; 0 clears it. The webview calls this from
@@ -796,6 +816,19 @@ mod tests {
         for bad in ["", "../Glass", "a/b", "Glass.aiff", "\u{0}", "G\"lass"] {
             assert_eq!(system_sound_path(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_banner_with_a_named_system_sound_is_silent_and_the_file_is_played() {
+        let glass = Some(PathBuf::from("/System/Library/Sounds/Glass.aiff"));
+        assert_eq!(banner_sound(true, Some("Glass")), (un::Sound::Off, glass));
+        assert_eq!(banner_sound(true, None), (un::Sound::Default, None));
+        // not a plain sound name: the default banner sound, never a path
+        assert_eq!(
+            banner_sound(true, Some("../Glass")),
+            (un::Sound::Default, None)
+        );
+        assert_eq!(banner_sound(false, Some("Glass")), (un::Sound::Off, None));
     }
 
     #[test]

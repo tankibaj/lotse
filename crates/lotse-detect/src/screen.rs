@@ -49,7 +49,7 @@ use std::time::SystemTime;
 /// Longest `PermRequest::summary`, in characters.
 const SUMMARY_MAX_CHARS: usize = 160;
 const DEFAULT_PERM_TOOL: &str = "approval";
-const DEFAULT_PERM_SUMMARY: &str = "Waiting for your input";
+const DEFAULT_PERM_SUMMARY: &str = crate::claude::PLACEHOLDER_PERM_SUMMARY;
 
 // ---- process identity ---------------------------------------------------------------------------
 

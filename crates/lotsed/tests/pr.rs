@@ -101,6 +101,54 @@ fn git_info(c: &mut Client, p: &Project, s: &Session) -> GitInfo {
     }
 }
 
+/// The 5 s refresh of every session's git line must not wait for `gh`: a slow lookup runs in the
+/// background, the line goes out without a PR meanwhile, and the next refresh (the generation moved)
+/// carries it. Fake `gh` in a temp dir, a repo of its own: nothing shared with another test.
+#[test]
+fn a_slow_gh_does_not_block_the_refresh_and_its_answer_lands_later() {
+    use lotsed::launch::LaunchEnv;
+    use std::collections::HashMap;
+    use std::time::{Duration, Instant};
+
+    let fakes = Fakes::new();
+    fakes.fake("gh", &format!("sleep 2\necho '{GH_OPEN}'"));
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = std::fs::canonicalize(tmp.path()).unwrap().join("slow-repo");
+    std::fs::create_dir(&repo).unwrap();
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(&repo, &["checkout", "-q", "-b", "feature"]);
+    git(
+        &repo,
+        &["config", "remote.origin.url", "https://github.com/o/r.git"],
+    );
+    let env = LaunchEnv::from_vars(HashMap::from([(
+        "PATH".to_owned(),
+        format!("{}:/usr/bin:/bin", fakes.dir.path().display()),
+    )]));
+
+    let before = lotsed::pr::generation();
+    let started = Instant::now();
+    let first = lotsed::git_glue::info_with_pr_refresh(&repo, Some(&env));
+    assert!(
+        started.elapsed() < Duration::from_millis(1500),
+        "the refresh waited for gh: {:?}",
+        started.elapsed()
+    );
+    assert!(first.is_git && first.pr.is_none());
+
+    // the answer lands in the background and says so
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while lotsed::pr::generation() == before {
+        assert!(Instant::now() < deadline, "the lookup never finished");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let later = lotsed::git_glue::info_with_pr_refresh(&repo, Some(&env));
+    assert_eq!(later.pr.map(|p| p.number), Some(42));
+    // one lookup served both reads, and a repeated read starts none
+    assert_eq!(fakes.calls("gh").len(), 1);
+}
+
 #[test]
 fn pr_status_off_by_default_runs_nothing() {
     let fakes = Fakes::new();

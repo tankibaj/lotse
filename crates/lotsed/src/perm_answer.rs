@@ -173,12 +173,11 @@ fn strip_hint(text: &str) -> &str {
     }
 }
 
-/// "Yes" or Codex's "Yes, proceed": no scope, mode switch or other qualifier.
+/// "Yes", Codex's "Yes, proceed" / "Yes, continue" or a folder-trust dialog's "Yes, I trust this
+/// folder": no scope, mode switch or other qualifier.
 fn is_plain_yes(text: &str) -> bool {
-    matches!(
-        strip_hint(text).to_lowercase().as_str(),
-        "yes" | "yes, proceed"
-    )
+    let t = strip_hint(text).to_lowercase();
+    matches!(t.as_str(), "yes" | "yes, proceed" | "yes, continue") || t.starts_with("yes, i trust")
 }
 
 /// A "Yes, ..." that stops the question coming back. A mode switch ("switch to auto mode", "accept
@@ -300,6 +299,60 @@ mod tests {
 
    Allow once   Allow always   Reject
   ⇆ select  enter confirm";
+
+    // The folder-trust dialogs both agents show before a session starts (reconstructed from the
+    // dialogs' wording; no recording): the "yes" is worded "Yes, I trust this folder" / "Yes, continue".
+    const CLAUDE_TRUST: &str = "\
+ Accessing workspace:
+
+ /Users/dev/projects/lotse
+
+ Quick safety check: Is this a project you created or one you trust?
+
+ ❯ 1. Yes, I trust this folder
+   2. No, exit
+
+ Enter to confirm · Esc to cancel";
+
+    const CLAUDE_TRUST_OLD: &str = "\
+ Do you trust the files in this folder?
+
+ /Users/dev/projects/lotse
+
+ ❯ 1. Yes, proceed
+   2. No, exit
+
+ Enter to confirm · Esc to cancel";
+
+    const CODEX_TRUST: &str = "\
+> You are in /Users/dev/projects/lotse
+
+  Do you trust the contents of this directory? Working with untrusted contents comes with
+  higher risk of prompt injection.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue";
+
+    #[test]
+    fn a_folder_trust_dialog_is_answered_with_its_yes_and_no() {
+        for (agent, s) in [
+            (ClaudeCode, CLAUDE_TRUST),
+            (ClaudeCode, CLAUDE_TRUST_OLD),
+            (Codex, CODEX_TRUST),
+        ] {
+            assert_eq!(keys(agent, s, Allow), Ok("1".into()), "{s}");
+            assert_eq!(keys(agent, s, Deny), Ok("2".into()), "{s}");
+            // nothing stops the question coming back: the card hides Always
+            assert_eq!(keys(agent, s, Always), Err(AnswerError::NoChoice), "{s}");
+            assert_eq!(
+                always_option(agent, &screen(s)),
+                Some(PermAlways::Unavailable),
+                "{s}"
+            );
+        }
+    }
 
     #[test]
     fn claude_four_options_allow_always_deny() {

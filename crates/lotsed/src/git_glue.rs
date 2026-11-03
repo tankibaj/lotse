@@ -31,6 +31,19 @@ pub fn info_with_pr(dir: &Path, pr_env: Option<&LaunchEnv>) -> GitInfo {
     git
 }
 
+/// [`info_with_pr`] for the periodic refresh of every session's git line, which shares one thread
+/// and so must not wait for `gh` / `glab`: the PR is whatever [`pr::status_in_background`] has (the
+/// lookup runs on its own thread; [`pr::generation`] moves when its answer changes).
+pub fn info_with_pr_refresh(dir: &Path, pr_env: Option<&LaunchEnv>) -> GitInfo {
+    let mut git = info(dir);
+    if git.is_git
+        && let Some(env) = pr_env
+    {
+        git.pr = pr::status_in_background(dir, &git.branch, env);
+    }
+    git
+}
+
 /// The folder a new session runs in: `repo` itself, or a new isolated worktree for `branch`
 /// (`~/.lotse/worktrees/<project>/<branch>`).
 pub fn session_dir(repo: &Path, branch: Option<&str>) -> Result<PathBuf, lotse_git::GitError> {

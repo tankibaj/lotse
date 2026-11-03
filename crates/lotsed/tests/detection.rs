@@ -583,6 +583,252 @@ fn resolve_permission_types_the_option_digit_the_screen_shows() {
     }
 }
 
+/// A dialog Claude draws but no hook reports (a background agent's, a folder-trust dialog) is a
+/// permission prompt even while hooks drive the session; a `PermissionRequest` that follows describes
+/// the same prompt (same id, no second notification) and the typed answer still works.
+#[test]
+fn a_screen_dialog_is_perm_while_hooks_are_active_and_notifies_once() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let (s, _dir) = prompt_pane(&d, &mut c, CLAUDE_PROMPT, "4. No");
+    let Event::StatusChanged { perm, source, .. } = c.wait_event(status_is(Status::Perm)) else {
+        unreachable!()
+    };
+    assert_eq!(source, lotse_proto::DetectSource::Screen);
+    let first_id = perm.and_then(|p| p.id).expect("a prompt id");
+    c.wait_event(|e| {
+        matches!(
+            e,
+            Event::Notification {
+                kind: NotificationKind::Perm,
+                ..
+            }
+        )
+    });
+
+    // the hooks say the turn is over (background agents asked, the lead had stopped): still perm
+    hook(&mut c, &s, json!({"hook_event_name": "Stop"}));
+    c.drain(Duration::from_millis(400));
+    assert!(
+        !c.events.iter().any(status_is(Status::Done)),
+        "a hook `done` hid the dialog: {:?}",
+        c.events
+    );
+    let status_now = |c: &mut Client| match c.request(Request::ListSessions { project_id: None }) {
+        Response::Sessions(list) => list.into_iter().find(|x| x.id == s.id).unwrap().status,
+        other => panic!("list_sessions: {other:?}"),
+    };
+    assert_eq!(status_now(&mut c), Status::Perm);
+
+    // the hook that does arrive: same prompt, now described, no second banner
+    hook(
+        &mut c,
+        &s,
+        json!({"hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "npx playwright test"}}),
+    );
+    let Event::StatusChanged { perm, source, .. } = c.wait_event(
+        |e| matches!(e, Event::StatusChanged { perm: Some(p), .. } if p.tool == "Bash"),
+    ) else {
+        unreachable!()
+    };
+    assert_eq!(source, lotse_proto::DetectSource::Hook);
+    assert_eq!(
+        perm.and_then(|p| p.id).as_deref(),
+        Some(first_id.as_str()),
+        "the same prompt keeps its id"
+    );
+    c.drain(Duration::from_millis(400));
+    assert!(
+        !c.events
+            .iter()
+            .any(|e| matches!(e, Event::Notification { .. })),
+        "a second notification for the same prompt: {:?}",
+        c.events
+    );
+
+    // the answer typed for the prompt reaches the pane
+    assert!(matches!(
+        resolve(&mut c, &s, PermDecision::Allow),
+        Response::Ok
+    ));
+    assert!(c.wait_output(&s.id, "BYTES:31"));
+}
+
+/// The live walk: background agents launched through the Agent tool (no SubagentStart/Stop), the
+/// lead's Stop right away, the report-backs only in the transcript. The sub-agents show up, the
+/// session does not read done while one runs, and each closes from its notification (a failure
+/// shows as `fail`).
+#[test]
+fn background_agents_show_up_and_close_from_the_transcript_without_a_hook() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("praxis-web"));
+    let s = agent_session(&mut c, &project, AgentKind::ClaudeCode);
+    let dir = d.home.join(".claude/projects/praxis-web");
+    std::fs::create_dir_all(&dir).unwrap();
+    let transcript = dir.join("c0ffee.jsonl");
+    std::fs::write(&transcript, "{\"type\":\"summary\"}\n").unwrap();
+
+    hook(
+        &mut c,
+        &s,
+        json!({"hook_event_name": "UserPromptSubmit", "transcript_path": transcript}),
+    );
+    for (n, id) in ["toolu_A", "toolu_B"].iter().enumerate() {
+        hook(
+            &mut c,
+            &s,
+            json!({"hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": id,
+                   "tool_input": {"description": format!("Agent {}", n + 1), "run_in_background": true},
+                   "transcript_path": transcript}),
+        );
+    }
+    hook(
+        &mut c,
+        &s,
+        json!({"hook_event_name": "Stop", "background_tasks": 2, "transcript_path": transcript}),
+    );
+    let Event::SubAgentsChanged { sub_agents, .. } = c.wait_event(
+        |e| matches!(e, Event::SubAgentsChanged { sub_agents, .. } if sub_agents.len() == 2),
+    ) else {
+        unreachable!()
+    };
+    assert!(sub_agents.iter().all(|a| a.status == Status::Run));
+    assert_eq!(sub_agents[0].name, "Agent 1");
+    let status_now = |c: &mut Client| match c.request(Request::ListSessions { project_id: None }) {
+        Response::Sessions(list) => list.into_iter().find(|x| x.id == s.id).unwrap(),
+        other => panic!("list_sessions: {other:?}"),
+    };
+    assert_eq!(
+        status_now(&mut c).status,
+        Status::Run,
+        "the lead stopped, the agents run: not done"
+    );
+
+    let note = |id: &str, status: &str, result: &str| {
+        let text = format!(
+            "<task-notification>\n<task-id>t-{id}</task-id>\n<tool-use-id>{id}</tool-use-id>\n<status>{status}</status>\n<summary>Agent \"x\" finished</summary>\n<result>{result}</result>\n</task-notification>"
+        );
+        format!(
+            "{}\n",
+            json!({"type": "user", "message": {"role": "user", "content": text}})
+        )
+    };
+    let append = |text: &str| {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&transcript)
+            .unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+    };
+    let sub_status = |id: &str, want: Status| {
+        let id = id.to_owned();
+        move |e: &Event| {
+            matches!(e, Event::SubAgentStatus { sub_agent_id, status, .. }
+                if sub_agent_id.as_str() == id && *status == want)
+        }
+    };
+    append(&note("toolu_A", "completed", "one"));
+    c.wait_event(sub_status("toolu_A", Status::Done));
+    assert_eq!(status_now(&mut c).status, Status::Run, "B still runs");
+
+    append(&note("toolu_B", "completed", "API Error: 529 overloaded"));
+    c.wait_event(sub_status("toolu_B", Status::Fail));
+    // Claude now takes the report-back turn; its Stop (no background tasks left) ends the session
+    assert_eq!(status_now(&mut c).status, Status::Run);
+    hook(
+        &mut c,
+        &s,
+        json!({"hook_event_name": "Stop", "transcript_path": transcript}),
+    );
+    c.wait_event(status_is(Status::Done));
+    let end = status_now(&mut c);
+    assert_eq!(end.status, Status::Done);
+    assert_eq!(
+        end.sub_agents.iter().map(|a| a.status).collect::<Vec<_>>(),
+        [Status::Done, Status::Fail]
+    );
+}
+
+/// `2026-11-02T10:00:00.000Z` for now (civil-from-days, Howard Hinnant).
+fn iso_now() -> String {
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let (days, rem) = ((ms / 86_400_000) as i64, ms % 86_400_000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rem / 3_600_000,
+        rem / 60_000 % 60,
+        rem / 1000 % 60,
+        rem % 1000
+    )
+}
+
+/// The status bar total follows the turn: a hook that announces the transcript (here the `Stop` of a
+/// turn that ran sub-agents) pushes today's usage within a couple of seconds, not with the next 5 s
+/// read, and it holds the sub-agents' transcripts and a model newer than the price table.
+#[test]
+fn a_stop_hook_pushes_todays_usage_at_once_with_sub_agents_and_a_new_model() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("praxis-web"));
+    let s = agent_session(&mut c, &project, AgentKind::ClaudeCode);
+    let dir = d.home.join(".claude/projects/praxis-web");
+    let subs = dir.join("c0ffee/subagents");
+    std::fs::create_dir_all(&subs).unwrap();
+    let line = |id: &str, model: &str, input: u64| {
+        format!(
+            "{}\n",
+            json!({"type": "assistant", "timestamp": iso_now(), "requestId": format!("r-{id}"),
+                   "message": {"id": id, "model": model, "usage": {"input_tokens": input, "output_tokens": 0,
+                   "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}})
+        )
+    };
+    let transcript = dir.join("c0ffee.jsonl");
+    std::fs::write(&transcript, line("lead", "claude-haiku-4-5", 1_000_000)).unwrap();
+    std::fs::write(
+        subs.join("agent-a1.jsonl"),
+        line("sub1", "claude-sonnet-5-5", 1_000_000),
+    )
+    .unwrap();
+    std::fs::write(
+        subs.join("agent-b2.jsonl"),
+        line("sub2", "claude-sonnet-5-5", 1_000_000),
+    )
+    .unwrap();
+
+    let started = std::time::Instant::now();
+    hook(
+        &mut c,
+        &s,
+        json!({"hook_event_name": "Stop", "transcript_path": transcript}),
+    );
+    let Event::UsageChanged(usage) =
+        c.wait_event(|e| matches!(e, Event::UsageChanged(u) if u.input_tokens == 3_000_000))
+    else {
+        unreachable!()
+    };
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "the total waited for the periodic read: {:?}",
+        started.elapsed()
+    );
+    // haiku 4.5 $1 + two sonnet 5.5 $2: priced, none at $0
+    assert_eq!(usage.cost_micros, Some(5_000_000));
+}
+
 #[test]
 fn the_perm_request_says_what_always_would_pick_on_screen() {
     let auto =

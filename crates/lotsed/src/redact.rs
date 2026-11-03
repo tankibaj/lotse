@@ -12,8 +12,9 @@
 //!   `AKIA` / `ASIA`, `xox?-`, JWTs;
 //! - `Bearer` / `Basic` credentials, URL userinfo (`scheme://user:password@`);
 //! - assignments: `*_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `password=`, `api_key=`, command line
-//!   flags (`--password x`), and JSON keys (`"password": "x"`). A value that is a reference
-//!   (`$VAR`, `${VAR}`, `<placeholder>`) is not a secret.
+//!   flags (`--password x`), JSON keys (`"password": "x"`) and colon forms (YAML `password: x`,
+//!   headers `X-Api-Key: x`, `Authorization: x`). A value that is a reference (`$VAR`, `${VAR}`,
+//!   `<placeholder>`) is not a secret; neither is a type word after a colon (`token: string`).
 //!
 //! Masking is idempotent: [`MASK`] matches no rule, so a second pass changes and counts nothing.
 
@@ -157,8 +158,75 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
                     .then(|| format!("{}\"{MASK}\"", &caps[1]))
             },
         ),
+        // `name: value` (YAML, headers, dict literals): the secret names of the `=` form, hyphens
+        // allowed for headers (`X-Api-Key`), plus `Authorization`. Quoted values always count; a
+        // bare value only when it is the whole value (end of line, `,` `;` `}` `]` or a comment), so
+        // prose after the colon and type annotations (`token: string`) stay
+        rule(
+            &format!(r#"(?i)\b({COLON_NAME}["']?[ \t]*:[ \t]*)("(?:[^"\\\n]|\\.)*"|'[^'\n]*')"#),
+            &[":"],
+            |caps| is_secret_value(&caps[2]).then(|| format!("{}{MASK}", &caps[1])),
+        ),
+        rule(
+            &format!(
+                r#"(?im)\b({COLON_NAME}["']?[ \t]*:[ \t]*)([^\s"',;}}\]\[]+)([ \t]*(?:[,;}}\]#]|\r?$))"#
+            ),
+            &[":"],
+            |caps| {
+                is_bare_secret_value(&caps[2]).then(|| format!("{}{MASK}{}", &caps[1], &caps[3]))
+            },
+        ),
     ]
 });
+
+/// Names a colon form masks: the `=` form's secret names, with `-` for headers.
+const COLON_NAME: &str = r"(?:[a-z0-9_-]*(?:password|passwd|secret|token)|[a-z0-9_-]*(?:api|access|secret|private|auth|encryption|signing)[-_]?key|(?:proxy-)?authorization)";
+
+/// [`is_secret_value`] for an unquoted value after a colon, which prose and type annotations also
+/// produce: YAML tags and block scalars, template syntax, and the words that say "no value here".
+fn is_bare_secret_value(value: &str) -> bool {
+    is_secret_value(value)
+        && !value.starts_with(['{', '(', '!', '|', '>', '&', '*', '%'])
+        && !matches!(
+            value.to_ascii_lowercase().as_str(),
+            "string"
+                | "str"
+                | "number"
+                | "int"
+                | "integer"
+                | "float"
+                | "bool"
+                | "boolean"
+                | "any"
+                | "object"
+                | "array"
+                | "yes"
+                | "no"
+                | "on"
+                | "off"
+                | "required"
+                | "optional"
+                | "bearer"
+                | "basic"
+                | "token"
+                | "password"
+                | "secret"
+                | "expired"
+                | "invalid"
+                | "missing"
+                | "valid"
+                | "set"
+                | "unset"
+                | "empty"
+                | "undefined"
+                | "redacted"
+                | "hidden"
+                | "masked"
+                | "ok"
+                | "error"
+                | "n/a"
+        )
+}
 
 /// Is `value` (an assignment's right-hand side, quotes included) something to mask? Not a reference
 /// to another variable, a placeholder, an empty string, a flag, a boolean or what is already masked.
@@ -178,6 +246,97 @@ mod tests {
 
     const BODY: &str = "KEYBODY00aB3xaB3xaB3xaB3x\nKEYBODY01aB3xaB3xaB3xaB3x";
     const END: &str = "-----END RSA PRIVATE KEY-----";
+
+    #[test]
+    fn colon_forms_are_masked_like_the_equals_form() {
+        let cases = [
+            ("password: hunter2", "password: [REDACTED]", 1),
+            ("api_key: sk_live_abc", "api_key: [REDACTED]", 1),
+            ("X-Api-Key: abc123", "X-Api-Key: [REDACTED]", 1),
+            ("x-auth-token: abc123", "x-auth-token: [REDACTED]", 1),
+            (
+                "Authorization: abc123def456",
+                "Authorization: [REDACTED]",
+                1,
+            ),
+            (
+                "Proxy-Authorization: abc123def456",
+                "Proxy-Authorization: [REDACTED]",
+                1,
+            ),
+            ("client_secret: \"s3 cr3t\"", "client_secret: [REDACTED]", 1),
+            ("accessToken: 'abc123'", "accessToken: [REDACTED]", 1),
+            (
+                "  db_password: hunter2 # dev",
+                "  db_password: [REDACTED] # dev",
+                1,
+            ),
+            (
+                "{password: hunter2, user: bob}",
+                "{password: [REDACTED], user: bob}",
+                1,
+            ),
+            ("'api_key': 'abcd'", "'api_key': [REDACTED]", 1),
+            (
+                "services:\r\n  db:\r\n    password: hunter2\r\n    user: bob\r\n",
+                "services:\r\n  db:\r\n    password: [REDACTED]\r\n    user: bob\r\n",
+                1,
+            ),
+            (
+                "A_KEY=1\npassword: hunter2",
+                "A_KEY=[REDACTED]\npassword: [REDACTED]",
+                2,
+            ),
+        ];
+        for (input, want, count) in cases {
+            let (out, n) = redact(input);
+            assert_eq!((out.as_ref(), n), (want, count), "input: {input}");
+            assert_eq!(redact(&out).1, 0, "not idempotent: {out}");
+        }
+        // the existing forms still count once
+        let (out, n) = redact("Authorization: Basic dXNlcjpwYXNzd29yZA==");
+        assert_eq!((out.as_ref(), n), ("Authorization: Basic [REDACTED]", 1));
+        let (out, n) = redact(r#"{"password": "hunter2", "api_key":"abcd"}"#);
+        assert_eq!(n, 2, "{out}");
+    }
+
+    #[test]
+    fn colon_forms_that_are_not_secrets_are_left_alone() {
+        for input in [
+            "password: string",
+            "token: string;",
+            "password?: string",
+            "api_key: Optional[str]",
+            "token: str",
+            "password: required",
+            "Token: expired",
+            "api_key: ${API_KEY}",
+            "API_KEY: $OTHER_VAR",
+            "X-Api-Key: ${KEY}",
+            "password: <your password>",
+            "password: !vault |",
+            "private_key: |",
+            "secret: ${{ secrets.FOO }}",
+            "password: \"\"",
+            "password:",
+            "secret:\n  name: db\n",
+            "Token: the count of tokens",
+            "Note: set a password: in the settings page",
+            "Authorization: Bearer authentication is required",
+            "Authorization: required",
+            "max_tokens: 4096",
+            "token_count: 5",
+            "password_file: /run/secrets/db",
+            "sort_key: name",
+            r#"{"token_count": 5, "name": "x"}"#,
+            "def f(password: str = x): pass",
+            "ssh://git@host:22/repo",
+            "see https://example.com/token: ok soon",
+        ] {
+            assert_eq!(redact(input).1, 0, "masked: {input} -> {}", redact(input).0);
+            assert_eq!(redact(input).0, input);
+        }
+    }
 
     #[test]
     fn an_orphan_key_body_ending_in_a_short_line_is_masked_whole() {

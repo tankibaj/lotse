@@ -1,7 +1,9 @@
 # Claude Code screen manifest (see crates/lotse-detect/src/screen/manifest.rs for the format).
 #
 # The fallback when no Claude Code hook reaches Lotse (neither the plugin Lotse injects into its panes
-# nor the global hooks): events with source `hook` always win over this. Derived from herdr's claude
+# nor the global hooks): events with source `hook` win over this, except that a permission dialog drawn
+# on the screen (`blocked`) counts even when the hooks say something else (the hooks do not report a
+# background agent's prompt; see the merge rule in `lotse-detect/src/engine.rs`). Derived from herdr's claude
 # manifest (/Users/naim/Repos/research/herdr/src/detect/manifests/claude.toml, Apache-2.0), reduced to
 # the three screens that matter: working ("esc to interrupt"), a permission prompt, at the prompt.
 # Lotse reads the visible rows only, so herdr's OSC-title rules are dropped, and the regions it

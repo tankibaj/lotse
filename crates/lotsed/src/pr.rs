@@ -7,12 +7,13 @@
 use crate::launch::LaunchEnv;
 use lotse_proto::{PrChecks, PrInfo, PrProvider, PrState};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::{LazyLock, Mutex, mpsc};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{LazyLock, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 /// How long one lookup (host check and `pr view` together) may take.
@@ -58,6 +59,84 @@ pub fn status(dir: &Path, branch: &str, env: &LaunchEnv) -> Option<PrInfo> {
     }
     cache.insert(key, (Instant::now(), found.clone()));
     found
+}
+
+/// Counts the background lookups that changed an answer: the periodic refresh re-reads every folder
+/// once it moves, so a late answer reaches the clients without waiting for activity.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Branches whose lookup is queued or running.
+static PENDING: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(Mutex::default);
+static WORKER: OnceLock<mpsc::Sender<(Key, LaunchEnv)>> = OnceLock::new();
+
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
+}
+
+/// [`status`] for the periodic refresh, which must never wait for `gh` / `glab`: the cached answer
+/// at once (a stale one included, until the fresh one lands), `None` when there is none yet. A miss
+/// or an expired answer queues one background lookup per branch (one runs at a time); when it
+/// finishes with a different answer [`generation`] moves. A lookup that found nothing is cached for
+/// [`TTL`] like any other, so a branch without a PR costs one lookup a minute, off this thread.
+pub fn status_in_background(dir: &Path, branch: &str, env: &LaunchEnv) -> Option<PrInfo> {
+    if branch.is_empty() {
+        return None;
+    }
+    let key = (dir.to_path_buf(), branch.to_owned());
+    let known = {
+        let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        cache
+            .get(&key)
+            .map(|(at, pr)| (at.elapsed() < TTL, pr.clone()))
+    };
+    if let Some((true, pr)) = known {
+        return pr;
+    }
+    schedule(key, env);
+    known.and_then(|(_, pr)| pr)
+}
+
+fn schedule(key: Key, env: &LaunchEnv) {
+    if !PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key.clone())
+    {
+        return; // already queued or running
+    }
+    let sender = WORKER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<(Key, LaunchEnv)>();
+        let built = std::thread::Builder::new()
+            .name("lotse-pr".into())
+            .spawn(move || {
+                for (key, env) in rx {
+                    let before = peek(&key);
+                    let found = status(&key.0, &key.1, &env);
+                    if before != Some(found.clone()) {
+                        GENERATION.fetch_add(1, Ordering::AcqRel);
+                    }
+                    PENDING
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&key);
+                }
+            });
+        if let Err(e) = built {
+            tracing::error!("cannot start the PR lookup thread: {e}");
+        }
+        tx
+    });
+    if sender.send((key.clone(), env.clone())).is_err() {
+        PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&key);
+    }
+}
+
+/// The cached answer of `key`, expired or not.
+fn peek(key: &Key) -> Option<Option<PrInfo>> {
+    let cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    cache.get(key).map(|(_, pr)| pr.clone())
 }
 
 fn cached(key: &Key) -> Option<Option<PrInfo>> {

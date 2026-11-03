@@ -6,7 +6,7 @@
 
 use super::{
     DIFF_MAX_BYTES, DIFF_MAX_FILE_BYTES, GitDiff, GitError, diff, diff_against, head_or_empty_tree,
-    layout, out_ok, run,
+    layout, out_ok, run, run_capped,
 };
 use lotse_proto::{Review, ReviewCommit};
 use std::path::Path;
@@ -88,7 +88,11 @@ pub fn commits_ahead(
         return Ok((Vec::new(), false));
     }
     let text = String::from_utf8_lossy(&o.stdout);
-    let fields: Vec<&str> = text.split('\0').filter(|f| !f.is_empty()).collect();
+    // Empty fields (a commit with no subject) stay: only the terminator of the last record is cut.
+    let mut fields: Vec<&str> = text.split('\0').collect();
+    if fields.last() == Some(&"") {
+        fields.pop();
+    }
     let mut commits: Vec<ReviewCommit> = fields
         .chunks_exact(4)
         .map(|f| ReviewCommit {
@@ -106,8 +110,17 @@ pub fn commits_ahead(
 /// Lines added and removed by the uncommitted changes (staged and unstaged, tracked files);
 /// binary files count 0.
 pub fn numstat(dir: &Path) -> Result<(u32, u32), GitError> {
+    numstat_capped(dir, NUMSTAT_MAX_BYTES)
+}
+
+/// Most bytes of `git diff --numstat` read: a line per changed file, so a huge change counts the
+/// files up to here and git is stopped (the figure is then a lower bound).
+pub const NUMSTAT_MAX_BYTES: usize = 256 * 1024;
+
+/// [`numstat`] reading at most `cap` bytes of git's output; a line cut by the cap is not counted.
+pub fn numstat_capped(dir: &Path, cap: usize) -> Result<(u32, u32), GitError> {
     let base = head_or_empty_tree(dir)?;
-    let o = run(
+    let (raw, cut) = match run_capped(
         dir,
         [
             "diff",
@@ -118,12 +131,20 @@ pub fn numstat(dir: &Path) -> Result<(u32, u32), GitError> {
             base.as_str(),
             "--",
         ],
-    )?;
-    if !o.status.success() {
-        return Ok((0, 0));
+        cap,
+    ) {
+        Ok(out) => out,
+        // git failed on its own (not a repository state it can diff): no counts
+        Err(GitError::Command(_)) => return Ok((0, 0)),
+        Err(e) => return Err(e),
+    };
+    let text = String::from_utf8_lossy(&raw);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if cut {
+        lines.pop(); // the last line may be cut off
     }
     let (mut added, mut removed) = (0u32, 0u32);
-    for line in String::from_utf8_lossy(&o.stdout).lines() {
+    for line in lines {
         let mut cols = line.split('\t');
         // binary files print `-` for both
         if let (Some(a), Some(r)) = (cols.next(), cols.next())
@@ -344,6 +365,31 @@ mod tests {
     }
 
     #[test]
+    fn commits_ahead_keeps_records_aligned_around_an_empty_subject() {
+        let d = repo();
+        git(d.path(), &["checkout", "-q", "-b", "empty"]);
+        commit(d.path(), "a.txt", "1\n", "first");
+        write(d.path(), "a.txt", "2\n");
+        git(d.path(), &["add", "."]);
+        git(
+            d.path(),
+            &["commit", "-q", "--allow-empty-message", "-m", ""],
+        );
+        commit(d.path(), "a.txt", "3\n", "third");
+        let (commits, cut) = commits_ahead(d.path(), "main", MAX_COMMITS).unwrap();
+        assert!(!cut);
+        let rows: Vec<_> = commits
+            .iter()
+            .map(|c| (c.subject.as_str(), c.author.as_str(), c.sha.len()))
+            .collect();
+        assert_eq!(
+            rows,
+            [("third", "Ada", 40), ("", "Ada", 40), ("first", "Ada", 40)]
+        );
+        assert!(commits.iter().all(|c| c.at > 1_600_000_000_000));
+    }
+
+    #[test]
     fn review_reports_base_ahead_behind_and_commits() {
         let d = diverged();
         let r = review(d.path()).unwrap();
@@ -371,6 +417,55 @@ mod tests {
         git(d.path(), &["commit", "-q", "-am", "more"]);
         write(d.path(), "a.txt", "c\n"); // `a\nb\nc\n` -> `c\n`: -2
         assert_eq!(numstat(d.path()).unwrap(), (0, 2));
+    }
+
+    #[test]
+    fn numstat_stops_reading_at_its_cap_and_counts_whole_lines_only() {
+        let d = repo();
+        for n in 0..6 {
+            commit(d.path(), &format!("f{n}.txt"), "x\n", &format!("add f{n}"));
+        }
+        for n in 0..6 {
+            write(d.path(), &format!("f{n}.txt"), "x\ny\n"); // +1 each
+        }
+        assert_eq!(numstat(d.path()).unwrap(), (6, 0), "under the default cap");
+        assert_eq!(numstat_capped(d.path(), 1 << 20).unwrap(), (6, 0));
+        // `1\t0\tfN.txt\n` is 11 bytes: a cap of 30 holds two whole lines and part of a third
+        let (added, removed) = numstat_capped(d.path(), 30).unwrap();
+        assert_eq!((added, removed), (2, 0), "a cut line is not counted");
+        assert_eq!(numstat_capped(d.path(), 0).unwrap(), (0, 0));
+    }
+
+    #[test]
+    fn git_info_reuses_the_extras_until_something_they_depend_on_moves() {
+        let d = diverged();
+        let top = std::fs::canonicalize(d.path()).unwrap();
+        write(d.path(), "f1.txt", "one\nmore\n");
+        let first = git_info(d.path()).unwrap();
+        assert_eq!((first.behind, first.added, first.removed), (1, 1, 0));
+        assert_eq!(crate::extras_computed(&top), 1);
+
+        // polls with nothing new: no `diff`, no ref lookups
+        for _ in 0..3 {
+            assert_eq!(git_info(d.path()).unwrap(), first);
+        }
+        assert_eq!(crate::extras_computed(&top), 1, "the extras were reused");
+
+        // the same file edited again (its status line does not change, its size does)
+        write(d.path(), "f1.txt", "one\nmore\nand more\n");
+        let edited = git_info(d.path()).unwrap();
+        assert_eq!(edited.added, 2);
+        assert_eq!(crate::extras_computed(&top), 2);
+
+        // a new commit on HEAD, and main moving (behind)
+        git(d.path(), &["commit", "-q", "-am", "more"]);
+        assert_eq!(git_info(d.path()).unwrap().added, 0);
+        assert_eq!(crate::extras_computed(&top), 3);
+        git(d.path(), &["checkout", "-q", "main"]);
+        commit(d.path(), "m2.txt", "m\n", "main moves again");
+        git(d.path(), &["checkout", "-q", "feature"]);
+        assert_eq!(git_info(d.path()).unwrap().behind, 2);
+        assert!(crate::extras_computed(&top) >= 4);
     }
 
     #[test]

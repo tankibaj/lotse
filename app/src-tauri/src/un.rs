@@ -14,13 +14,12 @@ pub const OPEN_SESSION_EVENT: &str = "lotse://notification/open";
 /// Set once the notification center is set up (bundled app only).
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// What to play with a banner.
+/// What to play with a banner. A named system sound is not here: `UNNotificationSound::soundNamed`
+/// only finds files in the app bundle or `Library/Sounds`, so [`crate::notify`] plays those itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Sound {
     Off,
     Default,
-    /// A macOS system sound by name (`Glass`).
-    Named(String),
 }
 
 /// One banner. `id` replaces a banner shown with the same id.
@@ -221,9 +220,6 @@ mod native {
         match &banner.sound {
             Sound::Off => {}
             Sound::Default => content.setSound(Some(&UNNotificationSound::defaultSound())),
-            Sound::Named(name) => {
-                content.setSound(Some(&UNNotificationSound::soundNamed(&ns(name))))
-            }
         }
         if let Some(category) = banner.category {
             content.setCategoryIdentifier(&ns(category));

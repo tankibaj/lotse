@@ -3,10 +3,13 @@
 //! Everything goes through the `git` CLI (no libgit2). The result type is the protocol's
 //! [`GitInfo`], so the daemon can forward it unchanged.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 pub mod review;
 mod tree;
@@ -207,13 +210,11 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         .filter(|l| !l.is_empty())
         .count() as u32;
     let worktree = l.git_dir != l.common_dir;
-    // the extras are best effort: a failure leaves the line as it was before they existed
-    let behind = review::default_branch(dir)
-        .ok()
-        .flatten()
-        .and_then(|base| review::ahead_behind(dir, &base).ok())
-        .map_or(0, |(_, behind)| behind);
-    let (added, removed) = review::numstat(dir).unwrap_or((0, 0));
+    let Extras {
+        behind,
+        added,
+        removed,
+    } = review_extras(dir, &l, &status.stdout);
     Ok(GitInfo {
         is_git: true,
         branch,
@@ -227,6 +228,143 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         // filled by lotsed (opt-in, `gh` / `glab`)
         pr: None,
     })
+}
+
+/// What a git line carries beyond the cheap parts: commits behind the default branch and the lines
+/// added and removed by the uncommitted changes. Each costs several `git` runs and a `diff`, so a
+/// poll reuses them while nothing they depend on moved (see [`review_extras`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Extras {
+    behind: u32,
+    added: u32,
+    removed: u32,
+}
+
+struct CachedExtras {
+    at: Instant,
+    stamp: String,
+    extras: Extras,
+}
+
+/// Extras of the last poll of each work tree.
+static EXTRAS: LazyLock<Mutex<HashMap<PathBuf, CachedExtras>>> = LazyLock::new(Mutex::default);
+/// An answer is recomputed after this long even when its stamp did not change.
+const EXTRAS_TTL: Duration = Duration::from_secs(60);
+/// Work trees remembered.
+const EXTRAS_MAX_ENTRIES: usize = 64;
+/// More changed files than this are not stamped (every poll recomputes).
+const STAMP_MAX_PATHS: usize = 300;
+/// How many times the extras of each work tree were computed rather than reused (tests).
+static EXTRAS_COMPUTED: LazyLock<Mutex<HashMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// How many times the extras of the work tree at `toplevel` were computed (the rest of the polls
+/// reused them). For tests.
+#[doc(hidden)]
+pub fn extras_computed(toplevel: &Path) -> usize {
+    let counts = EXTRAS_COMPUTED.lock().unwrap_or_else(|e| e.into_inner());
+    counts.get(toplevel).copied().unwrap_or(0)
+}
+
+/// `behind`, `added` and `removed` of `dir`'s work tree, best effort: a failure leaves them 0. They
+/// are recomputed only when the [`extras_stamp`] changed (HEAD, the refs the default branch lives
+/// in, and every changed file's status, size and modification time) or after [`EXTRAS_TTL`]; the
+/// poll itself (`status`) stays a few cheap runs.
+fn review_extras(dir: &Path, l: &Layout, porcelain: &[u8]) -> Extras {
+    let stamp = extras_stamp(dir, l, porcelain);
+    if let Some(stamp) = &stamp {
+        let cache = EXTRAS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = cache
+            .get(&l.toplevel)
+            .filter(|c| c.at.elapsed() < EXTRAS_TTL && c.stamp == *stamp)
+        {
+            return hit.extras;
+        }
+    }
+    *EXTRAS_COMPUTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(l.toplevel.clone())
+        .or_default() += 1;
+    let behind = review::default_branch(dir)
+        .ok()
+        .flatten()
+        .and_then(|base| review::ahead_behind(dir, &base).ok())
+        .map_or(0, |(_, behind)| behind);
+    let (added, removed) = review::numstat(dir).unwrap_or((0, 0));
+    let extras = Extras {
+        behind,
+        added,
+        removed,
+    };
+    if let Some(stamp) = stamp {
+        let mut cache = EXTRAS.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= EXTRAS_MAX_ENTRIES && !cache.contains_key(&l.toplevel) {
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, c)| c.at)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                cache.remove(&k);
+            }
+        }
+        cache.insert(
+            l.toplevel.clone(),
+            CachedExtras {
+                at: Instant::now(),
+                stamp,
+                extras,
+            },
+        );
+    }
+    extras
+}
+
+/// What the extras depend on, as one string; `None` when it cannot be told cheaply (many changed
+/// files). One `git rev-parse` plus a `stat` per ref folder and per changed tracked file.
+fn extras_stamp(dir: &Path, l: &Layout, porcelain: &[u8]) -> Option<String> {
+    let stat = |p: &Path| {
+        std::fs::metadata(p)
+            .ok()
+            .map(|m| {
+                let ns = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                format!("{ns}:{}", m.len())
+            })
+            .unwrap_or_default()
+    };
+    let head = out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut stamp = format!("{head}\n");
+    // the default branch is `origin/HEAD`, `main` or `master`: a ref moving rewrites one of these
+    for rel in ["packed-refs", "refs/heads", "refs/remotes/origin"] {
+        stamp.push_str(&format!("{rel}={}\n", stat(&l.common_dir.join(rel))));
+    }
+    let text = String::from_utf8_lossy(porcelain);
+    let mut changed = 0;
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        stamp.push_str(line);
+        stamp.push('\n');
+        // untracked files are not part of the counts
+        if line.starts_with("??") {
+            continue;
+        }
+        changed += 1;
+        if changed > STAMP_MAX_PATHS {
+            return None;
+        }
+        let path = line.get(3..).unwrap_or("");
+        let path = path.split_once(" -> ").map_or(path, |(_, to)| to);
+        stamp.push_str(&format!(
+            "  {}\n",
+            stat(&l.toplevel.join(path.trim_matches('"')))
+        ));
+    }
+    Some(stamp)
 }
 
 /// Largest `git diff` text [`diff`] reads (Show Changes).
