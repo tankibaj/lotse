@@ -52,6 +52,17 @@ describe('shortcut bindings', () => {
     expect(rows).toContain('Open stacked (split down)⇧⌘D · ⌥⇧-click · drag');
   });
 
+  it('the shortcuts sheet lists the real panel keys (Changes is ⇧⌘G), the composer and the review (⇧⌘R, not ⌥⌘D)', async () => {
+    mountWp5();
+    key({ code: 'Slash', metaKey: true });
+    const dlg = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    const rows = [...dlg.querySelectorAll('.contents')].map((r) => r.textContent ?? '');
+    expect(rows).toContain('Changes · Files · Transcript · Usage · Session⇧⌘G · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I');
+    expect(rows).toContain('Open prompt composer⌘⇧↩');
+    expect(rows).toContain('Full diff review⇧⌘R');
+    expect(dlg).not.toHaveTextContent('⌥⌘D');
+  });
+
   it('the shortcuts sheet has a Close button and Tab cannot leave it', async () => {
     mountWp5();
     const outside = document.createElement('button');

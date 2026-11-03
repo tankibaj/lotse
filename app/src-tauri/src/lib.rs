@@ -1,13 +1,18 @@
 //! Tauri shell: the bridge between the webview and `lotsed` (see [`daemon`]), host commands
 //! ([`host`]), installed fonts ([`fonts`]), SF Symbols ([`symbols`]), the app menu ([`menu`]), notifications and the Dock badge
-//! ([`notify`]).
+//! ([`notify`]). Beta stubs, filled in by later work packages: [`un`] (actionable notifications), [`export`],
+//! [`config_open`], [`speech`].
 
+pub mod config_open;
 pub mod daemon;
+pub mod export;
 pub mod fonts;
 pub mod host;
 pub mod menu;
 pub mod notify;
+pub mod speech;
 pub mod symbols;
+pub mod un;
 
 use std::sync::Arc;
 use tauri::Manager;
@@ -42,6 +47,7 @@ pub fn run() {
             app.state::<Arc<daemon::Bridge>>().set_sink(sink.clone());
             app.manage(sink);
             app.set_menu(menu::build(app.handle())?)?;
+            un::init(app.handle())?;
             Ok(())
         })
         .on_menu_event(menu::on_menu_event)
@@ -60,6 +66,12 @@ pub fn run() {
             host::integration_uninstall,
             fonts::list_fonts,
             symbols::symbol_png,
+            un::un_available,
+            export::export_write,
+            config_open::open_agent_config,
+            speech::speech_available,
+            speech::speech_start,
+            speech::speech_stop,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Lotse");

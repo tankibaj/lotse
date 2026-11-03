@@ -166,7 +166,53 @@ describe('New session sheet', () => {
     mountWp5();
     await open();
     await userEvent.click(screen.getByRole('button', { name: 'Change…' }));
-    expect(getOverlay()).toEqual({ name: 'settings', section: 'Agents' });
+    expect(getOverlay()).toMatchObject({ name: 'settings', section: 'Agents' });
     expect(await screen.findByRole('dialog', { name: 'Settings' })).toBeInTheDocument();
+  });
+
+  describe('after "Change…"', () => {
+    const fill = async (client: { getSnapshot(): Promise<unknown> }) => {
+      await client.getSnapshot();
+      await open();
+      await userEvent.selectOptions(await screen.findByLabelText('Project'), 'p3');
+      await userEvent.click(screen.getByRole('button', { name: 'Claude Code' }));
+      await userEvent.type(screen.getByLabelText(/First prompt/), 'fix the build');
+      await userEvent.click(screen.getByRole('checkbox', { name: /isolated git worktree/ }));
+    };
+    const backToSheet = async () => {
+      const dlg = await screen.findByRole('dialog', { name: 'New session' });
+      expect(screen.getByLabelText('Project')).toHaveValue('p3');
+      expect(screen.getByRole('button', { name: 'Claude Code' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByLabelText(/First prompt/)).toHaveValue('fix the build');
+      expect(screen.getByLabelText('Worktree branch name')).toBeInTheDocument();
+      return dlg;
+    };
+
+    it('Back to sessions returns to the New session sheet with its state, showing the edited command', async () => {
+      const { client } = mountWp5();
+      await fill(client);
+      await userEvent.click(screen.getByRole('button', { name: 'Change…' }));
+      const cmd = await screen.findByLabelText('Claude Code launch command');
+      await userEvent.clear(cmd);
+      await userEvent.type(cmd, 'claude --model opus');
+      await userEvent.click(screen.getByRole('button', { name: /Back to sessions/ }));
+      await backToSheet();
+      await waitFor(() => expect(screen.getByTestId('cmd-hint')).toHaveTextContent('Runs claude --model opus'));
+    });
+
+    it('Esc returns to the sheet too, and a plain Settings open still closes to nothing', async () => {
+      const { client } = mountWp5();
+      await fill(client);
+      await userEvent.click(screen.getByRole('button', { name: 'Change…' }));
+      await screen.findByRole('dialog', { name: 'Settings' });
+      await userEvent.keyboard('{Escape}');
+      await backToSheet();
+      await userEvent.keyboard('{Escape}');
+      expect(getOverlay()).toBeNull();
+      act(() => void emitUiCommand('openSettings'));
+      await screen.findByRole('dialog', { name: 'Settings' });
+      await userEvent.keyboard('{Escape}');
+      expect(getOverlay()).toBeNull();
+    });
   });
 });

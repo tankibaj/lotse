@@ -6,7 +6,13 @@ import { SettingsPage } from '../settings';
 import { Sheets } from '../sheets';
 import { Sidebar } from '../sidebar';
 import { StatusBar } from '../statusbar';
+import { Composer } from '../composer';
+import { RightPanel } from '../panels';
+import { Review } from '../review';
 import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
+import { closeReview, getReview, isPanelName, openReview, togglePanel, useOpenPanel, useReview } from '../lib/ui/panel';
+import type { PanelName } from '../lib/ui/panel';
+import { getSelectedSessionId } from '../lib/ui/selection';
 
 // Layout copied from spec/mock.html: sidebar 260 px (resizable 200-420, saved in `lotse-side`),
 // 44 px title/tab rows, 28 px status bar. Each region renders a WP-owned component inside a
@@ -54,28 +60,29 @@ const SidebarIcon = () => (
   </svg>
 );
 
-// The mock's panel toolbar (right end of the tab row). The panels are Beta, so the buttons are inert until they
-// land: `aria-disabled` (not `disabled`, so the "Coming soon" tooltip still shows in WebKit), no hover, no click.
-const PANELS: { name: string; keys: string; paths: string; rect?: boolean }[] = [
-  { name: 'Session', keys: '⇧⌘I', paths: 'M5 6h6M5 8.5h6M5 11h4', rect: true },
-  { name: 'Changes', keys: '⇧⌘D', paths: 'M8 4.5v4M6 6.5h4M6 11h4', rect: true },
-  { name: 'Files', keys: '⇧⌘F', paths: 'M2 4.5a1.5 1.5 0 0 1 1.5-1.5H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z' },
-  { name: 'Transcript', keys: '⇧⌘T', paths: 'M3 3.5h10M3 6.5h7M3 9.5h10M3 12.5h5' },
-  { name: 'Usage & time', keys: '⇧⌘U', paths: 'M3 13V8M6.5 13V4M10 13V9M13.5 13V6' },
+// The mock's panel toolbar (right end of the tab row): one panel at a time, each button toggles its panel (`lib/ui/panel`).
+// `code` is the physical key of the ⇧⌘ shortcut, so it works on any keyboard layout.
+const PANELS: { id: PanelName; name: string; keys: string; code: string; paths: string; rect?: boolean }[] = [
+  { id: 'session', name: 'Session', keys: '⇧⌘I', code: 'KeyI', paths: 'M5 6h6M5 8.5h6M5 11h4', rect: true },
+  { id: 'changes', name: 'Changes', keys: '⇧⌘G', code: 'KeyG', paths: 'M8 4.5v4M6 6.5h4M6 11h4', rect: true },
+  { id: 'files', name: 'Files', keys: '⇧⌘F', code: 'KeyF', paths: 'M2 4.5a1.5 1.5 0 0 1 1.5-1.5H6l1.5 1.5h5A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z' },
+  { id: 'transcript', name: 'Transcript', keys: '⇧⌘T', code: 'KeyT', paths: 'M3 3.5h10M3 6.5h7M3 9.5h10M3 12.5h5' },
+  { id: 'usage', name: 'Usage & time', keys: '⇧⌘U', code: 'KeyU', paths: 'M3 13V8M6.5 13V4M10 13V9M13.5 13V6' },
 ];
 
 function PanelToolbar() {
+  const open = useOpenPanel();
   return (
     <div className="ml-auto flex shrink-0 items-center gap-0.5" role="toolbar" aria-label="Panels">
       {PANELS.map((p) => (
         <button
           key={p.name}
           type="button"
-          aria-disabled="true"
+          aria-pressed={open === p.id}
           aria-label={p.name === 'Usage & time' ? 'Usage and time' : p.name}
-          title={`${p.name} ${p.keys} · Coming soon`}
-          className="grid h-[26px] w-7 place-items-center rounded-md text-dim"
-          onClick={(e) => e.preventDefault()}
+          title={`${p.name} ${p.keys}`}
+          className={`grid h-[26px] w-7 place-items-center rounded-md hover:bg-sel ${open === p.id ? 'bg-sel text-txt' : 'text-dim'}`}
+          onClick={() => emitUiCommand('togglePanel', p.id)}
         >
           <svg width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true">
             {p.rect && <rect x="2" y="2" width="12" height="12" rx="2.5" />}
@@ -93,7 +100,11 @@ export function Shell() {
 
   const toggleSidebar = useCallback(() => setHidden((h) => !h), []);
 
+  const review = useReview();
+
   useEffect(() => onUiCommand('toggleSidebar', toggleSidebar), [toggleSidebar]);
+  useEffect(() => onUiCommand('togglePanel', (name) => isPanelName(name) && togglePanel(name)), []);
+  useEffect(() => onUiCommand('openReview', (sessionId, file) => sessionId && openReview(sessionId, file)), []);
   // The Tauri window is transparent with the macOS sidebar material behind it (tauri.conf.json); polish.css lets it
   // show through the sidebar and status bar. In a browser there is no material, so the solid mock colours stay.
   useEffect(() => {
@@ -101,11 +112,35 @@ export function Shell() {
     document.documentElement.dataset.vibrancy = '';
     return () => document.documentElement.removeAttribute('data-vibrancy');
   }, []);
+  // Esc leaves the review. Capture phase: xterm stops the keydown of a focused terminal from bubbling up to the window.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !getReview()) return;
+      e.preventDefault();
+      e.stopPropagation(); // the terminal behind must not also receive the Esc
+      closeReview();
+    };
+    addEventListener('keydown', onEsc, true);
+    return () => removeEventListener('keydown', onEsc, true);
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey && e.ctrlKey && e.code === 'KeyS') {
+      if (!e.metaKey) return;
+      const handled = (fn: () => void) => {
         e.preventDefault();
-        toggleSidebar();
+        fn();
+      };
+      if (e.ctrlKey) return e.code === 'KeyS' ? handled(toggleSidebar) : undefined;
+      // ⇧⌘ + letter: the panels. ⌘⇧Return: the composer. ⇧⌘R: review the selected session's changes
+      // (⌥⌘D is macOS's own Show/Hide Dock: the OS takes it before the app sees it).
+      if (e.shiftKey && !e.altKey) {
+        const panel = PANELS.find((p) => p.code === e.code);
+        if (panel) return handled(() => emitUiCommand('togglePanel', panel.id));
+        if (e.code === 'Enter') return handled(() => emitUiCommand('openComposer'));
+        if (e.code === 'KeyR') {
+          const id = getSelectedSessionId();
+          if (id) handled(() => emitUiCommand('openReview', id));
+        }
       }
     };
     addEventListener('keydown', onKey);
@@ -207,8 +242,18 @@ export function Shell() {
             <PanelToolbar />
           </div>
           <div className="flex min-h-0 flex-1">
-            <div data-slot="panes" className="relative flex min-w-0 flex-1">
-              <Panes />
+            {/* A column: the panes take what the composer leaves, so an open composer shrinks (and refits) the terminals
+                instead of covering the bottom of them. */}
+            <div data-slot="panes" className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+              <div className="flex min-h-0 min-w-0 flex-1">
+                <Panes />
+              </div>
+              <div data-slot="composer" className="contents">
+                <Composer />
+              </div>
+            </div>
+            <div data-slot="panel" className="contents">
+              <RightPanel />
             </div>
           </div>
         </main>
@@ -218,6 +263,9 @@ export function Shell() {
       </div>
       <div data-slot="sheets" className="contents">
         <Sheets />
+      </div>
+      <div data-slot="review" className="contents">
+        {review && <Review sessionId={review.sessionId} file={review.file} onClose={closeReview} />}
       </div>
       <div data-slot="settings" className="contents">
         <SettingsPage />

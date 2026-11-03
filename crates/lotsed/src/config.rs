@@ -56,10 +56,12 @@ impl Config {
 
     /// Fails early with a clear message instead of a truncated-path `bind` error.
     pub fn check_socket_path(&self) -> Result<(), String> {
-        let len = self.socket_path().as_os_str().len();
+        let socket = self.socket_path();
+        let len = socket.as_os_str().len();
         if len > MAX_SOCKET_PATH {
             return Err(format!(
-                "socket path is {len} bytes, the limit is {MAX_SOCKET_PATH}: use a shorter --data-dir"
+                "the socket path {} is {len} bytes; macOS limits a Unix socket path (sun_path) to 104 bytes including the NUL, so lotsed allows {MAX_SOCKET_PATH}: use a shorter data directory (--data-dir or LOTSE_DATA_DIR)",
+                socket.display()
             ));
         }
         Ok(())

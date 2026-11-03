@@ -70,6 +70,16 @@ fn is_slow(req: &Request) -> bool {
             | Request::GetGitInfo { .. }
             | Request::GetDiff { .. }
             | Request::GetTranscript { .. }
+            | Request::GetReview { .. }
+            | Request::ListFiles { .. }
+            | Request::ReadFile { .. }
+            | Request::WriteFile { .. }
+            | Request::GetUsage { .. }
+            | Request::ExportTranscript { .. }
+            | Request::GetSessionInfo { .. }
+            | Request::StopTask { .. }
+            | Request::ListConnectors { .. }
+            | Request::CheckConnectors { .. }
     )
 }
 
@@ -216,6 +226,54 @@ mod tests {
         };
         assert!(is_slow(&req));
         assert!(!is_slow(&Request::Ping));
+    }
+
+    #[test]
+    fn beta_git_file_usage_transcript_and_connector_requests_run_off_the_connection_loop() {
+        use lotse_proto::{DiffBase, ExportFormat, SessionId};
+        let s = || SessionId::new("a1");
+        let slow = [
+            Request::GetDiff {
+                session_id: s(),
+                base: DiffBase::MergeBase,
+            },
+            Request::GetReview { session_id: s() },
+            Request::ListFiles {
+                session_id: s(),
+                changed_only: false,
+            },
+            Request::ReadFile {
+                session_id: s(),
+                path: "a".into(),
+                rev: None,
+            },
+            Request::WriteFile {
+                session_id: s(),
+                path: "a".into(),
+                text: String::new(),
+                expected_sha: None,
+            },
+            Request::GetUsage { session_id: s() },
+            Request::ExportTranscript {
+                session_id: s(),
+                format: ExportFormat::Text,
+            },
+            Request::GetSessionInfo { session_id: s() },
+            Request::ListConnectors { session_id: s() },
+            Request::CheckConnectors { session_id: s() },
+        ];
+        for req in slow {
+            assert!(
+                is_slow(&req),
+                "{} must not block the connection",
+                req.method()
+            );
+        }
+        // wp08 may re-run `ps` to check the pid before it signals it
+        assert!(is_slow(&Request::StopTask {
+            session_id: s(),
+            pid: 1
+        }));
     }
 
     #[tokio::test]

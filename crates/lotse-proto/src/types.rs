@@ -101,8 +101,46 @@ pub struct SubAgent {
     pub status: Status,
 }
 
-/// Git line of a session card and the status bar.
+/// Where a pull or merge request stands. Since proto 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrState {
+    Open,
+    Draft,
+    Merged,
+    Closed,
+}
+
+/// CI result of a pull request. Since proto 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrChecks {
+    Pass,
+    Fail,
+    Pending,
+}
+
+/// Which CLI reported the pull request. Since proto 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrProvider {
+    Github,
+    Gitlab,
+}
+
+/// The pull (GitHub) or merge (GitLab) request of the session's branch. Since proto 4.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrInfo {
+    pub number: u64,
+    pub url: String,
+    pub state: PrState,
+    /// `None` when the provider reports no checks.
+    pub checks: Option<PrChecks>,
+    pub provider: PrProvider,
+}
+
+/// Git line of a session card and the status bar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitInfo {
     /// `false` renders "No git".
     pub is_git: bool,
@@ -116,6 +154,17 @@ pub struct GitInfo {
     pub worktree: bool,
     /// Absolute worktree path when `worktree` is true.
     pub worktree_path: Option<String>,
+    /// Commits the base has that the branch lacks (↓n); 0 hides the field. Since proto 4.
+    #[serde(default)]
+    pub behind: u32,
+    /// Lines added / removed by the uncommitted changes (+n −n). Since proto 4.
+    #[serde(default)]
+    pub added: u32,
+    #[serde(default)]
+    pub removed: u32,
+    /// The branch's pull request; only with `Settings::external.pr_status` on. Since proto 4.
+    #[serde(default)]
+    pub pr: Option<PrInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -152,6 +201,19 @@ pub struct PermRequest {
     /// read the prompt (the card then shows a plain Always). Since proto 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub always: Option<PermAlways>,
+    /// Identifies this prompt (set by the daemon, a new one per prompt). `ResolvePermission`
+    /// carries it back as `prompt_id`, so a stale answer cannot hit a newer prompt. Since proto 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
+/// Where a permission answer came from (`perm_events.via`). Since proto 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermVia {
+    Sidebar,
+    Notification,
+    Palette,
 }
 
 /// The option the Always button picks on the prompt on screen.
@@ -248,12 +310,15 @@ impl Default for LaunchCommands {
 }
 
 /// One row of Settings › Notifications.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventPrefs {
     pub banner: bool,
     pub sound: bool,
     /// Allow/Deny inside the banner; Beta, kept so the setting round-trips.
     pub allow_deny: bool,
+    /// macOS system sound (`Glass`, `Ping`, …); `None` plays the default. Since proto 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sound_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -275,6 +340,7 @@ impl Default for NotificationSettings {
             banner,
             sound,
             allow_deny,
+            sound_name: None,
         };
         Self {
             perm: on(true, true, true),
@@ -316,6 +382,18 @@ impl Default for AppearanceSettings {
     }
 }
 
+/// Settings › External: what the daemon may ask other programs. Both off until the user opts in.
+/// Since proto 4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExternalSettings {
+    /// Run `gh` / `glab` for `GitInfo::pr`.
+    #[serde(default)]
+    pub pr_status: bool,
+    /// Run `claude mcp list` / `codex mcp list` for `check_connectors`.
+    #[serde(default)]
+    pub mcp_live: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     pub launch_commands: LaunchCommands,
@@ -323,6 +401,9 @@ pub struct Settings {
     pub appearance: AppearanceSettings,
     /// Per-session raw byte ring buffer, replayed on attach. Default 4 MiB.
     pub scrollback_bytes: u64,
+    /// Since proto 4.
+    #[serde(default)]
+    pub external: ExternalSettings,
 }
 
 impl Default for Settings {
@@ -332,6 +413,7 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             appearance: AppearanceSettings::default(),
             scrollback_bytes: 4 * 1024 * 1024,
+            external: ExternalSettings::default(),
         }
     }
 }
@@ -380,9 +462,25 @@ pub struct DiffFile {
     pub truncated: bool,
     /// Unified diff of this file (headers and hunks); empty for untracked and binary files.
     pub diff: String,
+    /// Lines added / removed in this file (0 for binary files). Since proto 4.
+    #[serde(default)]
+    pub added: u32,
+    #[serde(default)]
+    pub removed: u32,
 }
 
-/// Answer to `get_diff`: the session folder's changes against `HEAD` plus untracked names.
+/// What `get_diff` compares the working tree with. Since proto 4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffBase {
+    /// `HEAD`: uncommitted changes (Show Changes).
+    #[default]
+    Head,
+    /// The merge-base with the default branch: everything the branch adds (review).
+    MergeBase,
+}
+
+/// Answer to `get_diff`: the session folder's changes against the base plus untracked names.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitDiff {
     /// `false`: the folder is not in a git repository ("No git").
@@ -392,6 +490,64 @@ pub struct GitDiff {
     pub truncated: bool,
 }
 
+/// One commit of `Review::commits`. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReviewCommit {
+    pub sha: String,
+    pub subject: String,
+    pub author: String,
+    pub at: UnixMs,
+}
+
+/// Answer to `get_review`: how the session's branch stands against its base. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Review {
+    /// The ref the branch is compared with (`origin/main`, `main`, `HEAD`).
+    pub base: String,
+    pub ahead: u32,
+    pub behind: u32,
+    /// Newest first, the commits ahead of the base.
+    pub commits: Vec<ReviewCommit>,
+    /// More commits than listed.
+    pub truncated: bool,
+}
+
+/// One entry of `FileTree::entries`. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileEntry {
+    /// Relative to `FileTree::root`, `/` separated.
+    pub path: String,
+    pub dir: bool,
+    /// `None`: unchanged (or not a git folder).
+    pub status: Option<DiffStatus>,
+    pub added: u32,
+    pub removed: u32,
+}
+
+/// Answer to `list_files`. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileTree {
+    /// Absolute folder of the session; every path is confined to it.
+    pub root: String,
+    pub is_git: bool,
+    pub entries: Vec<FileEntry>,
+    /// More entries than listed.
+    pub truncated: bool,
+}
+
+/// Answer to `read_file` and `write_file`. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct File {
+    pub path: String,
+    /// Empty for a binary file.
+    pub text: String,
+    /// SHA-256 (hex) of the file's bytes: `write_file` passes it back as `expected_sha`.
+    pub sha: String,
+    /// Not UTF-8 text: shown read-only.
+    pub binary: bool,
+    pub size: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptRole {
@@ -399,6 +555,17 @@ pub enum TranscriptRole {
     Assistant,
     /// A tool call the agent made (`tool` is set, `text` is empty).
     Tool,
+    /// A permission decision (`approval` is set, `text` is empty). Since proto 4.
+    Approval,
+}
+
+/// How a tool call ended. Since proto 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    Run,
+    Done,
+    Fail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +574,22 @@ pub struct TranscriptTool {
     pub name: String,
     /// Short, e.g. the command or file path.
     pub summary: String,
+    /// Since proto 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<ToolStatus>,
+    /// Short excerpt of the tool's output. Since proto 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<String>,
+}
+
+/// A permission decision inside the transcript. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptApproval {
+    pub decision: PermDecision,
+    /// `None` when the decision was made in the terminal.
+    pub via: Option<PermVia>,
+    /// What was asked, e.g. `Bash(npx playwright test)`.
+    pub command: String,
 }
 
 /// One turn of the agent's conversation. Since proto 3.
@@ -416,6 +599,25 @@ pub struct TranscriptTurn {
     pub text: String,
     pub tool: Option<TranscriptTool>,
     pub at: Option<UnixMs>,
+    /// Since proto 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<TranscriptApproval>,
+    /// Name of the sub-agent that took this turn. Since proto 4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sub_agent: Option<String>,
+}
+
+/// Where a transcript was read from. Since proto 4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptSource {
+    #[default]
+    Claude,
+    Codex,
+    #[serde(rename = "opencode")]
+    OpenCode,
+    /// The session's terminal scrollback (no agent transcript).
+    Scrollback,
 }
 
 /// Answer to `get_transcript`: the last turns of the agent's own transcript file.
@@ -426,6 +628,138 @@ pub struct Transcript {
     pub turns: Vec<TranscriptTurn>,
     /// Older turns were left out (count or size cap).
     pub truncated: bool,
+    /// Since proto 4.
+    #[serde(default)]
+    pub source: TranscriptSource,
+}
+
+/// Format of `export_transcript`. Since proto 4.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFormat {
+    Markdown,
+    JsonLines,
+    Text,
+}
+
+/// Answer to `export_transcript`. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Export {
+    pub file_name: String,
+    pub content: String,
+    /// Secrets masked in `content`.
+    pub redactions: u32,
+}
+
+/// One stretch of a lane in `Usage` (the session's status over time).
+/// Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageSpan {
+    pub status: Status,
+    pub from: UnixMs,
+    pub to: UnixMs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneKind {
+    /// The session's own agent.
+    Lead,
+    SubAgent,
+}
+
+/// One row of the usage timeline. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageLane {
+    pub name: String,
+    pub kind: LaneKind,
+    pub spans: Vec<UsageSpan>,
+    /// Millionths of a US dollar.
+    pub cost_micros: u64,
+}
+
+/// Token counts of a session. Since proto 4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageTokens {
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub output: u64,
+}
+
+/// Spend in millionths of a US dollar: this session, its project, everything. Since proto 4.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageSpend {
+    pub session: u64,
+    pub project: u64,
+    pub all: u64,
+}
+
+/// Answer to `get_usage`: time and tokens of one session. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Usage {
+    pub started_at: UnixMs,
+    pub total_ms: u64,
+    /// Time in `run`.
+    pub working_ms: u64,
+    /// Time in `perm`.
+    pub waiting_ms: u64,
+    pub lanes: Vec<UsageLane>,
+    pub tokens: UsageTokens,
+    pub spend: UsageSpend,
+    pub model: Option<String>,
+    /// `false`: a model without a known price took part, the spend covers the priced part only.
+    pub priced: bool,
+}
+
+/// A background process of a session (Session panel › Tasks). Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackgroundTask {
+    pub pid: u32,
+    pub command: String,
+    pub started_at: UnixMs,
+}
+
+/// Answer to `get_session_info`. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub agent_version: Option<String>,
+    pub model: Option<String>,
+    /// `scutil --get ComputerName`.
+    pub machine: String,
+    pub cwd: String,
+    pub worktree: Option<String>,
+    /// Which source set the session's status.
+    pub source: DetectSource,
+    pub tasks: Vec<BackgroundTask>,
+}
+
+/// State of one MCP connector. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ConnectorStatus {
+    /// Found in a config file; not checked live.
+    Configured,
+    Connected {
+        tools: u32,
+    },
+    NeedsAuth,
+    Failed {
+        reason: String,
+    },
+    Unknown,
+}
+
+/// One MCP server of an agent's configuration. Since proto 4.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Connector {
+    pub agent: AgentKind,
+    pub name: String,
+    /// `stdio`, `http`, `sse`, …
+    pub transport: String,
+    /// The file that declares it.
+    pub config_path: String,
+    pub status: ConnectorStatus,
 }
 
 /// Tokens and cost of today (local time), summed over the Claude Code transcripts the daemon knows.

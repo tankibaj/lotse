@@ -5,20 +5,22 @@ use crate::config::Config;
 use crate::db::{DEFAULT_WORKSPACE, Db, DbError, SessionRow};
 use crate::git;
 use crate::git_glue;
-use crate::hub::{ClientTx, Hub};
+use crate::hub::{ClientTx, Hub, PermDecisionRecord};
 use crate::launch::{self, LaunchEnv};
+use crate::pr;
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
-use crate::transcript;
+use crate::transcript::{self, AgentDirs};
 use crate::usage::{DayBounds, UsageTracker};
+use crate::{export, files, mcp, review, session_info, session_usage, transcript_sources};
 use lotse_proto::{
-    AgentKind, DaemonInfo, DetectSource, ErrorCode, Event, Frame, Message, NewProject, NewSession,
-    PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
-    ResponseEnvelope, Session, SessionId, Settings, Snapshot, Transcript, Workspace, WorkspaceId,
+    AgentKind, DaemonInfo, DetectSource, DiffBase, ErrorCode, Event, Frame, Message, NewProject,
+    NewSession, PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
+    ResponseEnvelope, Session, SessionId, Settings, Snapshot, Workspace, WorkspaceId,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{Notify, OnceCell};
@@ -41,6 +43,10 @@ const DETECT_TICK: Duration = Duration::from_millis(100);
 const GIT_REFRESH: Duration = Duration::from_secs(5);
 /// How often today's token usage is re-read (changed transcripts only) and pushed if it moved.
 const USAGE_REFRESH: Duration = Duration::from_secs(5);
+/// After a hook nudged the usage read: wait this long for its transcript lines to land, read, and
+/// read again after [`USAGE_NUDGE_AGAIN`].
+const USAGE_NUDGE_SETTLE: Duration = Duration::from_millis(300);
+const USAGE_NUDGE_AGAIN: Duration = Duration::from_millis(1200);
 /// Transcripts last announced longer ago than this are not followed after a restart.
 const TRANSCRIPT_MEMORY_MS: u64 = 3 * 24 * 3_600_000;
 const MAX_WORKSPACE_NAME: usize = 100;
@@ -50,6 +56,14 @@ fn err(code: ErrorCode, message: impl Into<String>) -> Response {
         code,
         message: message.into(),
     })
+}
+
+/// What a Beta request answers until its work package lands.
+pub(crate) fn unavailable(method: &str) -> Response {
+    err(
+        ErrorCode::Unavailable,
+        format!("{method} is not available yet"),
+    )
 }
 
 fn internal(e: impl std::fmt::Display) -> Response {
@@ -80,7 +94,8 @@ fn session_err(e: SessionError) -> Response {
         SessionError::Exited
         | SessionError::StillRunning
         | SessionError::NotAtPrompt
-        | SessionError::NoSuchChoice => ErrorCode::Conflict,
+        | SessionError::NoSuchChoice
+        | SessionError::StalePrompt => ErrorCode::Conflict,
         SessionError::BadSize => ErrorCode::InvalidRequest,
     };
     err(code, e.to_string())
@@ -101,6 +116,10 @@ pub struct State {
     inject: Injection,
     /// Today's tokens and cost, from the Claude Code transcripts hooks announce.
     usage: Arc<UsageTracker>,
+    /// Whole-transcript scans of `get_usage`, kept while the files do not change.
+    usage_scans: session_usage::ScanCache,
+    /// `pr::generation()` at the last git refresh round.
+    pr_seen: AtomicU64,
 }
 
 impl State {
@@ -111,20 +130,24 @@ impl State {
         }
         let settings = db.load_settings()?;
         let data_dir = cfg.data_dir.clone();
-        // follow the transcripts of the previous run too: today's total survives a restart
+        // follow the transcripts of the previous run too: today's total survives a restart (no
+        // session yet: the daemon's own environment names the agent folders)
         let usage = Arc::new(UsageTracker::new());
         if let Some(home) = cfg.home.as_deref() {
             let since = now_ms().saturating_sub(TRANSCRIPT_MEMORY_MS);
             for raw in db.recent_transcripts(since)? {
-                if let Some(path) = transcript::validate_path(&raw, home) {
+                if let Some(path) = transcript::validate_path(&raw, home, &AgentDirs::default()) {
                     usage.add(path);
                 }
             }
         }
+        let hub = Arc::new(Hub::default());
+        let db = Arc::new(db);
+        crate::history::install(&hub, db.clone());
         Ok(Arc::new(Self {
             cfg,
-            hub: Arc::new(Hub::default()),
-            db: Arc::new(db),
+            hub,
+            db,
             settings: Arc::new(RwLock::new(settings)),
             sessions: RwLock::new(HashMap::new()),
             started_at: now_ms(),
@@ -133,7 +156,30 @@ impl State {
             env: OnceCell::new(),
             inject: Injection::prepare(&data_dir),
             usage,
+            usage_scans: session_usage::ScanCache::default(),
+            pr_seen: AtomicU64::new(0),
         }))
+    }
+
+    pub(crate) fn usage_tracker(&self) -> &UsageTracker {
+        &self.usage
+    }
+
+    pub(crate) fn usage_scans(&self) -> &session_usage::ScanCache {
+        &self.usage_scans
+    }
+
+    /// How many transcript files `get_usage` parsed so far (the rest came from its cache).
+    pub fn usage_scan_reads(&self) -> u64 {
+        self.usage_scans.reads()
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.cfg
+    }
+
+    pub fn db(&self) -> &Arc<Db> {
+        &self.db
     }
 
     /// Resolves once a client asked for `shutdown`.
@@ -171,14 +217,14 @@ impl State {
         }
     }
 
-    fn settings(&self) -> Settings {
+    pub(crate) fn settings(&self) -> Settings {
         self.settings
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
 
-    fn session(&self, id: &SessionId) -> Option<Arc<SessionHandle>> {
+    pub(crate) fn session(&self, id: &SessionId) -> Option<Arc<SessionHandle>> {
         self.sessions
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -223,6 +269,10 @@ impl State {
 
     /// Graceful shutdown: hang up every session, wait for them (SIGKILL after the grace period).
     pub fn kill_all_sessions(&self) {
+        // History ends here: open spans close now, and the exits that follow record nothing.
+        if let Err(e) = self.db.close_all_open(now_ms()) {
+            tracing::warn!("closing the history at shutdown: {e}");
+        }
         let handles: Vec<_> = {
             let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
             self.closing.store(true, Ordering::Release);
@@ -283,15 +333,28 @@ impl State {
                 }
             },
             // Types the answer into the pane; Conflict when there is nothing to answer (the UI
-            // ignores it). The status moves on by the agent's hook or the screen, never here.
+            // ignores it) or `prompt_id` names an older prompt. The status moves on by the agent's
+            // hook or the screen, never here. A typed answer goes to the hub's decision observers
+            // (the history recorder, wp06) with its `via`; a refused one is not published.
             Request::ResolvePermission {
                 session_id,
                 decision,
+                via,
+                prompt_id,
             } => match self.session(&session_id) {
                 None => not_found("session"),
-                Some(h) => h
-                    .resolve_permission(decision)
-                    .map_or_else(session_err, |()| Response::Ok),
+                Some(h) => match h.resolve_permission(decision, prompt_id.as_deref()) {
+                    Ok(answered) => {
+                        self.hub.publish_decision(&PermDecisionRecord {
+                            session_id,
+                            prompt_id: answered,
+                            decision,
+                            via,
+                        });
+                        Response::Ok
+                    }
+                    Err(e) => session_err(e),
+                },
             },
             Request::Attach {
                 session_id,
@@ -351,9 +414,27 @@ impl State {
                 project_id,
                 session_id,
             } => self.git_info(&project_id, session_id.as_ref()).await,
-            Request::GetDiff { session_id } => self.get_diff(&session_id).await,
+            Request::GetDiff {
+                session_id,
+                base: DiffBase::Head,
+            } => self.get_diff(&session_id).await,
             Request::GetTranscript { session_id, limit } => {
                 self.get_transcript(&session_id, limit).await
+            }
+            // Beta (proto 4): each module answers `unavailable` until its work package lands.
+            req @ (Request::GetDiff { .. } | Request::GetReview { .. }) => {
+                review::handle(self, req).await
+            }
+            req @ (Request::ListFiles { .. }
+            | Request::ReadFile { .. }
+            | Request::WriteFile { .. }) => files::handle(self, req).await,
+            req @ Request::GetUsage { .. } => session_usage::handle(self, req).await,
+            req @ Request::ExportTranscript { .. } => export::handle(self, req).await,
+            req @ (Request::GetSessionInfo { .. } | Request::StopTask { .. }) => {
+                session_info::handle(self, req).await
+            }
+            req @ (Request::ListConnectors { .. } | Request::CheckConnectors { .. }) => {
+                mcp::handle(self, req).await
             }
             Request::HookEvent {
                 agent,
@@ -520,42 +601,18 @@ impl State {
         }
     }
 
-    async fn get_transcript(&self, id: &SessionId, limit: Option<u32>) -> Response {
-        let Some(h) = self.session(id) else {
-            return not_found("session");
-        };
-        let Some((agent, path)) = h.transcript() else {
-            // no hook has named a transcript: nothing to show (yet), or the agent has none at all
-            return match h.snapshot().agent {
-                a @ (AgentKind::Terminal | AgentKind::OpenCode) => err(
-                    ErrorCode::Unavailable,
-                    format!("Not available for {}", a.label()),
-                ),
-                AgentKind::ClaudeCode | AgentKind::Codex => Response::Transcript(Transcript {
-                    available: false,
-                    turns: Vec::new(),
-                    truncated: false,
-                }),
-            };
-        };
-        let Some(home) = self.cfg.home.clone() else {
-            return err(ErrorCode::Unavailable, "no home folder");
-        };
-        let limit = limit.map_or(transcript::DEFAULT_TURNS, |l| l as usize);
-        match tokio::task::spawn_blocking(move || {
-            transcript::read_turns(&path, agent, limit, &home)
-        })
-        .await
-        {
-            Ok(Ok(t)) => Response::Transcript(t),
-            Ok(Err(e)) => err(ErrorCode::Unavailable, format!("transcript: {e}")),
-            Err(e) => internal(e),
-        }
+    async fn get_transcript(self: &Arc<Self>, id: &SessionId, limit: Option<u32>) -> Response {
+        transcript_sources::get(self, id, limit).await
     }
 
     /// Read what changed in the followed transcripts; push the total when it moved.
     fn refresh_usage(&self) {
-        if let Some(usage) = self.usage.refresh(DayBounds::local(now_ms())) {
+        self.refresh_usage_at(now_ms());
+    }
+
+    /// [`Self::refresh_usage`] as of `now` (a pinned clock for tests).
+    pub fn refresh_usage_at(&self, now: u64) {
+        if let Some(usage) = self.usage.refresh(DayBounds::local(now)) {
             self.hub.broadcast(Event::UsageChanged(usage));
         }
     }
@@ -894,6 +951,14 @@ impl State {
             .map_or_else(LaunchEnv::from_process, |e| (**e).clone())
     }
 
+    /// The environment `gh` / `glab` run in while Settings › External › PR status is on.
+    fn pr_env(&self) -> Option<LaunchEnv> {
+        self.settings()
+            .external
+            .pr_status
+            .then(|| self.launch_env_now())
+    }
+
     async fn git_info(&self, project_id: &ProjectId, session_id: Option<&SessionId>) -> Response {
         let project = match self.db.get_project(project_id) {
             Ok(Some(p)) => p,
@@ -908,7 +973,10 @@ impl State {
                 _ => return not_found("session"),
             }
         }
-        match tokio::task::spawn_blocking(move || git_glue::info(&dir)).await {
+        let pr_env = self.pr_env();
+        match tokio::task::spawn_blocking(move || git_glue::info_with_pr(&dir, pr_env.as_ref()))
+            .await
+        {
             Ok(info) => Response::GitInfo(info),
             Err(e) => internal(e),
         }
@@ -936,18 +1004,35 @@ impl State {
                 tracing::error!("cannot start thread {name}: {e}");
             }
         };
-        spawn("lotse-usage", USAGE_REFRESH, State::refresh_usage);
-        // the first total should not wait for a period
-        let first = Arc::downgrade(self);
+        // Every period, and at once when a hook says a turn ended (`UsageTracker::nudge`): the first
+        // read at start, then a second a moment after a nudge (the transcript may lag its hook).
+        let usage_state = Arc::downgrade(self);
+        let tracker = self.usage.clone();
         let built = std::thread::Builder::new()
-            .name("lotse-usage-first".into())
+            .name("lotse-usage".into())
             .spawn(move || {
-                if let Some(state) = first.upgrade() {
+                let mut nudged = false;
+                loop {
+                    let Some(state) = usage_state.upgrade() else {
+                        return;
+                    };
+                    if state.closing.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if nudged {
+                        std::thread::sleep(USAGE_NUDGE_SETTLE);
+                    }
                     state.refresh_usage();
+                    if nudged {
+                        std::thread::sleep(USAGE_NUDGE_AGAIN);
+                        state.refresh_usage();
+                    }
+                    drop(state);
+                    nudged = tracker.wait_nudge(USAGE_REFRESH);
                 }
             });
         if let Err(e) = built {
-            tracing::error!("cannot start the first usage read: {e}");
+            tracing::error!("cannot start the usage thread: {e}");
         }
         spawn("lotse-detect-tick", DETECT_TICK, |s| {
             for h in s.handles() {
@@ -963,11 +1048,15 @@ impl State {
                 let due = h.git_due();
                 folders.entry(h.cwd()).or_default().push((h, due));
             }
+            let pr_env = s.pr_env();
+            // a PR lookup that finished since the last round: every folder reads again, so the
+            // answer reaches the clients without waiting for activity
+            let pr_moved = pr::generation() != s.pr_seen.swap(pr::generation(), Ordering::AcqRel);
             for (dir, sessions) in folders {
-                if sessions.iter().all(|(_, due)| due.is_none()) {
+                if !pr_moved && sessions.iter().all(|(_, due)| due.is_none()) {
                     continue;
                 }
-                let git = git_glue::info(&dir);
+                let git = git_glue::info_with_pr_refresh(&dir, pr_env.as_ref());
                 for (h, due) in sessions {
                     h.apply_git(git.clone());
                     if let Some(token) = due {

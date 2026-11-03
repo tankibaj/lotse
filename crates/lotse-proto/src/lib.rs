@@ -24,7 +24,14 @@ pub use types::*;
 /// 2: `PermRequest::always`.
 /// 3: workspaces (`Workspace`, workspace requests and events, `Snapshot::workspaces`), `get_diff`,
 ///    `get_transcript`, today's usage (`Snapshot::usage`, `usage_changed`).
-pub const PROTO_VERSION: u32 = 3;
+/// 4: Beta. `GitInfo` behind / +− / `pr` (`PrInfo`); `DiffFile` +−, `get_diff` `base`; requests
+///    `get_review`, `list_files`, `read_file`, `write_file`, `get_usage`, `export_transcript`,
+///    `get_session_info`, `stop_task`, `list_connectors`, `check_connectors` and their responses;
+///    transcript `Approval` role, `approval`, `sub_agent`, tool `status` / `result`,
+///    `Transcript::source`; `PermRequest::id`, `resolve_permission` `via` / `prompt_id`;
+///    `Event::Notification` `banner` / `sound_name` / `prompt_id`; `EventPrefs::sound_name`;
+///    `Settings::external`.
+pub const PROTO_VERSION: u32 = 4;
 
 #[cfg(test)]
 mod fixture_tests;

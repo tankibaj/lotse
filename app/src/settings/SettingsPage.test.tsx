@@ -17,7 +17,7 @@ describe('Settings page', () => {
     mountWp5();
     await open();
     expect(screen.getByRole('heading', { name: 'Agents' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Agents' })).toHaveAttribute('aria-current', 'page');
     await userEvent.keyboard('{Escape}');
     expect(getOverlay()).toBeNull();
     fireEvent.keyDown(window, { code: 'Comma', metaKey: true });
@@ -113,6 +113,29 @@ describe('Settings page', () => {
       expect(n.only_when_unfocused).toBe(false);
     });
 
+    it('a sound pick saves sound_name; Default clears it; None turns the sound off', async () => {
+      const { client } = mountWp5();
+      await open();
+      await nav('Notifications');
+      const pick = await screen.findByRole('combobox', { name: 'Done sound name' });
+      expect(pick).toHaveValue('none'); // done is silent by default
+      expect(screen.getByRole('combobox', { name: 'Needs permission sound name' })).toHaveValue('default');
+      const names = within(pick).getAllByRole('option').map((o) => o.textContent);
+      expect(names.slice(0, 2)).toEqual(['None', 'Default']);
+      expect(names).toContain('Glass');
+      await userEvent.selectOptions(pick, 'Glass');
+      expect((await client.getSettings()).notifications.done).toMatchObject({ sound: true, sound_name: 'Glass' });
+      expect(screen.getByRole('checkbox', { name: 'Done sound' })).toBeChecked();
+      await userEvent.selectOptions(pick, 'default');
+      const done = (await client.getSettings()).notifications.done as unknown as Record<string, unknown>;
+      expect(done.sound).toBe(true);
+      expect(done.sound_name ?? null).toBeNull();
+      await userEvent.selectOptions(pick, 'Glass');
+      await userEvent.selectOptions(pick, 'none');
+      expect((await client.getSettings()).notifications.done).toMatchObject({ sound: false });
+      expect(screen.getByRole('checkbox', { name: 'Done sound' })).not.toBeChecked();
+    });
+
     it('Allow/Deny exists for permission requests only', async () => {
       mountWp5();
       await open();
@@ -172,6 +195,8 @@ describe('Settings page', () => {
     expect(box).not.toBeChecked();
     expect(box).toBeDisabled();
     expect(screen.getByText(/opens no network listener/)).toBeInTheDocument();
+    expect(screen.queryByText(/Alpha/)).toBeNull(); // this is the Beta
+    expect(screen.getByText(/Not available yet/)).toBeInTheDocument();
   });
 
   it('Privacy states zero telemetry', async () => {
@@ -187,5 +212,34 @@ describe('Settings page', () => {
     await open();
     await nav('Shortcuts');
     for (const k of ['⌘K', '⌘J', '⌘T', '⇧⌘O', '⌘,', '⌃⌘S', '⌘/']) expect(screen.getByText(k)).toBeInTheDocument();
+  });
+
+  it('Shortcuts has the real panel keys (Changes is ⇧⌘G), the composer and the review (⇧⌘R)', async () => {
+    mountWp5();
+    await open();
+    await nav('Shortcuts');
+    expect(screen.getByText('⇧⌘G · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I')).toBeInTheDocument();
+    expect(screen.getByText('Open prompt composer').nextElementSibling).toHaveTextContent('⌘⇧↩');
+    expect(screen.getByText('Full diff review').nextElementSibling).toHaveTextContent('⇧⌘R');
+    expect(screen.queryByText(/⇧⌘D/)).toBeNull();
+    expect(screen.queryByText(/⌥⌘D/)).toBeNull();
+  });
+
+  it('the nav marks only the section on screen as current, after any number of clicks', async () => {
+    mountWp5();
+    await open();
+    const current = () =>
+      within(screen.getByRole('navigation', { name: 'Settings sections' }))
+        .getAllByRole('button')
+        .filter((b) => b.getAttribute('aria-current') === 'page')
+        .map((b) => b.textContent);
+    expect(current()).toEqual(['Agents']);
+    await nav('Notifications');
+    expect(current()).toEqual(['Notifications']);
+    await nav('Appearance');
+    expect(current()).toEqual(['Appearance']);
+    expect(screen.getByRole('heading', { name: 'Appearance' })).toBeInTheDocument();
+    // a section is not a toggle: nothing in the nav reports a pressed state that could go stale
+    expect(within(screen.getByRole('navigation', { name: 'Settings sections' })).queryAllByRole('button', { pressed: true })).toHaveLength(0);
   });
 });

@@ -16,6 +16,7 @@
   { "type": "request", "body": { "req_id": 15, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "allow" } } } },
   { "type": "request", "body": { "req_id": 16, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "always" } } } },
   { "type": "request", "body": { "req_id": 17, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "deny" } } } },
+  { "type": "request", "body": { "req_id": 36, "request": { "method": "resolve_permission", "params": { "session_id": "a3", "decision": "allow", "via": "notification", "prompt_id": "5f0c1c3e-7d0b-4a39-9d0e-0a8f4c2b6e11" } } } },
   { "type": "request", "body": { "req_id": 18, "request": { "method": "attach", "params": { "session_id": "a1", "cols": 120, "rows": 32 } } } },
   { "type": "request", "body": { "req_id": 19, "request": { "method": "detach", "params": { "session_id": "a1" } } } },
   { "type": "request", "body": { "req_id": 20, "request": { "method": "send_input", "params": { "session_id": "a1", "text": "1\r" } } } },
@@ -32,7 +33,8 @@
       "paused": true
     },
     "appearance": { "theme": "dark", "interface_font": "Inter", "interface_font_size": 14, "terminal_font": "JetBrains Mono", "terminal_font_size": 15 },
-    "scrollback_bytes": 8388608
+    "scrollback_bytes": 8388608,
+    "external": { "pr_status": true, "mcp_live": true }
   } } } } },
   { "type": "request", "body": { "req_id": 24, "request": { "method": "detect_launch_commands" } } },
   { "type": "request", "body": { "req_id": 25, "request": { "method": "get_git_info", "params": { "project_id": "p1", "session_id": "a1" } } } },
@@ -43,7 +45,22 @@
   { "type": "request", "body": { "req_id": 30, "request": { "method": "rename_workspace", "params": { "workspace_id": "w2", "name": "Clients" } } } },
   { "type": "request", "body": { "req_id": 31, "request": { "method": "delete_workspace", "params": { "workspace_id": "w2", "move_projects": true } } } },
   { "type": "request", "body": { "req_id": 32, "request": { "method": "move_project", "params": { "project_id": "p2", "workspace_id": "w2" } } } },
-  { "type": "request", "body": { "req_id": 33, "request": { "method": "get_diff", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 33, "request": { "method": "get_diff", "params": { "session_id": "a1", "base": "head" } } } },
   { "type": "request", "body": { "req_id": 34, "request": { "method": "get_transcript", "params": { "session_id": "a1", "limit": 50 } } } },
-  { "type": "request", "body": { "req_id": 35, "request": { "method": "get_transcript", "params": { "session_id": "a3", "limit": null } } } }
+  { "type": "request", "body": { "req_id": 35, "request": { "method": "get_transcript", "params": { "session_id": "a3", "limit": null } } } },
+  { "type": "request", "body": { "req_id": 37, "request": { "method": "get_diff", "params": { "session_id": "a1", "base": "merge_base" } } } },
+  { "type": "request", "body": { "req_id": 38, "request": { "method": "get_review", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 39, "request": { "method": "list_files", "params": { "session_id": "a1", "changed_only": false } } } },
+  { "type": "request", "body": { "req_id": 40, "request": { "method": "list_files", "params": { "session_id": "a1", "changed_only": true } } } },
+  { "type": "request", "body": { "req_id": 41, "request": { "method": "read_file", "params": { "session_id": "a1", "path": "src/invoice.rs", "rev": null } } } },
+  { "type": "request", "body": { "req_id": 42, "request": { "method": "read_file", "params": { "session_id": "a1", "path": "src/invoice.rs", "rev": "HEAD" } } } },
+  { "type": "request", "body": { "req_id": 43, "request": { "method": "write_file", "params": { "session_id": "a1", "path": "src/invoice.rs", "text": "fn total() {}\n", "expected_sha": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" } } } },
+  { "type": "request", "body": { "req_id": 44, "request": { "method": "get_usage", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 45, "request": { "method": "export_transcript", "params": { "session_id": "a1", "format": "markdown" } } } },
+  { "type": "request", "body": { "req_id": 46, "request": { "method": "export_transcript", "params": { "session_id": "a1", "format": "json_lines" } } } },
+  { "type": "request", "body": { "req_id": 47, "request": { "method": "export_transcript", "params": { "session_id": "a1", "format": "text" } } } },
+  { "type": "request", "body": { "req_id": 48, "request": { "method": "get_session_info", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 49, "request": { "method": "stop_task", "params": { "session_id": "a1", "pid": 4711 } } } },
+  { "type": "request", "body": { "req_id": 50, "request": { "method": "list_connectors", "params": { "session_id": "a1" } } } },
+  { "type": "request", "body": { "req_id": 51, "request": { "method": "check_connectors", "params": { "session_id": "a1" } } } }
 ]

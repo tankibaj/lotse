@@ -3,12 +3,19 @@
 //! Everything goes through the `git` CLI (no libgit2). The result type is the protocol's
 //! [`GitInfo`], so the daemon can forward it unchanged.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
+
+pub mod review;
+mod tree;
 
 pub use lotse_proto::{DiffFile, DiffStatus, GitDiff, GitInfo};
+pub use tree::{Blob, MAX_ENTRIES, list_files, read_blob, valid_rev};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
@@ -32,7 +39,7 @@ pub enum GitError {
 
 /// `git -C dir …` with a stable environment: English output, no prompts, and no optional index
 /// locks (the status refresh must never race an agent's own `git` calls).
-fn command(dir: &Path) -> Command {
+pub(crate) fn command(dir: &Path) -> Command {
     let mut cmd = Command::new("git");
     cmd.arg("-C")
         .arg(dir)
@@ -70,7 +77,7 @@ where
 
 /// Like [`run`], but reads at most `cap` bytes of stdout: a command that would print more is
 /// stopped. Returns the bytes and whether the output was cut. Errors when git fails on its own.
-fn run_capped<I, S>(dir: &Path, args: I, cap: usize) -> Result<(Vec<u8>, bool), GitError>
+pub(crate) fn run_capped<I, S>(dir: &Path, args: I, cap: usize) -> Result<(Vec<u8>, bool), GitError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
@@ -82,16 +89,32 @@ where
         .stderr(Stdio::null())
         .spawn()
         .map_err(spawn_error)?;
+    let stdout: Box<dyn Read> = match child.stdout.take() {
+        Some(stdout) => Box::new(stdout),
+        None => Box::new(std::io::empty()),
+    };
+    collect_capped(&mut child, stdout, cap)
+}
+
+/// The body of [`run_capped`]: reads `stdout` of `child`, then kills (when the output was cut or
+/// unreadable) and reaps it on every path: an early return would leave a zombie.
+fn collect_capped(
+    child: &mut Child,
+    stdout: impl Read,
+    cap: usize,
+) -> Result<(Vec<u8>, bool), GitError> {
     let mut out = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        stdout.take(cap as u64 + 1).read_to_end(&mut out)?;
-    }
+    let read = stdout.take(cap as u64 + 1).read_to_end(&mut out);
     let cut = out.len() > cap;
     if cut {
         out.truncate(cap);
+    }
+    if cut || read.is_err() {
         let _ = child.kill();
     }
-    let status = child.wait()?;
+    let status = child.wait();
+    read?;
+    let status = status?;
     if !cut && !status.success() {
         return Err(GitError::Command(format!("git exited with {status}")));
     }
@@ -115,14 +138,7 @@ fn stderr(o: &Output) -> String {
 }
 
 fn no_git() -> GitInfo {
-    GitInfo {
-        is_git: false,
-        branch: String::new(),
-        ahead: 0,
-        dirty: 0,
-        worktree: false,
-        worktree_path: None,
-    }
+    GitInfo::default()
 }
 
 /// Where `dir` sits in a repository: work-tree root, own git dir, shared git dir.
@@ -194,6 +210,11 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         .filter(|l| !l.is_empty())
         .count() as u32;
     let worktree = l.git_dir != l.common_dir;
+    let Extras {
+        behind,
+        added,
+        removed,
+    } = review_extras(dir, &l, &status.stdout);
     Ok(GitInfo {
         is_git: true,
         branch,
@@ -201,7 +222,149 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         dirty,
         worktree,
         worktree_path: worktree.then(|| l.toplevel.to_string_lossy().into_owned()),
+        behind,
+        added,
+        removed,
+        // filled by lotsed (opt-in, `gh` / `glab`)
+        pr: None,
     })
+}
+
+/// What a git line carries beyond the cheap parts: commits behind the default branch and the lines
+/// added and removed by the uncommitted changes. Each costs several `git` runs and a `diff`, so a
+/// poll reuses them while nothing they depend on moved (see [`review_extras`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Extras {
+    behind: u32,
+    added: u32,
+    removed: u32,
+}
+
+struct CachedExtras {
+    at: Instant,
+    stamp: String,
+    extras: Extras,
+}
+
+/// Extras of the last poll of each work tree.
+static EXTRAS: LazyLock<Mutex<HashMap<PathBuf, CachedExtras>>> = LazyLock::new(Mutex::default);
+/// An answer is recomputed after this long even when its stamp did not change.
+const EXTRAS_TTL: Duration = Duration::from_secs(60);
+/// Work trees remembered.
+const EXTRAS_MAX_ENTRIES: usize = 64;
+/// More changed files than this are not stamped (every poll recomputes).
+const STAMP_MAX_PATHS: usize = 300;
+/// How many times the extras of each work tree were computed rather than reused (tests).
+static EXTRAS_COMPUTED: LazyLock<Mutex<HashMap<PathBuf, usize>>> = LazyLock::new(Mutex::default);
+
+/// How many times the extras of the work tree at `toplevel` were computed (the rest of the polls
+/// reused them). For tests.
+#[doc(hidden)]
+pub fn extras_computed(toplevel: &Path) -> usize {
+    let counts = EXTRAS_COMPUTED.lock().unwrap_or_else(|e| e.into_inner());
+    counts.get(toplevel).copied().unwrap_or(0)
+}
+
+/// `behind`, `added` and `removed` of `dir`'s work tree, best effort: a failure leaves them 0. They
+/// are recomputed only when the [`extras_stamp`] changed (HEAD, the refs the default branch lives
+/// in, and every changed file's status, size and modification time) or after [`EXTRAS_TTL`]; the
+/// poll itself (`status`) stays a few cheap runs.
+fn review_extras(dir: &Path, l: &Layout, porcelain: &[u8]) -> Extras {
+    let stamp = extras_stamp(dir, l, porcelain);
+    if let Some(stamp) = &stamp {
+        let cache = EXTRAS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hit) = cache
+            .get(&l.toplevel)
+            .filter(|c| c.at.elapsed() < EXTRAS_TTL && c.stamp == *stamp)
+        {
+            return hit.extras;
+        }
+    }
+    *EXTRAS_COMPUTED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(l.toplevel.clone())
+        .or_default() += 1;
+    let behind = review::default_branch(dir)
+        .ok()
+        .flatten()
+        .and_then(|base| review::ahead_behind(dir, &base).ok())
+        .map_or(0, |(_, behind)| behind);
+    let (added, removed) = review::numstat(dir).unwrap_or((0, 0));
+    let extras = Extras {
+        behind,
+        added,
+        removed,
+    };
+    if let Some(stamp) = stamp {
+        let mut cache = EXTRAS.lock().unwrap_or_else(|e| e.into_inner());
+        if cache.len() >= EXTRAS_MAX_ENTRIES && !cache.contains_key(&l.toplevel) {
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, c)| c.at)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                cache.remove(&k);
+            }
+        }
+        cache.insert(
+            l.toplevel.clone(),
+            CachedExtras {
+                at: Instant::now(),
+                stamp,
+                extras,
+            },
+        );
+    }
+    extras
+}
+
+/// What the extras depend on, as one string; `None` when it cannot be told cheaply (many changed
+/// files). One `git rev-parse` plus a `stat` per ref folder and per changed tracked file.
+fn extras_stamp(dir: &Path, l: &Layout, porcelain: &[u8]) -> Option<String> {
+    let stat = |p: &Path| {
+        std::fs::metadata(p)
+            .ok()
+            .map(|m| {
+                let ns = m
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map_or(0, |d| d.as_nanos());
+                format!("{ns}:{}", m.len())
+            })
+            .unwrap_or_default()
+    };
+    let head = out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let mut stamp = format!("{head}\n");
+    // the default branch is `origin/HEAD`, `main` or `master`: a ref moving rewrites one of these
+    for rel in ["packed-refs", "refs/heads", "refs/remotes/origin"] {
+        stamp.push_str(&format!("{rel}={}\n", stat(&l.common_dir.join(rel))));
+    }
+    let text = String::from_utf8_lossy(porcelain);
+    let mut changed = 0;
+    for line in text.lines().filter(|l| !l.is_empty()) {
+        stamp.push_str(line);
+        stamp.push('\n');
+        // untracked files are not part of the counts
+        if line.starts_with("??") {
+            continue;
+        }
+        changed += 1;
+        if changed > STAMP_MAX_PATHS {
+            return None;
+        }
+        let path = line.get(3..).unwrap_or("");
+        let path = path.split_once(" -> ").map_or(path, |(_, to)| to);
+        stamp.push_str(&format!(
+            "  {}\n",
+            stat(&l.toplevel.join(path.trim_matches('"')))
+        ));
+    }
+    Some(stamp)
 }
 
 /// Largest `git diff` text [`diff`] reads (Show Changes).
@@ -233,14 +396,27 @@ pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitD
             truncated: false,
         });
     }
-    // a repository without a commit has no HEAD: compare with the empty tree
-    let base = if out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some() {
-        "HEAD".to_string()
-    } else {
-        out_ok(dir, ["hash-object", "-t", "tree", "/dev/null"])?
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| EMPTY_TREE.to_string())
-    };
+    let base = head_or_empty_tree(dir)?;
+    diff_against(dir, &base, max_total, max_file)
+}
+
+/// `HEAD`; a repository without a commit has no HEAD: the empty tree.
+fn head_or_empty_tree(dir: &Path) -> Result<String, GitError> {
+    if out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some() {
+        return Ok("HEAD".to_string());
+    }
+    Ok(out_ok(dir, ["hash-object", "-t", "tree", "/dev/null"])?
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| EMPTY_TREE.to_string()))
+}
+
+/// The working tree against the commit or tree `base` (never user input), plus untracked names.
+fn diff_against(
+    dir: &Path,
+    base: &str,
+    max_total: usize,
+    max_file: usize,
+) -> Result<GitDiff, GitError> {
     let (raw, cut) = run_capped(
         dir,
         [
@@ -254,7 +430,7 @@ pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitD
             "--find-renames",
             "--src-prefix=a/",
             "--dst-prefix=b/",
-            base.as_str(),
+            base,
             "--",
         ],
         max_total,
@@ -294,6 +470,8 @@ pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitD
         binary: false,
         truncated: false,
         diff: String::new(),
+        added: 0,
+        removed: 0,
     }));
     Ok(GitDiff {
         is_git: true,
@@ -326,6 +504,69 @@ fn cut_text(s: &str, max: usize) -> &str {
     head.rfind('\n').map_or(head, |i| &head[..=i])
 }
 
+/// A path git wrote C-quoted at the start of `s` (`"a/notes \"draft\".md"`, even with
+/// `core.quotepath=false`: a quote, backslash, tab or control character quotes it): the path, and
+/// the bytes of `s` it took, closing quote included. `None` when `s` does not start with a
+/// well-formed quoted path.
+fn unquote_prefix(s: &str) -> Option<(String, usize)> {
+    let b = s.as_bytes();
+    if b.first() != Some(&b'"') {
+        return None;
+    }
+    let mut out = Vec::new();
+    let mut i = 1;
+    while i < b.len() {
+        match b[i] {
+            b'"' => return Some((String::from_utf8_lossy(&out).into_owned(), i + 1)),
+            b'\\' => {
+                i += 1;
+                match *b.get(i)? {
+                    b'a' => out.push(7),
+                    b'b' => out.push(8),
+                    b't' => out.push(b'\t'),
+                    b'n' => out.push(b'\n'),
+                    b'v' => out.push(11),
+                    b'f' => out.push(12),
+                    b'r' => out.push(b'\r'),
+                    c @ (b'\\' | b'"') => out.push(c),
+                    // three octal digits: one byte (a multi-byte character is several)
+                    b'0'..=b'3' => {
+                        let digits = b.get(i..i + 3)?;
+                        if !digits.iter().all(|d| (b'0'..=b'7').contains(d)) {
+                            return None;
+                        }
+                        out.push(digits.iter().fold(0, |v, d| v << 3 | (d - b'0')));
+                        i += 2;
+                    }
+                    _ => return None,
+                }
+            }
+            c => out.push(c),
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A path as git prints it after a keyword, quoted or not.
+fn unquote(s: &str) -> String {
+    match unquote_prefix(s) {
+        Some((path, n)) if n == s.len() => path,
+        _ => s.to_string(),
+    }
+}
+
+/// The path of a `--- a/<path>` / `+++ b/<path>` header (`p` is what follows the three signs and
+/// the space), quoted or not; `None` for `/dev/null`.
+fn side_path(p: &str, prefix: &str) -> Option<String> {
+    match unquote_prefix(p) {
+        Some((path, _)) => path.strip_prefix(prefix).map(str::to_string),
+        None => p
+            .strip_prefix(prefix)
+            .map(|path| path.trim_end_matches('\t').to_string()),
+    }
+}
+
 fn parse_section(section: &str, max_file: usize) -> DiffFile {
     let (mut status, mut binary) = (DiffStatus::Modified, false);
     let (mut rename_from, mut rename_to, mut minus, mut plus) = (None, None, None, None);
@@ -334,17 +575,17 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
             break; // the headers end at the first hunk
         }
         if let Some(p) = line.strip_prefix("rename from ") {
-            rename_from = Some(p.to_string());
+            rename_from = Some(unquote(p));
         } else if let Some(p) = line.strip_prefix("rename to ") {
-            rename_to = Some(p.to_string());
+            rename_to = Some(unquote(p));
         } else if line.starts_with("new file mode") {
             status = DiffStatus::Added;
         } else if line.starts_with("deleted file mode") {
             status = DiffStatus::Deleted;
-        } else if let Some(p) = line.strip_prefix("--- a/") {
-            minus = Some(p.trim_end_matches('\t').to_string());
-        } else if let Some(p) = line.strip_prefix("+++ b/") {
-            plus = Some(p.trim_end_matches('\t').to_string());
+        } else if let Some(p) = line.strip_prefix("--- ") {
+            minus = side_path(p, "a/");
+        } else if let Some(p) = line.strip_prefix("+++ ") {
+            plus = side_path(p, "b/");
         } else if line.starts_with("Binary files ") || line.starts_with("GIT binary patch") {
             binary = true;
         }
@@ -352,11 +593,20 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
     if rename_to.is_some() {
         status = DiffStatus::Renamed;
     }
-    // `diff --git a/<path> b/<path>`: both halves are equal unless the file was renamed
+    // `diff --git a/<path> b/<path>` (each half quoted on its own when it needs it): both halves
+    // are equal unless the file was renamed; the new side is read
     let from_header = || {
-        let rest = section.lines().next()?.strip_prefix("diff --git a/")?;
-        rest.get(..rest.len().checked_sub(3)? / 2)
-            .map(str::to_string)
+        let rest = section.lines().next()?.strip_prefix("diff --git ")?;
+        let new_side = if rest.starts_with('"') {
+            let (_, n) = unquote_prefix(rest)?;
+            rest[n..].strip_prefix(' ')?
+        } else if let Some(i) = rest.find(" \"") {
+            &rest[i + 1..]
+        } else {
+            let half = rest.len().checked_sub(1)? / 2;
+            rest.get(half + 1..)?
+        };
+        side_path(new_side, "b/")
     };
     let path = rename_to
         .or(plus)
@@ -368,6 +618,7 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
     } else {
         cut_text(section, max_file).to_string()
     };
+    let (added, removed) = if binary { (0, 0) } else { count_lines(section) };
     DiffFile {
         path,
         old_path: rename_from,
@@ -375,7 +626,23 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
         binary,
         truncated: !binary && diff.len() < section.len(),
         diff,
+        added,
+        removed,
     }
+}
+
+/// Added and removed lines of one file's patch: the `+` / `-` lines after the first hunk header
+/// (the `---` / `+++` header lines come before it).
+fn count_lines(section: &str) -> (u32, u32) {
+    let (mut added, mut removed) = (0u32, 0u32);
+    for line in section.lines().skip_while(|l| !l.starts_with("@@")).skip(1) {
+        match line.as_bytes().first() {
+            Some(b'+') => added = added.saturating_add(1),
+            Some(b'-') => removed = removed.saturating_add(1),
+            _ => {}
+        }
+    }
+    (added, removed)
 }
 
 /// `~/.lotse/worktrees`, or `None` without a home directory.
@@ -837,6 +1104,80 @@ mod tests {
         let bin = file(&diff, "img.bin");
         assert!(bin.binary && bin.diff.is_empty(), "{bin:?}");
         assert_eq!(bin.status, DiffStatus::Modified);
+    }
+
+    /// git C-quotes a path with a quote, backslash, tab or control character even with
+    /// `core.quotepath=false`: `--- "a/notes \"draft\".md"`.
+    #[test]
+    fn diff_unquotes_paths_git_quotes() {
+        let d = repo();
+        let odd = ["notes \"draft\".md", "tab\there.md", "back\\slash.md"];
+        for name in odd {
+            write(d.path(), name, "one\n");
+        }
+        write(
+            d.path(),
+            "old \"q\".md",
+            "same content\nline two\nline three\n",
+        );
+        git(d.path(), &["add", "."]);
+        git(d.path(), &["commit", "-q", "-m", "odd names"]);
+        for name in odd {
+            write(d.path(), name, "two\n"); // `---` / `+++` header lines
+        }
+        git(d.path(), &["mv", "old \"q\".md", "new \"q\".md"]);
+        write(d.path(), "empty \"new\".txt", ""); // no `---` / `+++`: only the `diff --git` line
+        git(d.path(), &["add", "empty \"new\".txt"]);
+        let diff = diff(d.path()).unwrap();
+        let paths: Vec<&str> = diff.files.iter().map(|f| f.path.as_str()).collect();
+        for name in odd {
+            assert!(paths.contains(&name), "{name:?} not in {paths:?}");
+            let f = file(&diff, name);
+            assert_eq!((f.status, f.added, f.removed), (DiffStatus::Modified, 1, 1));
+        }
+        let renamed = file(&diff, "new \"q\".md");
+        assert_eq!(renamed.status, DiffStatus::Renamed);
+        assert_eq!(renamed.old_path.as_deref(), Some("old \"q\".md"));
+        let empty = file(&diff, "empty \"new\".txt");
+        assert_eq!(empty.status, DiffStatus::Added);
+        assert!(diff.files.iter().all(|f| !f.path.is_empty()), "{paths:?}");
+    }
+
+    #[test]
+    fn a_stdout_read_error_still_kills_and_reaps_the_child() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("boom"))
+            }
+        }
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .spawn()
+            .unwrap();
+        assert!(matches!(
+            collect_capped(&mut child, Broken, 10),
+            Err(GitError::Io(_))
+        ));
+        // reaped already (a child left running or unwaited answers `None` or is still alive)
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "the child was left running"
+        );
+    }
+
+    #[test]
+    fn git_quoting_is_undone_like_git_does_it() {
+        let q = unquote_prefix;
+        assert_eq!(q(r#""a\"b" tail"#), Some(("a\"b".to_string(), 6)));
+        assert_eq!(q(r#""t\tn\nb\\""#), Some(("t\tn\nb\\".to_string(), 11)));
+        // octal escapes are bytes: `é` is \303\251
+        assert_eq!(q(r#""caf\303\251""#), Some(("café".to_string(), 13)));
+        assert_eq!(q("plain"), None);
+        assert_eq!(q(r#""open"#), None);
+        assert_eq!(q(r#""bad\q""#), None);
+        assert_eq!(q(r#""\4""#), None);
     }
 
     #[test]

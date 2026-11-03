@@ -205,6 +205,7 @@ impl OpenCodeAdapter {
                             SUMMARY_MAX_CHARS,
                         ),
                         always: None,
+                        id: None,
                     },
                 };
                 let pending = &mut self.sessions[i].pending;
@@ -482,6 +483,7 @@ mod tests {
                 tool: "bash".into(),
                 summary: "npm test".into(),
                 always: None,
+                id: None,
             })
         );
         let reply =

@@ -1,69 +1,205 @@
 //! Agent transcripts (Show Transcript): which file the daemon may read, and its last turns.
 //!
 //! The path comes from an agent's hook payload (`transcript_path`), i.e. from outside the daemon,
-//! so it is never trusted: [`validate_path`] only lets a regular `*.jsonl` file below the user's
-//! home through, after resolving symlinks. The file is read from its tail, bounded in bytes, turns
-//! and text length, and only the conversation is kept (no tool output, no thinking).
+//! so it is never trusted: [`validate_path`] only lets a regular `*.jsonl` file below the agents'
+//! own folders through (Claude Code's `projects`, Codex's `sessions`; not a symlink itself, and
+//! opened without following one, [`open_nofollow`]). The file is read from its tail, bounded in bytes, turns
+//! and text length. Only the conversation is kept: the text, and each tool call with its status and
+//! a short excerpt of its output (paired by call id); no thinking. Secrets are masked
+//! ([`crate::redact`]) before anything is cut, so a clipped token cannot leave a readable half.
 //!
-//! - Claude Code: one JSON object per line, `type` `user` / `assistant`, `message.content` text and
-//!   `tool_use` blocks. Checked against the transcripts Claude Code writes today.
-//! - Codex: its rollout file, `response_item` lines with `payload.type` `message` / `function_call`.
-//!   **Unverified:** shaped from Codex's rollout format as remembered; no live Codex run was
-//!   available (tests never run an agent). An unreadable line is skipped, never an error.
-//! - OpenCode: its plugin payload carries no transcript path, so there is nothing to read.
+//! - Claude Code: one JSON object per line, `type` `user` / `assistant`, `message.content` text,
+//!   `tool_use` and `tool_result` blocks, `message.model`. Checked against the transcripts Claude
+//!   Code writes today. A `Task` call names its sub-agent (`input.subagent_type`).
+//! - Codex: its rollout file, each line the envelope `{metadata, ordinal, payload, timestamp,
+//!   type}` (checked against the rollouts Codex writes: `session_meta`, `event_msg`,
+//!   `response_item`, `turn_context`, `token_usage_record`, `world_state`). `response_item` lines
+//!   with `payload.type` `message` / `function_call` / `function_call_output`, `turn_context` for
+//!   the model; the other types carry nothing a transcript shows.
+//!   **Unverified:** the shape of a tool output other than the JSON `{output, metadata.exit_code}`
+//!   and `Exit code: N` forms (tests never run an agent). An unreadable line is skipped, never an
+//!   error.
+//! - OpenCode: its plugin payload carries no transcript path; `transcript_sources` shows its
+//!   scrollback.
 
-use lotse_proto::{AgentKind, Transcript, TranscriptRole, TranscriptTool, TranscriptTurn, UnixMs};
+use crate::redact::redact;
+use lotse_detect::claude::{
+    parse_task_notifications, strip_task_notifications, summary_agent_name,
+};
+use lotse_proto::{
+    AgentKind, ToolStatus, Transcript, TranscriptRole, TranscriptSource, TranscriptTool,
+    TranscriptTurn, UnixMs,
+};
 use serde_json::Value;
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TURNS: usize = 50;
 pub const MAX_TURNS: usize = 200;
-/// Bytes read from the end of the file; older turns are left out.
-const TAIL_BYTES: u64 = 2 * 1024 * 1024;
-/// Characters kept of one turn's text.
-const MAX_TEXT: usize = 4_000;
-/// Characters kept of a tool call's summary.
-const MAX_SUMMARY: usize = 160;
+/// Bytes read from the end of the file for `get_transcript`; older turns are left out.
+pub(crate) const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 /// Text bytes in one answer (the newest turns win).
 const MAX_TOTAL_TEXT: usize = 256 * 1024;
 
-/// `raw` as a path the daemon may read: absolute, a regular file, named `*.jsonl`, and inside
-/// `home` once symlinks are resolved (a link in the home folder that points elsewhere, or at a
-/// file that is not `*.jsonl`, is refused). Returns the resolved path.
-pub fn validate_path(raw: &str, home: &Path) -> Option<PathBuf> {
+/// How much of a turn is kept, in characters.
+#[derive(Debug, Clone, Copy)]
+pub struct Clip {
+    pub text: usize,
+    /// A tool call's summary (its command or path).
+    pub summary: usize,
+    /// The excerpt of a tool's output.
+    pub result: usize,
+}
+
+/// What `get_transcript` keeps of a turn.
+pub const VIEW: Clip = Clip {
+    text: 4_000,
+    summary: 160,
+    result: 300,
+};
+
+/// What an export keeps: whole messages, longer tool lines.
+pub const EXPORT: Clip = Clip {
+    text: usize::MAX,
+    summary: 2_000,
+    result: 2_000,
+};
+
+/// The folders the agents keep their transcripts in: Claude Code's `projects` (below
+/// `$CLAUDE_CONFIG_DIR` when the daemon has it, and `~/.claude`) and Codex's `sessions` (below
+/// `$CODEX_HOME` and `~/.codex`).
+fn agent_roots(
+    home: &Path,
+    claude_config_dir: Option<&OsStr>,
+    codex_home: Option<&OsStr>,
+) -> Vec<PathBuf> {
+    let mut roots = vec![home.join(".claude/projects"), home.join(".codex/sessions")];
+    // a relative value would mean the daemon's own working folder
+    fn absolute(dir: Option<&OsStr>) -> Option<&Path> {
+        dir.map(Path::new).filter(|d| d.is_absolute())
+    }
+    roots.extend(absolute(claude_config_dir).map(|d| d.join("projects")));
+    roots.extend(absolute(codex_home).map(|d| d.join("sessions")));
+    roots
+}
+
+/// What a session's login environment says about where its agent keeps its files. The daemon keeps
+/// that environment per session and never sets it on itself, so a transcript below the user's
+/// `CLAUDE_CONFIG_DIR` / `CODEX_HOME` is only recognised through these values.
+#[derive(Debug, Clone, Default)]
+pub struct AgentDirs {
+    /// `HOME` as the session sees it.
+    pub home: Option<PathBuf>,
+    pub claude_config_dir: Option<OsString>,
+    pub codex_home: Option<OsString>,
+}
+
+impl AgentDirs {
+    /// The three values out of a session's environment (`get` looks a variable up); an empty one is
+    /// no value.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
+        let var = |name: &str| get(name).filter(|v| !v.is_empty());
+        Self {
+            home: var("HOME").map(PathBuf::from),
+            claude_config_dir: var("CLAUDE_CONFIG_DIR").map(OsString::from),
+            codex_home: var("CODEX_HOME").map(OsString::from),
+        }
+    }
+}
+
+/// `raw` as a path the daemon may read, see [`validate_in`], with the agents' own folders as roots
+/// ([`agent_roots`]): below `home` (the daemon's) and below the session's `dirs`. A variable the
+/// session does not have falls back to the daemon's own environment. Returns the resolved path.
+pub fn validate_path(raw: &str, home: &Path, dirs: &AgentDirs) -> Option<PathBuf> {
+    let (claude, codex) = (
+        dirs.claude_config_dir
+            .clone()
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR")),
+        dirs.codex_home
+            .clone()
+            .or_else(|| std::env::var_os("CODEX_HOME")),
+    );
+    let mut roots = agent_roots(home, claude.as_deref(), codex.as_deref());
+    if let Some(session_home) = dirs.home.as_deref().filter(|h| h.is_absolute()) {
+        roots.extend(agent_roots(session_home, None, None));
+    }
+    validate_in(raw, &roots)
+}
+
+/// `raw` as a path the daemon may read: absolute, named `*.jsonl`, not itself a symlink, and a
+/// regular file inside one of `roots` once the symlinks of its folders are resolved (a link to a
+/// folder outside the roots, or to a file that is not `*.jsonl`, is refused; Lotse's Codex mirror
+/// links its `sessions` folder to the real one, so a link into a root is fine). Returns the
+/// resolved path.
+fn validate_in(raw: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     let path = Path::new(raw);
     if !path.is_absolute() || !is_jsonl(path) {
         return None;
     }
+    if std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
     let real = std::fs::canonicalize(path).ok()?;
-    let home = std::fs::canonicalize(home).ok()?;
-    if !real.starts_with(&home) || real == home || !is_jsonl(&real) {
+    let inside = roots.iter().any(|root| {
+        std::fs::canonicalize(root).is_ok_and(|root| real != root && real.starts_with(&root))
+    });
+    if !inside || !is_jsonl(&real) {
         return None;
     }
     std::fs::metadata(&real).ok()?.is_file().then_some(real)
+}
+
+/// Open `path` (a result of [`validate_path`]) for reading, refusing a symlink anywhere in it:
+/// the file may have been swapped for a link since it was validated.
+pub fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(target_os = "macos")]
+    const NOFOLLOW: i32 = nix::libc::O_NOFOLLOW_ANY;
+    #[cfg(not(target_os = "macos"))]
+    const NOFOLLOW: i32 = nix::libc::O_NOFOLLOW;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(NOFOLLOW)
+        .open(path)
 }
 
 fn is_jsonl(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "jsonl")
 }
 
-/// The last `limit` turns (at most [`MAX_TURNS`]) of the transcript at `path`. The path is checked
-/// again (it may have been swapped for a link since it was recorded).
-pub fn read_turns(
+/// What was read of a transcript file: its turns as written (not yet masked or clipped).
+pub struct Parsed {
+    pub turns: Vec<TranscriptTurn>,
+    /// The newest model the agent named.
+    pub model: Option<String>,
+    /// The file is longer than what was read: older turns are missing.
+    pub cut: bool,
+}
+
+/// The last `max_bytes` of the transcript at `path`, as turns. The path is checked again (it may
+/// have been swapped for a link since it was recorded), against the session's `dirs`.
+pub fn parse_file(
     path: &Path,
     agent: AgentKind,
-    limit: usize,
     home: &Path,
-) -> std::io::Result<Transcript> {
+    dirs: &AgentDirs,
+    max_bytes: u64,
+) -> std::io::Result<Parsed> {
     let denied = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "transcript path");
-    let real = validate_path(&path.to_string_lossy(), home).ok_or_else(denied)?;
-    let mut file = std::fs::File::open(&real)?;
+    let real = validate_path(&path.to_string_lossy(), home, dirs).ok_or_else(denied)?;
+    let mut file = open_nofollow(&real)?;
     let len = file.metadata()?.len();
-    let start = len.saturating_sub(TAIL_BYTES);
+    let start = len.saturating_sub(max_bytes);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::with_capacity((len - start) as usize);
-    file.take(TAIL_BYTES).read_to_end(&mut bytes)?;
+    file.take(max_bytes).read_to_end(&mut bytes)?;
     let text = String::from_utf8_lossy(&bytes);
     // a tail starts mid-line: drop the partial first line
     let text = if start > 0 {
@@ -71,15 +207,40 @@ pub fn read_turns(
     } else {
         &text
     };
-    let mut turns: Vec<TranscriptTurn> = text
-        .lines()
-        .flat_map(|line| parse_line(agent, line))
-        .collect();
+    let (turns, model) = assemble(text.lines().flat_map(|line| parse_line(agent, line)));
+    Ok(Parsed {
+        turns,
+        model,
+        cut: start > 0,
+    })
+}
+
+/// The last `limit` turns (at most [`MAX_TURNS`]) of the transcript at `path`, for the daemon's own
+/// folders (no session environment).
+pub fn read_turns(
+    path: &Path,
+    agent: AgentKind,
+    limit: usize,
+    home: &Path,
+) -> std::io::Result<Transcript> {
+    let parsed = parse_file(path, agent, home, &AgentDirs::default(), TAIL_BYTES)?;
+    Ok(window(parsed.turns, parsed.cut, limit, source_of(agent)))
+}
+
+/// The newest `limit` turns (clamped to 1..=[`MAX_TURNS`]), masked and clipped as [`VIEW`] says,
+/// and within [`MAX_TOTAL_TEXT`] bytes. `cut`: older turns are missing already.
+pub fn window(
+    mut turns: Vec<TranscriptTurn>,
+    cut: bool,
+    limit: usize,
+    source: TranscriptSource,
+) -> Transcript {
     let limit = limit.clamp(1, MAX_TURNS);
-    let mut truncated = start > 0 || turns.len() > limit;
+    let mut truncated = cut || turns.len() > limit;
     if turns.len() > limit {
         turns.drain(..turns.len() - limit);
     }
+    shape(&mut turns, VIEW);
     // the newest turns win when the answer would get too big
     let mut size = 0;
     let keep_from = turns
@@ -93,14 +254,72 @@ pub fn read_turns(
         turns.drain(..keep_from);
         truncated = true;
     }
-    Ok(Transcript {
+    Transcript {
         available: true,
         turns,
         truncated,
-    })
+        source,
+    }
 }
 
-fn parse_line(agent: AgentKind, line: &str) -> Vec<TranscriptTurn> {
+/// Mask the secrets in every text of `turns` ([`crate::redact`]), then clip them to `clip`: in this
+/// order, so a token cut by the clip was masked whole. Returns how many secrets were masked.
+pub fn shape(turns: &mut [TranscriptTurn], clip: Clip) -> u32 {
+    let mut masked = 0;
+    for turn in turns {
+        masked += clean(&mut turn.text, clip.text);
+        if let Some(tool) = &mut turn.tool {
+            masked += clean(&mut tool.summary, clip.summary);
+            if let Some(result) = &mut tool.result {
+                masked += clean(result, clip.result);
+            }
+        }
+        if let Some(approval) = &mut turn.approval {
+            masked += clean(&mut approval.command, clip.summary);
+        }
+    }
+    masked
+}
+
+fn clean(text: &mut String, max: usize) -> u32 {
+    let (owned, n) = match redact(text) {
+        (Cow::Owned(s), n) => (Some(s), n),
+        (Cow::Borrowed(_), n) => (None, n),
+    };
+    if let Some(s) = owned {
+        *text = s;
+    }
+    // fewer bytes than `max` cannot be more characters
+    if max < text.len() && text.chars().nth(max).is_some() {
+        *text = clip(text, max);
+    }
+    n
+}
+
+/// Where `agent`'s transcript comes from (Beta adds OpenCode and scrollback in `transcript_sources`).
+pub fn source_of(agent: AgentKind) -> TranscriptSource {
+    match agent {
+        AgentKind::Codex => TranscriptSource::Codex,
+        AgentKind::OpenCode => TranscriptSource::OpenCode,
+        AgentKind::ClaudeCode => TranscriptSource::Claude,
+        AgentKind::Terminal => TranscriptSource::Scrollback,
+    }
+}
+
+/// What one line of a transcript file says.
+enum Line {
+    /// A message, or a tool call (with the id its output comes back under).
+    Turn(TranscriptTurn, Option<String>),
+    /// The output of the tool call `call`.
+    Result {
+        call: String,
+        failed: bool,
+        text: String,
+    },
+    Model(String),
+}
+
+fn parse_line(agent: AgentKind, line: &str) -> Vec<Line> {
     if line.trim().is_empty() {
         return Vec::new();
     }
@@ -108,19 +327,63 @@ fn parse_line(agent: AgentKind, line: &str) -> Vec<TranscriptTurn> {
         return Vec::new();
     };
     match agent {
-        AgentKind::ClaudeCode => claude_turns(&v),
-        AgentKind::Codex => codex_turns(&v),
+        AgentKind::ClaudeCode => claude_lines(&v),
+        AgentKind::Codex => codex_lines(&v),
         AgentKind::Terminal | AgentKind::OpenCode => Vec::new(),
     }
+}
+
+/// The turns of `lines` with each tool call given its status and output, and the newest model.
+/// A call without an output is running when only tool calls follow it, else its fate is unknown.
+fn assemble(lines: impl Iterator<Item = Line>) -> (Vec<TranscriptTurn>, Option<String>) {
+    let mut turns: Vec<TranscriptTurn> = Vec::new();
+    let mut calls: HashMap<String, usize> = HashMap::new();
+    let mut model = None;
+    for line in lines {
+        match line {
+            Line::Turn(turn, call) => {
+                if let Some(call) = call {
+                    calls.insert(call, turns.len());
+                }
+                turns.push(turn);
+            }
+            Line::Result { call, failed, text } => {
+                // the call may lie before the part of the file that was read
+                if let Some(tool) = calls.get(&call).and_then(|&i| turns[i].tool.as_mut()) {
+                    tool.status = Some(if failed {
+                        ToolStatus::Fail
+                    } else {
+                        ToolStatus::Done
+                    });
+                    let text = text.trim();
+                    tool.result = (!text.is_empty()).then(|| text.to_owned());
+                }
+            }
+            Line::Model(m) => model = Some(m),
+        }
+    }
+    let mut only_tools_follow = true;
+    for turn in turns.iter_mut().rev() {
+        match &mut turn.tool {
+            Some(tool) if tool.status.is_none() && only_tools_follow => {
+                tool.status = Some(ToolStatus::Run);
+            }
+            Some(_) => {}
+            None => only_tools_follow = false,
+        }
+    }
+    (turns, model)
 }
 
 fn turn(role: TranscriptRole, text: &str, at: Option<UnixMs>) -> Option<TranscriptTurn> {
     let text = text.trim();
     (!text.is_empty()).then(|| TranscriptTurn {
         role,
-        text: clip(text, MAX_TEXT),
+        text: text.to_owned(),
         tool: None,
         at,
+        approval: None,
+        sub_agent: None,
     })
 }
 
@@ -130,9 +393,13 @@ fn tool_turn(name: &str, summary: &str, at: Option<UnixMs>) -> TranscriptTurn {
         text: String::new(),
         tool: Some(TranscriptTool {
             name: clip(name, 60),
-            summary: clip(summary.trim(), MAX_SUMMARY),
+            summary: summary.trim().to_owned(),
+            status: None,
+            result: None,
         }),
         at,
+        approval: None,
+        sub_agent: None,
     }
 }
 
@@ -180,7 +447,10 @@ fn command_text(v: &Value) -> Option<String> {
     }
 }
 
-fn claude_turns(v: &Value) -> Vec<TranscriptTurn> {
+/// Claude Code calls that start a sub-agent; the input's `subagent_type` names it.
+const SUB_AGENT_TOOLS: [&str; 2] = ["Task", "Agent"];
+
+fn claude_lines(v: &Value) -> Vec<Line> {
     let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
     if flag("isSidechain") || flag("isMeta") {
         return Vec::new();
@@ -189,27 +459,118 @@ fn claude_turns(v: &Value) -> Vec<TranscriptTurn> {
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(parse_iso_utc_ms);
-    let content = v.get("message").and_then(|m| m.get("content"));
+    let message = v.get("message");
     let role = match v.get("type").and_then(Value::as_str) {
         Some("user") => TranscriptRole::User,
         Some("assistant") => TranscriptRole::Assistant,
         _ => return Vec::new(),
     };
-    match content {
-        Some(Value::String(s)) => turn(role, s, at).into_iter().collect(),
-        Some(Value::Array(blocks)) => blocks
-            .iter()
-            .filter_map(|b| match b.get("type").and_then(Value::as_str) {
-                Some("text") => turn(role, b.get("text")?.as_str()?, at),
-                Some("tool_use") if role == TranscriptRole::Assistant => Some(tool_turn(
-                    b.get("name").and_then(Value::as_str).unwrap_or("tool"),
-                    &b.get("input").map(summarize_input).unwrap_or_default(),
-                    at,
-                )),
-                _ => None, // tool results, thinking, images
+    let mut lines = Vec::new();
+    // `<synthetic>` marks messages Claude Code wrote itself
+    if let Some(model) = message
+        .and_then(|m| m.get("model"))
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty() && !m.starts_with('<'))
+    {
+        lines.push(Line::Model(model.to_owned()));
+    }
+    match message.and_then(|m| m.get("content")) {
+        Some(Value::String(s)) => lines.extend(claude_text(role, s, at)),
+        Some(Value::Array(blocks)) => {
+            lines.extend(blocks.iter().flat_map(|b| claude_block(role, b, at)));
+        }
+        _ => {}
+    }
+    lines
+}
+
+/// What one content block of a Claude Code message says.
+fn claude_block(role: TranscriptRole, b: &Value, at: Option<UnixMs>) -> Vec<Line> {
+    match b.get("type").and_then(Value::as_str) {
+        Some("text") => b
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|s| claude_text(role, s, at))
+            .unwrap_or_default(),
+        Some("tool_use") if role == TranscriptRole::Assistant => {
+            let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let input = b.get("input");
+            let mut t = tool_turn(name, &input.map(summarize_input).unwrap_or_default(), at);
+            if SUB_AGENT_TOOLS.contains(&name) {
+                t.sub_agent = input
+                    .and_then(|i| i.get("subagent_type"))
+                    .and_then(Value::as_str)
+                    .map(|s| clip(s, 60));
+            }
+            let id = b.get("id").and_then(Value::as_str).map(str::to_owned);
+            vec![Line::Turn(t, id)]
+        }
+        Some("tool_result") if role == TranscriptRole::User => {
+            let call = b.get("tool_use_id").and_then(Value::as_str);
+            call.map(|call| Line::Result {
+                call: call.to_owned(),
+                failed: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                text: b.get("content").map(result_text).unwrap_or_default(),
             })
-            .collect(),
-        _ => Vec::new(),
+            .into_iter()
+            .collect()
+        }
+        _ => Vec::new(), // thinking, images
+    }
+}
+
+/// The turns of one text of a Claude Code message. A user turn that holds `<task-notification>`
+/// blocks is not the user's words: Claude Code hands the lead the report of a background sub-agent
+/// that way. Each block becomes a turn of that sub-agent (agent name, status, one line of its
+/// result); whatever text surrounds the blocks stays a turn of the role.
+fn claude_text(role: TranscriptRole, text: &str, at: Option<UnixMs>) -> Vec<Line> {
+    if role != TranscriptRole::User || !text.contains("<task-notification>") {
+        return turn(role, text, at)
+            .map(|t| Line::Turn(t, None))
+            .into_iter()
+            .collect();
+    }
+    let reports = parse_task_notifications(text).into_iter().map(|n| {
+        let name = summary_agent_name(&n.summary).unwrap_or("sub-agent");
+        let result = n
+            .result
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(|l| clip(l, 200));
+        let status = if n.status.is_empty() {
+            "reported".to_owned()
+        } else {
+            clip(&n.status, 40)
+        };
+        TranscriptTurn {
+            role: TranscriptRole::Assistant,
+            text: match result {
+                Some(r) => format!("{status}: {r}"),
+                None => status,
+            },
+            tool: None,
+            at,
+            approval: None,
+            sub_agent: Some(clip(name, 60)),
+        }
+    });
+    reports
+        .map(|t| Line::Turn(t, None))
+        .chain(turn(role, &strip_task_notifications(text), at).map(|t| Line::Turn(t, None)))
+        .collect()
+}
+
+/// A tool result's `content`: a string, or blocks of which the text ones count.
+fn result_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
     }
 }
 
@@ -221,17 +582,31 @@ fn codex_boilerplate(text: &str) -> bool {
         || t.starts_with("# AGENTS.md")
 }
 
-fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
-    if v.get("type").and_then(Value::as_str) != Some("response_item") {
+/// One line of a Codex rollout: the envelope `{metadata, ordinal, payload, timestamp, type}`.
+fn codex_lines(v: &Value) -> Vec<Line> {
+    let Some(p) = v.get("payload") else {
+        return Vec::new();
+    };
+    let kind = v.get("type").and_then(Value::as_str);
+    if kind == Some("turn_context") {
+        return p
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+            .map(|m| Line::Model(m.to_owned()))
+            .into_iter()
+            .collect();
+    }
+    if kind != Some("response_item") {
+        // session_meta, event_msg (its user and agent messages repeat the response items),
+        // token_usage_record, world_state
         return Vec::new();
     }
     let at = v
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(parse_iso_utc_ms);
-    let Some(p) = v.get("payload") else {
-        return Vec::new();
-    };
+    let call_id = || p.get("call_id").and_then(Value::as_str).map(str::to_owned);
     match p.get("type").and_then(Value::as_str) {
         Some("message") => {
             let role = match p.get("role").and_then(Value::as_str) {
@@ -253,7 +628,10 @@ fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
             if codex_boilerplate(&text) {
                 return Vec::new();
             }
-            turn(role, &text, at).into_iter().collect()
+            turn(role, &text, at)
+                .map(|t| Line::Turn(t, None))
+                .into_iter()
+                .collect()
         }
         Some("function_call") => {
             let name = p.get("name").and_then(Value::as_str).unwrap_or("tool");
@@ -263,7 +641,20 @@ fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
                 .and_then(Value::as_str)
                 .and_then(|a| serde_json::from_str::<Value>(a).ok())
                 .unwrap_or(Value::Null);
-            vec![tool_turn(name, &summarize_input(&args), at)]
+            vec![Line::Turn(
+                tool_turn(name, &summarize_input(&args), at),
+                call_id(),
+            )]
+        }
+        // `apply_patch` and the like: the input is the patch itself, its first line says enough
+        Some("custom_tool_call") => {
+            let name = p.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let first = p
+                .get("input")
+                .and_then(Value::as_str)
+                .and_then(|i| i.lines().find(|l| !l.trim().is_empty()))
+                .unwrap_or_default();
+            vec![Line::Turn(tool_turn(name, first, at), call_id())]
         }
         Some("local_shell_call") => {
             let cmd = p
@@ -271,9 +662,50 @@ fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
                 .and_then(|a| a.get("command"))
                 .and_then(command_text)
                 .unwrap_or_default();
-            vec![tool_turn("shell", &cmd, at)]
+            vec![Line::Turn(tool_turn("shell", &cmd, at), call_id())]
+        }
+        Some("function_call_output" | "custom_tool_call_output") => {
+            let Some(call) = call_id() else {
+                return Vec::new();
+            };
+            let output = match p.get("output") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "",
+            };
+            let (failed, text) = codex_output(output);
+            vec![Line::Result { call, failed, text }]
         }
         _ => Vec::new(),
+    }
+}
+
+/// A Codex tool output: a JSON document `{output, metadata: {exit_code}}` inside a string, or plain
+/// text that may start with `Exit code: N`. A non-zero exit code is a failure.
+fn codex_output(output: &str) -> (bool, String) {
+    if let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(output) {
+        let failed = doc
+            .get("metadata")
+            .and_then(|m| m.get("exit_code"))
+            .and_then(Value::as_i64)
+            .is_some_and(|code| code != 0);
+        let text = doc
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return (failed, text.to_owned());
+    }
+    match output
+        .strip_prefix("Exit code: ")
+        .and_then(|rest| rest.split_once('\n'))
+    {
+        Some((code, rest)) => {
+            let body = rest.split_once("Output:\n").map_or(rest, |(_, body)| body);
+            (
+                code.trim().parse::<i64>().is_ok_and(|c| c != 0),
+                body.to_owned(),
+            )
+        }
+        None => (false, output.to_owned()),
     }
 }
 
@@ -333,14 +765,14 @@ mod tests {
     }
 
     fn ok(raw: &Path, home: &Path) -> bool {
-        validate_path(&raw.to_string_lossy(), home).is_some()
+        validate_path(&raw.to_string_lossy(), home, &AgentDirs::default()).is_some()
     }
 
     #[test]
     fn a_jsonl_file_below_home_is_accepted_and_resolved() {
         let h = home();
         let p = write(h.path(), ".claude/projects/x/s.jsonl", "{}\n");
-        let real = validate_path(&p.to_string_lossy(), h.path()).unwrap();
+        let real = validate_path(&p.to_string_lossy(), h.path(), &AgentDirs::default()).unwrap();
         assert_eq!(real, std::fs::canonicalize(&p).unwrap());
     }
 
@@ -369,8 +801,9 @@ mod tests {
         std::fs::create_dir(h.path().join("dir.jsonl")).unwrap();
         assert!(!ok(&h.path().join("dir.jsonl"), h.path()), "a directory");
         assert!(!ok(&h.path().join("missing.jsonl"), h.path()));
-        assert!(validate_path("relative/s.jsonl", h.path()).is_none());
-        assert!(validate_path("", h.path()).is_none());
+        let dirs = AgentDirs::default();
+        assert!(validate_path("relative/s.jsonl", h.path(), &dirs).is_none());
+        assert!(validate_path("", h.path(), &dirs).is_none());
     }
 
     #[test]
@@ -395,12 +828,157 @@ mod tests {
             !ok(&disguised, h.path()),
             "link to a file that is not *.jsonl"
         );
+    }
 
-        // a link that stays inside home is fine
-        let real = write(h.path(), "real/s.jsonl", "{}\n");
-        let inside = h.path().join("inside.jsonl");
-        symlink(&real, &inside).unwrap();
-        assert!(ok(&inside, h.path()));
+    #[test]
+    fn a_jsonl_elsewhere_in_home_is_refused() {
+        let h = home();
+        for elsewhere in [
+            "s.jsonl",
+            "Documents/notes/s.jsonl",
+            ".ssh/s.jsonl",
+            ".claude/s.jsonl",
+            ".claude/history/s.jsonl",
+            ".codex/s.jsonl",
+            ".codex/archived/s.jsonl",
+        ] {
+            let p = write(h.path(), elsewhere, "{}\n");
+            assert!(!ok(&p, h.path()), "{elsewhere}");
+        }
+        for own in [
+            ".claude/projects/x/s.jsonl",
+            ".codex/sessions/2026/11/03/rollout-a.jsonl",
+        ] {
+            let p = write(h.path(), own, "{}\n");
+            assert!(ok(&p, h.path()), "{own}");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_transcript_is_refused() {
+        let h = home();
+        let real = write(h.path(), ".claude/projects/x/real.jsonl", "{}\n");
+        assert!(ok(&real, h.path()));
+        // a link to a file that is itself acceptable
+        let link = h.path().join(".claude/projects/x/link.jsonl");
+        symlink(&real, &link).unwrap();
+        assert!(!ok(&link, h.path()), "link to a transcript");
+        // a link that leaves the agent's folder
+        let elsewhere = write(h.path(), "Documents/s.jsonl", "{}\n");
+        let out = h.path().join(".claude/projects/x/out.jsonl");
+        symlink(&elsewhere, &out).unwrap();
+        assert!(!ok(&out, h.path()), "link out of the folder");
+        // a link in a folder of the path that leads outside
+        let dir_link = h.path().join(".claude/projects/docs");
+        symlink(h.path().join("Documents"), &dir_link).unwrap();
+        assert!(!ok(&dir_link.join("s.jsonl"), h.path()), "folder link out");
+    }
+
+    #[test]
+    fn the_agent_folders_follow_the_config_variables() {
+        let h = home();
+        let (cfg, codex) = (home(), home());
+        let roots = agent_roots(
+            h.path(),
+            Some(cfg.path().as_os_str()),
+            Some(codex.path().as_os_str()),
+        );
+        let own = write(cfg.path(), "projects/x/s.jsonl", "{}\n");
+        let rollout = write(codex.path(), "sessions/2026/rollout-a.jsonl", "{}\n");
+        let stray = write(cfg.path(), "s.jsonl", "{}\n");
+        let valid = |p: &Path| validate_in(&p.to_string_lossy(), &roots).is_some();
+        assert!(valid(&own) && valid(&rollout));
+        assert!(
+            !valid(&stray),
+            "the config folder itself is not a transcript folder"
+        );
+        // the defaults stay, a relative or empty value adds nothing
+        assert!(valid(&write(h.path(), ".claude/projects/s.jsonl", "{}\n")));
+        let relative = agent_roots(h.path(), Some(OsStr::new("rel")), Some(OsStr::new("")));
+        assert_eq!(relative.len(), 2);
+    }
+
+    #[test]
+    fn a_swapped_in_link_is_not_opened() {
+        let tmp = home();
+        // resolved, as `validate_path` hands the path over (the temp folder sits behind `/var`)
+        let h = std::fs::canonicalize(tmp.path()).unwrap();
+        let real = write(&h, ".claude/projects/x/s.jsonl", "{}\n");
+        let target = write(&h, "Documents/s.jsonl", "{}\n");
+        assert!(open_nofollow(&real).is_ok());
+        std::fs::remove_file(&real).unwrap();
+        symlink(&target, &real).unwrap();
+        assert!(
+            open_nofollow(&real).is_err(),
+            "validated, then swapped for a link"
+        );
+        // a link further up the path counts too (macOS: O_NOFOLLOW_ANY)
+        let dir_link = h.join("link");
+        symlink(h.join("Documents"), &dir_link).unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(open_nofollow(&dir_link.join("s.jsonl")).is_err());
+    }
+
+    #[test]
+    fn a_folder_link_into_the_agents_folder_is_followed() {
+        // Lotse's Codex mirror links its `sessions` to the real one
+        let (h, mirror) = (home(), home());
+        let real = write(
+            h.path(),
+            ".codex/sessions/2026/11/03/rollout-a.jsonl",
+            "{}\n",
+        );
+        symlink(
+            h.path().join(".codex/sessions"),
+            mirror.path().join("sessions"),
+        )
+        .unwrap();
+        let through = mirror.path().join("sessions/2026/11/03/rollout-a.jsonl");
+        assert_eq!(
+            validate_path(&through.to_string_lossy(), h.path(), &AgentDirs::default()),
+            Some(std::fs::canonicalize(real).unwrap())
+        );
+    }
+
+    #[test]
+    fn the_sessions_login_environment_names_the_agent_folders() {
+        // the daemon's own environment has no `CLAUDE_CONFIG_DIR`: the session's value decides
+        let (h, tmp) = (home(), home());
+        let dirs = AgentDirs::from_vars(|name| match name {
+            "CLAUDE_CONFIG_DIR" => Some(tmp.path().join("claude-work").to_string_lossy().into()),
+            "CODEX_HOME" => Some(tmp.path().join("codex-work").to_string_lossy().into()),
+            _ => None,
+        });
+        let own = write(tmp.path(), "claude-work/projects/x/s.jsonl", "{}\n");
+        let rollout = write(tmp.path(), "codex-work/sessions/2026/r.jsonl", "{}\n");
+        let elsewhere = write(tmp.path(), "elsewhere/projects/x/s.jsonl", "{}\n");
+        let accepted = |p: &Path| validate_path(&p.to_string_lossy(), h.path(), &dirs);
+        assert_eq!(accepted(&own), Some(std::fs::canonicalize(&own).unwrap()));
+        assert!(accepted(&rollout).is_some());
+        assert!(accepted(&elsewhere).is_none(), "outside every agent folder");
+        assert!(
+            !ok(&own, h.path()),
+            "without the session's values the same file is refused"
+        );
+        // an empty or relative value adds nothing
+        let empty = AgentDirs::from_vars(|name| (name == "CLAUDE_CONFIG_DIR").then(String::new));
+        assert!(empty.claude_config_dir.is_none());
+        let relative = AgentDirs::from_vars(|_| Some("rel".into()));
+        assert!(validate_path(&own.to_string_lossy(), h.path(), &relative).is_none());
+    }
+
+    #[test]
+    fn the_sessions_home_adds_its_default_agent_folders() {
+        let (daemon_home, session_home) = (home(), home());
+        let p = write(session_home.path(), ".claude/projects/x/s.jsonl", "{}\n");
+        let dirs = AgentDirs {
+            home: Some(session_home.path().to_path_buf()),
+            ..AgentDirs::default()
+        };
+        assert!(validate_path(&p.to_string_lossy(), daemon_home.path(), &dirs).is_some());
+        assert!(!ok(&p, daemon_home.path()));
+        let stray = write(session_home.path(), "Documents/s.jsonl", "{}\n");
+        assert!(validate_path(&stray.to_string_lossy(), daemon_home.path(), &dirs).is_none());
     }
 
     #[test]
@@ -421,10 +999,62 @@ not json at all
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/a/b.rs","old_string":"x","new_string":"y"}},{"type":"text","text":"Done."}]}}
 "#;
 
+    /// A background sub-agent's report-back, as Claude Code writes it into the lead's transcript.
+    #[test]
+    fn a_task_notification_is_the_sub_agents_report_not_the_users_words() {
+        let blocks = "<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Count files\" finished</summary>\n<result>\n12 files in src/\nand more detail</result>\n<usage>total_tokens: 9</usage>\n</task-notification>\n<task-notification>\n<task-id>b2</task-id>\n<status>failed</status>\n<summary>Agent \"Lint\" failed</summary>\n</task-notification>";
+        let user = |content: serde_json::Value| {
+            serde_json::json!({"type": "user", "timestamp": "2026-11-02T10:00:00.000Z",
+                               "message": {"role": "user", "content": content}})
+            .to_string()
+        };
+        let text = [
+            user(serde_json::json!("Count the files")),
+            user(serde_json::json!(blocks)),
+            user(
+                serde_json::json!([{"type": "text", "text": format!("{blocks}\nplease continue")}]),
+            ),
+        ]
+        .join("\n");
+        let h = home();
+        let p = write(h.path(), ".claude/projects/n.jsonl", &text);
+        let t = read_turns(&p, AgentKind::ClaudeCode, 50, h.path()).unwrap();
+        let got: Vec<_> = t
+            .turns
+            .iter()
+            .map(|t| (t.role, t.text.as_str(), t.sub_agent.as_deref()))
+            .collect();
+        use TranscriptRole::*;
+        assert_eq!(
+            got,
+            [
+                (User, "Count the files", None),
+                (
+                    Assistant,
+                    "completed: 12 files in src/",
+                    Some("Count files")
+                ),
+                (Assistant, "failed", Some("Lint")),
+                (
+                    Assistant,
+                    "completed: 12 files in src/",
+                    Some("Count files")
+                ),
+                (Assistant, "failed", Some("Lint")),
+                (User, "please continue", None),
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&t)
+                .unwrap()
+                .contains("task-notification")
+        );
+    }
+
     #[test]
     fn claude_turns_keep_the_conversation_and_drop_the_noise() {
         let h = home();
-        let p = write(h.path(), "s.jsonl", CLAUDE);
+        let p = write(h.path(), ".claude/projects/s.jsonl", CLAUDE);
         let t = read_turns(&p, AgentKind::ClaudeCode, 50, h.path()).unwrap();
         assert!(t.available && !t.truncated);
         let got: Vec<_> = t
@@ -454,7 +1084,11 @@ not json at all
         assert_eq!(t.turns[0].at, Some(1_793_613_600_000));
         assert_eq!(t.turns[1].at, Some(1_793_613_605_250));
         let all = serde_json::to_string(&t).unwrap();
-        assert!(!all.contains("HUGE OUTPUT") && !all.contains("secret thoughts"));
+        assert!(!all.contains("secret thoughts"));
+        // since Beta (wp07) a tool's output is paired with its call, as an excerpt
+        let bash = t.turns[2].tool.as_ref().unwrap();
+        assert_eq!(bash.result.as_deref(), Some("HUGE OUTPUT"));
+        assert_eq!(bash.status, Some(ToolStatus::Done));
     }
 
     #[test]
@@ -470,7 +1104,7 @@ not json at all
             "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":\"{}\"}}}}\n",
             "x".repeat(10_000)
         );
-        let p = write(h.path(), "s.jsonl", &text);
+        let p = write(h.path(), ".claude/projects/s.jsonl", &text);
         let t = read_turns(&p, AgentKind::ClaudeCode, 5, h.path()).unwrap();
         assert_eq!(t.turns.len(), 5);
         assert!(t.truncated);
@@ -478,7 +1112,7 @@ not json at all
         let last = t.turns.last().unwrap();
         assert_eq!(
             last.text.chars().count(),
-            MAX_TEXT + 1,
+            VIEW.text + 1,
             "clipped with an ellipsis"
         );
         assert!(last.text.ends_with('…'));
@@ -496,7 +1130,7 @@ not json at all
         );
         let mut text = filler.repeat(3_000); // ~3 MB > TAIL_BYTES
         text += "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"the end\"}}\n";
-        let p = write(h.path(), "big.jsonl", &text);
+        let p = write(h.path(), ".claude/projects/big.jsonl", &text);
         let t = read_turns(&p, AgentKind::ClaudeCode, 3, h.path()).unwrap();
         assert!(t.truncated);
         assert_eq!(t.turns.last().unwrap().text, "the end");
@@ -518,7 +1152,7 @@ not json at all
 {"timestamp":"2026-11-02T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added."}]}}
 {"type":"event_msg","payload":{"type":"token_count"}}
 "#;
-        let p = write(h.path(), "rollout.jsonl", rollout);
+        let p = write(h.path(), ".codex/sessions/rollout.jsonl", rollout);
         let t = read_turns(&p, AgentKind::Codex, 50, h.path()).unwrap();
         let got: Vec<_> = t.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
         use TranscriptRole::*;
@@ -532,7 +1166,7 @@ not json at all
     #[test]
     fn opencode_and_terminal_have_nothing_to_parse() {
         let h = home();
-        let p = write(h.path(), "s.jsonl", CLAUDE);
+        let p = write(h.path(), ".claude/projects/s.jsonl", CLAUDE);
         for agent in [AgentKind::OpenCode, AgentKind::Terminal] {
             assert!(
                 read_turns(&p, agent, 50, h.path())

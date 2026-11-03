@@ -9,6 +9,7 @@ use crate::detect_glue::{Detector, NotifyLimiter, Trigger, notification, process
 use crate::hub::{Bytes, ClientTx, Hub};
 use crate::perm_answer::{AnswerError, always_option, answer_keys};
 use crate::ring::Ring;
+use crate::task_watch::TaskWatch;
 use crate::title::{LineTracker, derive_title};
 use crate::transcript;
 use crate::usage::UsageTracker;
@@ -23,7 +24,7 @@ use nix::unistd::Pid;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -81,6 +82,8 @@ pub enum SessionError {
     NotAtPrompt,
     #[error("the permission prompt has no option for this decision")]
     NoSuchChoice,
+    #[error("that permission prompt is no longer the open one")]
+    StalePrompt,
 }
 
 struct Launched {
@@ -223,6 +226,39 @@ struct Inner {
     /// Feeds the status engine (hooks, OSC 7501, screen, process).
     detector: Detector,
     limiter: NotifyLimiter,
+    /// Hook payloads handed to the detector so far: a foreground sample older than the latest one
+    /// is stale (see [`FgSample`]).
+    hooks_applied: u64,
+}
+
+/// A transcript a hook announced: the string as announced and the validated (canonical) path.
+struct Announced {
+    agent: AgentKind,
+    /// Compared with the next hook's string: the canonical `path` differs from it whenever the
+    /// announced one goes through a link (`/var` → `/private/var`).
+    raw: String,
+    path: PathBuf,
+}
+
+/// A foreground process group read under the lock, before its (slow) name lookup.
+#[derive(Clone, Copy)]
+struct FgSample {
+    pgid: i32,
+    /// `Inner::hooks_applied` when it was read.
+    hooks: u64,
+}
+
+impl Inner {
+    fn foreground_pgid(&self) -> Option<i32> {
+        self.live
+            .as_ref()
+            .and_then(|l| l.master.process_group_leader())
+    }
+
+    /// `true` when no hook was applied and the foreground group did not change since `sample`.
+    fn is_current(&self, sample: &FgSample) -> bool {
+        self.hooks_applied == sample.hooks && self.foreground_pgid() == Some(sample.pgid)
+    }
 }
 
 pub struct SessionHandle {
@@ -230,7 +266,9 @@ pub struct SessionHandle {
     ctx: Ctx,
     activity: Activity,
     /// The agent's transcript file, as its latest hook announced it (validated).
-    transcript: Mutex<Option<(AgentKind, PathBuf)>>,
+    transcript: Mutex<Option<Announced>>,
+    /// Tails the transcript for the report-backs of background sub-agents (see [`crate::task_watch`]).
+    task_watch: Mutex<TaskWatch>,
     inner: Mutex<Inner>,
 }
 
@@ -313,6 +351,7 @@ impl SessionHandle {
             ctx,
             activity: Activity::new(),
             transcript: Mutex::new(None),
+            task_watch: Mutex::new(TaskWatch::default()),
             inner: Mutex::new(Inner {
                 limiter: NotifyLimiter::default(),
                 detector,
@@ -329,6 +368,7 @@ impl SessionHandle {
                 closing: false,
                 got_output: false,
                 perm_options_stale: false,
+                hooks_applied: 0,
                 spec,
             }),
         });
@@ -456,6 +496,7 @@ impl SessionHandle {
             if g.closing || g.live.is_none() {
                 return;
             }
+            g.hooks_applied += 1;
             let update = g.detector.on_hook(agent, payload, at);
             self.apply(&mut g, update.into_iter().collect())
         };
@@ -471,32 +512,57 @@ impl SessionHandle {
         let Some(raw) = payload.get("transcript_path").and_then(|v| v.as_str()) else {
             return;
         };
-        if self
-            .transcript()
-            .is_some_and(|(a, p)| a == agent && p == Path::new(raw))
-        {
-            return; // the same file as the last hook: already checked
-        }
-        let Some(path) = self
-            .ctx
-            .home
-            .as_deref()
-            .and_then(|home| transcript::validate_path(raw, home))
-        else {
+        // the same string as the last hook: already validated (no `canonicalize` per hook)
+        let known = self
+            .transcript
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .filter(|t| t.agent == agent && t.raw == raw)
+            .map(|t| t.path.clone());
+        let repeat = known.is_some();
+        let Some(path) = known.or_else(|| {
+            let home = self.ctx.home.as_deref()?;
+            transcript::validate_path(raw, home, &self.agent_dirs())
+        }) else {
             tracing::debug!("session {}: transcript path refused", self.id);
             return;
         };
-        if agent == AgentKind::ClaudeCode && self.ctx.usage.add(path.clone()) {
-            let now = now_ms();
-            if let Err(e) = self
-                .ctx
-                .db
-                .remember_transcript(&path.to_string_lossy(), now)
-            {
-                tracing::warn!("remembering a transcript path: {e}");
+        // a repeat too: the tracker decides when the path is worth writing again (retention)
+        if agent == AgentKind::ClaudeCode {
+            let new = self.ctx.usage.add(path.clone());
+            if new {
+                let now = now_ms();
+                if let Err(e) = self
+                    .ctx
+                    .db
+                    .remember_transcript(&path.to_string_lossy(), now)
+                {
+                    tracing::warn!("remembering a transcript path: {e}");
+                }
+            }
+            // a new transcript, or a turn that ended: today's total moved, push it now rather
+            // than with the next periodic read
+            let turn_event = payload
+                .get("hook_event_name")
+                .and_then(|e| e.as_str())
+                .is_some_and(|e| {
+                    matches!(
+                        e,
+                        "Stop" | "StopFailure" | "SubagentStop" | "SessionEnd" | "UserPromptSubmit"
+                    )
+                });
+            if !repeat || turn_event {
+                self.ctx.usage.nudge();
             }
         }
-        *self.transcript.lock().unwrap_or_else(|e| e.into_inner()) = Some((agent, path));
+        if !repeat {
+            *self.transcript.lock().unwrap_or_else(|e| e.into_inner()) = Some(Announced {
+                agent,
+                raw: raw.to_owned(),
+                path,
+            });
+        }
     }
 
     /// The agent and transcript file its hooks announced, once one has.
@@ -504,11 +570,17 @@ impl SessionHandle {
         self.transcript
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone()
+            .as_ref()
+            .map(|t| (t.agent, t.path.clone()))
     }
 
     /// About every 100 ms: foreground process, screen sample, clock tick.
     pub fn tick(&self) {
+        self.tick_with(process_name);
+    }
+
+    /// [`Self::tick`] with the executable-name lookup (a `ps`, run off the lock) swapped out.
+    fn tick_with(&self, name_of: impl FnOnce(i32) -> Option<String>) {
         let seen = self.activity.count();
         if self.activity.skip_tick() {
             return;
@@ -528,21 +600,27 @@ impl SessionHandle {
                 self.activity.ticked(seen, true);
                 return;
             }
-            let pgid = g
-                .live
-                .as_ref()
-                .and_then(|l| l.master.process_group_leader());
-            (pgid != g.detector.fg_pgid).then_some(pgid).flatten()
+            let pgid = g.foreground_pgid();
+            (pgid != g.detector.fg_pgid)
+                .then_some(pgid)
+                .flatten()
+                .map(|pgid| FgSample {
+                    pgid,
+                    hooks: g.hooks_applied,
+                })
         };
-        let name = changed.map(|pgid| (pgid, process_name(pgid)));
+        let name = changed.map(|sample| (sample, name_of(sample.pgid)));
         let (triggers, quiet) = {
             let mut g = self.lock();
             if g.closing || g.live.is_none() {
                 return;
             }
             let mut updates = Vec::new();
-            if let Some((pgid, name)) = name {
-                g.detector.fg_pgid = Some(pgid);
+            // A sample that a hook or a foreground change overtook while `ps` ran is stale: it
+            // must not undo what the hook just said (OpenCode forgets its sub-agents on a shell).
+            // The next tick takes a fresh one.
+            if let Some((sample, name)) = name.filter(|(sample, _)| g.is_current(sample)) {
+                g.detector.fg_pgid = Some(sample.pgid);
                 if let Some(name) = name {
                     updates.extend(g.detector.on_foreground(name, at));
                 }
@@ -555,6 +633,45 @@ impl SessionHandle {
         };
         self.activity.ticked(seen, quiet);
         self.notify(triggers);
+        self.watch_task_notifications();
+    }
+
+    /// While a Claude Code session has running sub-agents, look in its transcript for their
+    /// report-backs and feed each to the hook adapter: Claude may not run a hook for that turn.
+    fn watch_task_notifications(&self) {
+        let running = self
+            .lock()
+            .meta
+            .sub_agents
+            .iter()
+            .any(|s| s.status == Status::Run);
+        let path = self
+            .transcript()
+            .filter(|(agent, _)| *agent == AgentKind::ClaudeCode)
+            .map(|(_, path)| path);
+        let notes = {
+            let mut watch = self.task_watch.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(path) = path.filter(|_| running) else {
+                watch.idle();
+                return;
+            };
+            if !watch.due(Instant::now()) {
+                return;
+            }
+            watch.scan(&path)
+        };
+        for note in notes {
+            let triggers = {
+                let mut g = self.lock();
+                if g.closing || g.live.is_none() {
+                    return;
+                }
+                let payload = lotse_detect::claude::task_notification_event(&note);
+                let update = g.detector.on_hook(AgentKind::ClaudeCode, payload, now_ms());
+                self.apply(&mut g, update.into_iter().collect())
+            };
+            self.notify(triggers);
+        }
     }
 
     /// `Some(token)` when this session's folder deserves a git refresh: the process is alive and
@@ -594,6 +711,41 @@ impl SessionHandle {
         self.lock().spec.cwd.clone()
     }
 
+    /// Process group of the session leader while survivors may still hold it (Session panel tasks).
+    pub fn pgid(&self) -> Option<u32> {
+        self.lock().pgid
+    }
+
+    /// The raw terminal output still in the ring buffer (the scrollback transcript).
+    pub fn scrollback(&self) -> Vec<u8> {
+        self.lock().ring.snapshot()
+    }
+
+    /// A variable of the environment the process was started with.
+    pub fn env_var(&self, name: &str) -> Option<String> {
+        self.lock()
+            .spec
+            .env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    }
+
+    /// Where the agent keeps its files according to the environment the process was started with
+    /// (the user's login environment), for [`transcript::validate_path`].
+    pub fn agent_dirs(&self) -> transcript::AgentDirs {
+        let g = self.lock();
+        transcript::AgentDirs::from_vars(|name| {
+            g.spec
+                .env
+                .iter()
+                .rev()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        })
+    }
+
     /// Merge engine updates into the session and broadcast what changed. Called with the session
     /// lock held so events keep their order; returns what may deserve a notification.
     fn apply(&self, g: &mut Inner, updates: Vec<StatusUpdate>) -> Vec<(Session, Trigger)> {
@@ -603,12 +755,20 @@ impl SessionHandle {
         for mut update in updates {
             let prev = g.meta.status;
             let prev_perm = g.meta.perm.clone();
-            // the engine knows the request, not the prompt's options: keep what the screen said
-            if let (Some(p), Some(old)) = (update.perm.as_mut(), prev_perm.as_ref())
-                && p.tool == old.tool
-                && p.summary == old.summary
-            {
-                p.always = old.always;
+            // The engine knows the request, not the prompt's options or its id: the same request
+            // keeps what the screen said and its id, any other request is a new prompt.
+            if let Some(p) = update.perm.as_mut() {
+                match prev_perm.as_ref().filter(|old| {
+                    (p.tool == old.tool && p.summary == old.summary)
+                        // the hook describes the prompt the screen reported: still that prompt
+                        || (is_placeholder_perm(old) && !is_placeholder_perm(p))
+                }) {
+                    Some(old) => {
+                        p.always = old.always;
+                        p.id.clone_from(&old.id);
+                    }
+                    None => p.id = Some(uuid::Uuid::new_v4().to_string()),
+                }
             }
             if update.perm != prev_perm {
                 g.perm_options_stale = true;
@@ -636,10 +796,20 @@ impl SessionHandle {
                     running_since: update.running_since,
                     at: update.at,
                 });
+                // The hook's request for the prompt the screen (or a bare notification) reported
+                // first: the same prompt, better described, not a new reason to look up.
+                let described = prev == Status::Perm
+                    && prev_perm.as_ref().is_some_and(is_placeholder_perm)
+                    && update
+                        .perm
+                        .as_ref()
+                        .is_some_and(|p| !is_placeholder_perm(p));
                 if notify {
                     let trigger = match update.status {
                         // a new request while one is open is a new reason to look up
-                        Status::Perm if prev != Status::Perm || update.perm != prev_perm => {
+                        Status::Perm
+                            if (prev != Status::Perm || update.perm != prev_perm) && !described =>
+                        {
                             Some(Trigger::Perm(update.perm.clone()))
                         }
                         Status::Fail if prev != Status::Fail => Some(Trigger::Fail),
@@ -711,7 +881,7 @@ impl SessionHandle {
                 &trigger,
                 now_ms(),
             ) {
-                self.ctx.hub.broadcast(event);
+                self.ctx.hub.notify(event);
             }
         }
     }
@@ -860,10 +1030,23 @@ impl SessionHandle {
     /// Answer the permission prompt on screen with the keys a user would type. Only while the
     /// session is `perm` and its screen shows a prompt the agent's layout can be read from; the
     /// status is not touched, the agent's hook or the next screen sample moves it on.
-    pub fn resolve_permission(&self, decision: PermDecision) -> Result<(), SessionError> {
+    ///
+    /// `prompt_id` (a notification's or card's `PermRequest::id`) must be the open prompt's, so a
+    /// stale banner cannot answer a newer prompt; `None` skips the check. Returns the id of the
+    /// prompt that was answered.
+    pub fn resolve_permission(
+        &self,
+        decision: PermDecision,
+        prompt_id: Option<&str>,
+    ) -> Result<Option<String>, SessionError> {
         let mut g = self.lock();
         if g.meta.status != Status::Perm {
             return Err(SessionError::NotAtPrompt);
+        }
+        if let Some(id) = prompt_id
+            && g.meta.perm.as_ref().and_then(|p| p.id.as_deref()) != Some(id)
+        {
+            return Err(SessionError::StalePrompt);
         }
         let agent = prompt_agent(&g);
         let rows = g.detector.screen_rows();
@@ -871,7 +1054,8 @@ impl SessionHandle {
             AnswerError::NoPrompt => SessionError::NotAtPrompt,
             AnswerError::NoChoice => SessionError::NoSuchChoice,
         })?;
-        queue_input(g.live.as_ref(), keys.as_bytes())
+        queue_input(g.live.as_ref(), keys.as_bytes())?;
+        Ok(g.meta.perm.as_ref().and_then(|p| p.id.clone()))
     }
 
     /// Programmatic text (first prompt): written like input but never used as a title source.
@@ -974,6 +1158,12 @@ fn prompt_agent(g: &Inner) -> AgentKind {
     }
 }
 
+/// A request that only says an agent waits (what the screen adapter or a bare notification knows),
+/// before a hook describes it.
+fn is_placeholder_perm(p: &lotse_proto::PermRequest) -> bool {
+    p.summary == lotse_detect::claude::PLACEHOLDER_PERM_SUMMARY
+}
+
 fn forget_empty_group(g: &mut Inner) {
     if g.pgid.is_some_and(|p| !group_alive(p)) {
         g.pgid = None;
@@ -1019,6 +1209,7 @@ fn spawn_thread(name: &str, f: impl FnOnce() + Send + 'static) {
 mod tests {
     use super::*;
     use lotse_proto::{ProjectId, SessionId};
+    use std::path::Path;
 
     #[test]
     fn git_refresh_is_due_first_then_only_after_activity() {
@@ -1055,6 +1246,20 @@ mod tests {
             usage: Arc::new(UsageTracker::new()),
             home: None,
         };
+        spawn_sh_in(ctx, script)
+    }
+
+    fn spawn_sh_in(ctx: Ctx, script: &str) -> Arc<SessionHandle> {
+        spawn_sh_with_env(ctx, script, Vec::new())
+    }
+
+    /// `env` on top of a minimal environment: the session's login environment.
+    fn spawn_sh_with_env(
+        ctx: Ctx,
+        script: &str,
+        mut env: Vec<(String, String)>,
+    ) -> Arc<SessionHandle> {
+        env.insert(0, ("PATH".into(), "/usr/bin:/bin".into()));
         let meta = Session {
             id: SessionId::new("s-1"),
             project_id: ProjectId::new("p-1"),
@@ -1063,14 +1268,7 @@ mod tests {
             command: "sh".into(),
             status: Status::Idle,
             sub_agents: Vec::new(),
-            git: GitInfo {
-                is_git: false,
-                branch: String::new(),
-                ahead: 0,
-                dirty: 0,
-                worktree: false,
-                worktree_path: None,
-            },
+            git: GitInfo::default(),
             created_at: 0,
             last_activity: 0,
             running_since: None,
@@ -1081,7 +1279,7 @@ mod tests {
         let spec = SpawnSpec {
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
             cwd: std::env::temp_dir(),
-            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            env,
         };
         SessionHandle::spawn(ctx, meta, false, spec, 1024, 80, 24, |_, _| true).unwrap()
     }
@@ -1092,6 +1290,127 @@ mod tests {
             assert!(Instant::now() < end, "timed out waiting for {what}");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn a_foreground_sample_overtaken_by_a_hook_is_dropped_and_retaken() {
+        let h = spawn_sh("sleep 5");
+        let prompt = || serde_json::json!({"hook_event_name": "UserPromptSubmit"});
+        h.on_hook(AgentKind::ClaudeCode, prompt());
+        assert_eq!(h.snapshot().status, Status::Run);
+
+        // a hook lands while the name lookup (`ps`) runs: its "sh" is older than the hook
+        h.tick_with(|_| {
+            h.on_hook(AgentKind::ClaudeCode, prompt());
+            Some("sh".into())
+        });
+        assert_eq!(
+            h.snapshot().status,
+            Status::Run,
+            "the stale shell sample won"
+        );
+        assert_eq!(h.lock().detector.fg_pgid, None, "retaken on the next tick");
+
+        // nothing overtook this one: the agent is gone back to the shell
+        h.tick_with(|_| Some("sh".into()));
+        assert_eq!(h.snapshot().status, Status::Idle);
+        assert!(h.lock().detector.fg_pgid.is_some());
+    }
+
+    /// A Claude session whose home holds one transcript; the tracker wants a write on every add.
+    fn claude_with_transcript() -> (Arc<SessionHandle>, Ctx, tempfile::TempDir, PathBuf) {
+        let home = tempfile::tempdir().unwrap();
+        let file = home.path().join(".claude/projects/p/t.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "").unwrap();
+        let ctx = Ctx {
+            hub: Arc::new(Hub::default()),
+            db: Arc::new(Db::open_in_memory().unwrap()),
+            settings: Arc::new(RwLock::new(Settings::default())),
+            usage: Arc::new(UsageTracker::with_persist_every(Duration::ZERO)),
+            home: Some(home.path().to_path_buf()),
+        };
+        (spawn_sh_in(ctx.clone(), "sleep 5"), ctx, home, file)
+    }
+
+    fn announce(h: &SessionHandle, raw: &Path) {
+        h.on_hook(
+            AgentKind::ClaudeCode,
+            serde_json::json!({"hook_event_name": "Stop", "transcript_path": raw}),
+        );
+    }
+
+    fn remembered(ctx: &Ctx) -> Vec<String> {
+        // `recent_transcripts` drops the rows older than `since`: this takes what was written
+        // since the last call and clears the rest
+        let rows = ctx.db.recent_transcripts(0).unwrap();
+        ctx.db.recent_transcripts(u64::MAX / 2).unwrap();
+        rows
+    }
+
+    #[test]
+    fn a_repeated_transcript_path_still_reaches_the_usage_tracker_for_its_rewrite() {
+        let (h, ctx, _home, file) = claude_with_transcript();
+        let canonical = std::fs::canonicalize(&file).unwrap();
+        announce(&h, &canonical);
+        assert_eq!(remembered(&ctx), [canonical.to_string_lossy()]);
+        // the same path again: the tracker (asked to write on every add) refreshes it
+        announce(&h, &canonical);
+        assert_eq!(remembered(&ctx), [canonical.to_string_lossy()]);
+    }
+
+    #[test]
+    fn a_hook_may_name_a_transcript_below_the_sessions_config_dir() {
+        // the daemon never sets `CLAUDE_CONFIG_DIR` on itself: only the session's login env has it
+        let (home, tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let ctx = Ctx {
+            hub: Arc::new(Hub::default()),
+            db: Arc::new(Db::open_in_memory().unwrap()),
+            settings: Arc::new(RwLock::new(Settings::default())),
+            usage: Arc::new(UsageTracker::with_persist_every(Duration::ZERO)),
+            home: Some(home.path().to_path_buf()),
+        };
+        let work = tmp.path().join("claude-work");
+        let h = spawn_sh_with_env(
+            ctx,
+            "sleep 5",
+            vec![(
+                "CLAUDE_CONFIG_DIR".into(),
+                work.to_string_lossy().into_owned(),
+            )],
+        );
+        let write = |rel: &str| {
+            let p = tmp.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "").unwrap();
+            std::fs::canonicalize(p).unwrap()
+        };
+        let elsewhere = write("elsewhere/projects/x/s.jsonl");
+        announce(&h, &elsewhere);
+        assert_eq!(h.transcript(), None, "outside the agents' folders");
+        let own = write("claude-work/projects/x/s.jsonl");
+        announce(&h, &own);
+        assert_eq!(h.transcript().map(|(_, p)| p), Some(own));
+    }
+
+    #[test]
+    fn a_path_through_a_link_is_validated_once_and_compared_as_announced() {
+        let (h, ctx, home, file) = claude_with_transcript();
+        // announced through a link: the same file as `file`, a different string than its canonical path
+        let link = home.path().join("link");
+        std::os::unix::fs::symlink(file.parent().unwrap(), &link).unwrap();
+        let raw = link.join("t.jsonl");
+        assert_ne!(std::fs::canonicalize(&raw).unwrap(), raw);
+        announce(&h, &raw);
+        assert_eq!(
+            h.transcript().map(|(_, p)| p),
+            std::fs::canonicalize(&file).ok()
+        );
+        remembered(&ctx);
+        // gone from disk: a hook that validated again would refuse it and the tracker not hear of it
+        std::fs::remove_file(&file).unwrap();
+        announce(&h, &raw);
+        assert_eq!(remembered(&ctx).len(), 1, "the repeat was validated again");
     }
 
     #[test]

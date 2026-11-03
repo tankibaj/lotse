@@ -131,9 +131,17 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
         Ok(v @ serde_json::Value::Object(_)) => v,
         _ => return Ok(Outcome::BadInput),
     };
-    // Tool output can be huge and no adapter reads it: leave it out of the frame.
+    // Tool output can be huge and no adapter reads it: leave it out of the frame, except the few
+    // flags of an Agent call's answer (did the agent launch in the background, under which id).
     if let Some(fields) = payload.as_object_mut() {
-        fields.remove("tool_response");
+        let response = fields.remove("tool_response");
+        if let (Some(serde_json::Value::Object(response)), Some(tool)) =
+            (response, fields.get("tool_name").and_then(|t| t.as_str()))
+            && AGENT_TOOLS.contains(&tool)
+        {
+            let digest = agent_response_digest(&response);
+            fields.insert("tool_response".into(), serde_json::Value::Object(digest));
+        }
         if matches!(cfg.agent, AgentKind::ClaudeCode | AgentKind::Codex) {
             // Codex hooks speak the same dialect (`tool_name`, `tool_input`, `prompt`, ...)
             minimize_claude(fields);
@@ -151,12 +159,15 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
     Ok(Outcome::Sent)
 }
 
-/// Fields of a Claude Code hook payload that carry conversation text; the adapter never reads them.
+/// Fields of a Claude Code hook payload that carry conversation text; the adapter never reads them
+/// (but see [`minimize_claude`]: a `Notification`'s `message` and the notification blocks of a
+/// prompt are kept in a reduced form).
 const CLAUDE_TEXT_FIELDS: [&str; 3] = ["prompt", "last_assistant_message", "message"];
 
 /// The `tool_input` keys the adapter turns into a card summary (`summarize_input` in
-/// `lotse-detect/src/claude.rs`). Everything else in a tool input (file contents, edits) stays behind.
-const CLAUDE_TOOL_INPUT_KEYS: [&str; 8] = [
+/// `lotse-detect/src/claude.rs`), and the two it reads of an Agent call (`subagent_type`,
+/// `run_in_background`). Everything else in a tool input (file contents, edits) stays behind.
+const CLAUDE_TOOL_INPUT_KEYS: [&str; 10] = [
     "command",
     "file_path",
     "notebook_path",
@@ -165,17 +176,129 @@ const CLAUDE_TOOL_INPUT_KEYS: [&str; 8] = [
     "pattern",
     "query",
     "description",
+    "subagent_type",
+    "run_in_background",
 ];
+
+/// The tools that start a sub-agent (`Task` is the older name).
+const AGENT_TOOLS: [&str; 2] = ["Agent", "Task"];
+
+/// Longest text kept of a field that is not conversation (a notification's message, a description).
+const KEPT_TEXT_CHARS: usize = 200;
 
 /// Data minimisation: the daemon gets what status detection reads, not the user's prompts, replies
 /// or the contents of files the agent writes.
 fn minimize_claude(fields: &mut serde_json::Map<String, serde_json::Value>) {
+    use serde_json::Value;
+    let event = fields
+        .get("hook_event_name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let prompt = fields.remove("prompt");
+    let message = fields.remove("message");
     for key in CLAUDE_TEXT_FIELDS {
         fields.remove(key);
     }
-    if let Some(serde_json::Value::Object(input)) = fields.get_mut("tool_input") {
+    // A background agent reports back as a user turn made of `<task-notification>` blocks: they say
+    // which agent ended and how, and are not the user's words. Anything else in a prompt is dropped.
+    if let Some(digest) = prompt
+        .as_ref()
+        .and_then(Value::as_str)
+        .and_then(notification_digest)
+    {
+        fields.insert("prompt".into(), Value::String(digest));
+    }
+    // "Claude needs your permission to use Bash": the tool of a prompt no other hook reports.
+    if event.as_deref() == Some("Notification")
+        && let Some(Value::String(text)) = message
+    {
+        let kept: String = text.chars().take(KEPT_TEXT_CHARS).collect();
+        fields.insert("message".into(), Value::String(kept));
+    }
+    // What still runs after a `Stop` (commands and all): only whether, and how many, matter.
+    if let Some(tasks) = fields.get_mut("background_tasks") {
+        let count = match tasks {
+            Value::Array(a) => a.len(),
+            Value::Object(o) => o.len(),
+            Value::Number(n) => usize::try_from(n.as_u64().unwrap_or(0)).unwrap_or(0),
+            _ => 0,
+        };
+        *tasks = Value::from(count);
+    }
+    if let Some(Value::Object(input)) = fields.get_mut("tool_input") {
         input.retain(|k, _| CLAUDE_TOOL_INPUT_KEYS.contains(&k.as_str()));
     }
+}
+
+/// The flags of an Agent call's answer the adapter reads: the launch status and the agent's ids.
+fn agent_response_digest(
+    response: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    use serde_json::Value;
+    const KEYS: [&str; 8] = [
+        "status",
+        "isAsync",
+        "is_error",
+        "agentId",
+        "agent_id",
+        "taskId",
+        "task_id",
+        "description",
+    ];
+    response
+        .iter()
+        .filter(|(k, _)| KEYS.contains(&k.as_str()))
+        .filter_map(|(k, v)| match v {
+            Value::Bool(_) => Some((k.clone(), v.clone())),
+            Value::String(s) => Some((
+                k.clone(),
+                Value::String(s.chars().take(KEPT_TEXT_CHARS).collect()),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `text` reduced to its `<task-notification>` blocks (task id, tool use id, status, summary, and
+/// `API Error` as the result when that is how the agent's answer starts), or `None` without one.
+fn notification_digest(text: &str) -> Option<String> {
+    const OPEN: &str = "<task-notification>";
+    const CLOSE: &str = "</task-notification>";
+    const MAX_BLOCKS: usize = 64;
+    let tag = |block: &str, name: &str| -> Option<String> {
+        let open = format!("<{name}>");
+        let from = block.find(&open)? + open.len();
+        let inner = &block[from..];
+        let to = inner.find(&format!("</{name}>")).unwrap_or(inner.len());
+        Some(inner[..to].trim().chars().take(KEPT_TEXT_CHARS).collect())
+    };
+    let mut out = String::new();
+    let mut rest = text;
+    let mut blocks = 0;
+    while blocks < MAX_BLOCKS
+        && let Some(start) = rest.find(OPEN)
+    {
+        let body = &rest[start + OPEN.len()..];
+        let end = body.find(CLOSE).unwrap_or(body.len());
+        let block = &body[..end];
+        out.push_str(OPEN);
+        for name in ["task-id", "tool-use-id", "status", "summary"] {
+            if let Some(value) = tag(block, name) {
+                out.push_str(&format!("<{name}>{value}</{name}>"));
+            }
+        }
+        let api_error = block
+            .find("<result>")
+            .is_some_and(|at| block[at + 8..].trim_start().starts_with("API Error"));
+        if api_error {
+            out.push_str("<result>API Error</result>");
+        }
+        out.push_str(CLOSE);
+        out.push('\n');
+        rest = &body[end..];
+        blocks += 1;
+    }
+    (blocks > 0).then_some(out)
 }
 
 /// Run the exchange on a worker thread so even a connect that hangs cannot outlive the deadline.
@@ -380,6 +503,78 @@ mod tests {
             })
         );
         d.handle.join().unwrap();
+    }
+
+    /// What the daemon receives for `raw`.
+    fn forwarded(raw: &[u8]) -> serde_json::Value {
+        let d = fake_daemon(Mode::Accept, "t");
+        run(&cfg(&d, Some("a1")), raw).unwrap();
+        let (_, req) = d.received.recv().unwrap();
+        let Request::HookEvent { payload, .. } = req.request else {
+            panic!("expected a hook event");
+        };
+        d.handle.join().unwrap();
+        payload
+    }
+
+    #[test]
+    fn an_agent_calls_launch_flags_survive_and_the_rest_of_its_answer_does_not() {
+        let kept = forwarded(
+            br#"{"hook_event_name":"PostToolUse","tool_name":"Agent","tool_use_id":"tu9","tool_input":{"description":"Count","prompt":"do it","subagent_type":"general-purpose","run_in_background":true},"tool_response":{"status":"async_launched","agentId":"a1b2","description":"Count","prompt":"the whole brief","outputFile":"/x/y","content":[{"type":"text","text":"big answer"}]}}"#,
+        );
+        assert_eq!(
+            kept,
+            serde_json::json!({
+                "hook_event_name": "PostToolUse",
+                "tool_name": "Agent",
+                "tool_use_id": "tu9",
+                "tool_input": {"description": "Count", "subagent_type": "general-purpose", "run_in_background": true},
+                "tool_response": {"status": "async_launched", "agentId": "a1b2", "description": "Count"},
+            })
+        );
+        // another tool's answer is still dropped whole
+        let other = forwarded(
+            br#"{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_response":{"status":"ok","stdout":"big"}}"#,
+        );
+        assert_eq!(
+            other,
+            serde_json::json!({"hook_event_name": "PostToolUse", "tool_name": "Bash"})
+        );
+    }
+
+    #[test]
+    fn a_report_back_turn_keeps_its_notification_blocks_and_nothing_else() {
+        let prompt = "<task-notification>\\n<task-id>a1</task-id>\\n<tool-use-id>toolu_1</tool-use-id>\\n<status>completed</status>\\n<summary>Agent \\\"Count\\\" finished</summary>\\n<result>API Error: 529 secret detail</result>\\n<usage>total_tokens: 9</usage>\\n</task-notification>\\n<task-notification><task-id>a2</task-id><status>completed</status><result>my private answer</result></task-notification>";
+        let raw = format!(r#"{{"hook_event_name":"UserPromptSubmit","prompt":"{prompt}"}}"#);
+        let kept = forwarded(raw.as_bytes());
+        let text = kept["prompt"].as_str().unwrap();
+        assert_eq!(
+            text,
+            "<task-notification><task-id>a1</task-id><tool-use-id>toolu_1</tool-use-id><status>completed</status><summary>Agent \"Count\" finished</summary><result>API Error</result></task-notification>\n<task-notification><task-id>a2</task-id><status>completed</status></task-notification>\n"
+        );
+        // a user's own prompt never travels, even one that mentions the tag name in passing
+        let plain = forwarded(
+            br#"{"hook_event_name":"UserPromptSubmit","prompt":"what is a task-notification?"}"#,
+        );
+        assert_eq!(
+            plain,
+            serde_json::json!({"hook_event_name": "UserPromptSubmit"})
+        );
+    }
+
+    #[test]
+    fn a_permission_notification_keeps_its_message_and_stop_keeps_only_a_task_count() {
+        let kept = forwarded(
+            br#"{"hook_event_name":"Notification","notification_type":"permission_prompt","message":"Claude needs your permission to use Bash"}"#,
+        );
+        assert_eq!(kept["message"], "Claude needs your permission to use Bash");
+        // a message of any other event is conversation text
+        let other = forwarded(br#"{"hook_event_name":"Stop","message":"note"}"#);
+        assert_eq!(other, serde_json::json!({"hook_event_name": "Stop"}));
+        let stop = forwarded(
+            br#"{"hook_event_name":"Stop","background_tasks":[{"id":"x","command":"npm run dev --token abc"},{"id":"y"}]}"#,
+        );
+        assert_eq!(stop["background_tasks"], 2);
     }
 
     #[test]

@@ -8,6 +8,7 @@ import type { ThemePref } from '../theme';
 import { AGENTS } from '../sheets/validation';
 import { INTERFACE_SIZE, SYSTEM_FONT, TERMINAL_SIZE, cssFamily, interfaceStack, terminalStack } from './appearance';
 import { useInstalledFonts } from './fonts';
+import type { FontList } from './fonts';
 import { lanState } from './remote';
 import type { SettingsDraft } from './useSettings';
 
@@ -118,11 +119,26 @@ const EVENTS: { key: EventKey; glyph: string; tone: string; label: string }[] = 
   { key: 'sub_agent_done', glyph: '✓', tone: 'text-green', label: 'Sub-agent done' },
 ];
 
+/** The sounds macOS ships in /System/Library/Sounds. The webview cannot list the folder; the set is fixed. */
+const SYSTEM_SOUNDS = ['Basso', 'Blow', 'Bottle', 'Frog', 'Funk', 'Glass', 'Hero', 'Morse', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink'];
+
+/** `EventPrefs` plus the proto 4 sound name (absent: the default sound), until the client types carry it. */
+type SoundPrefs = Omit<EventPrefs, 'sound_name'> & { sound_name?: string | null };
+
+/** One select over the row's `sound` flag and `sound_name`. */
+const soundChoice = (p: SoundPrefs) => (!p.sound ? 'none' : (p.sound_name || 'default'));
+
 export function NotificationsSection({ draft }: { draft: SettingsDraft }) {
   const { settings, update } = draft;
   if (!settings) return null;
   const n: NotificationSettings = settings.notifications;
   const toggle = (key: EventKey, field: keyof EventPrefs, on: boolean) => update((s) => { s.notifications[key][field] = on; });
+  const pickSound = (key: EventKey, choice: string) => update((s) => {
+    const p: SoundPrefs = s.notifications[key];
+    p.sound = choice !== 'none';
+    if (choice === 'none' || choice === 'default') delete p.sound_name;
+    else p.sound_name = choice;
+  });
   return (
     <section aria-labelledby="sec-notifications">
       <h2 id="sec-notifications" className={h2}>Notifications</h2>
@@ -140,7 +156,19 @@ export function NotificationsSection({ draft }: { draft: SettingsDraft }) {
             <tr key={e.key} className="border-t">
               <td className="py-2"><span className={e.tone} aria-hidden="true">{e.glyph}</span> {e.label}</td>
               <td className="text-center"><input type="checkbox" className={check} aria-label={`${e.label} banner`} checked={n[e.key].banner} onChange={(ev) => toggle(e.key, 'banner', ev.target.checked)} /></td>
-              <td className="text-center"><input type="checkbox" className={check} aria-label={`${e.label} sound`} checked={n[e.key].sound} onChange={(ev) => toggle(e.key, 'sound', ev.target.checked)} /></td>
+              <td className="whitespace-nowrap text-center">
+                <input type="checkbox" className={check} aria-label={`${e.label} sound`} checked={n[e.key].sound} onChange={(ev) => toggle(e.key, 'sound', ev.target.checked)} />
+                <select
+                  className="ml-2 rounded-md bg-side px-1 py-0.5 text-[12px] ring-1 ring-line"
+                  aria-label={`${e.label} sound name`}
+                  value={soundChoice(n[e.key])}
+                  onChange={(ev) => pickSound(e.key, ev.target.value)}
+                >
+                  <option value="none">None</option>
+                  <option value="default">Default</option>
+                  {SYSTEM_SOUNDS.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </td>
               <td className={`text-center ${e.key === 'perm' ? '' : dim}`}>
                 {e.key === 'perm'
                   ? <input type="checkbox" className={check} aria-label="Allow/Deny in banner" checked={n.perm.allow_deny} onChange={(ev) => toggle('perm', 'allow_deny', ev.target.checked)} />
@@ -168,9 +196,13 @@ const THEMES: { pref: ThemePref; label: string }[] = [
 /** One family, drawn in itself where the platform's select menu allows it (WebKit may ignore it). */
 const fontOption = (f: string) => <option key={f} value={f} style={{ fontFamily: cssFamily(f) }}>{f}</option>;
 
-/** The stored font when it is not among `known`: it stays selectable instead of silently changing. */
-const missingOption = (font: string, known: readonly string[]) =>
-  known.includes(font) ? null : <option key={`missing-${font}`} value={font}>{font} (not installed)</option>;
+/**
+ * The stored font when it is not among `known`: it stays selectable instead of silently changing. Only called
+ * "(not installed)" when `known` is the list read from this Mac; while that is still loading (or failed) it is a plain
+ * option, so the label does not flip once the real list arrives.
+ */
+const missingOption = (font: string, list: FontList, known: readonly string[] = list.families) =>
+  known.includes(font) ? null : <option key={`missing-${font}`} value={font}>{list.verified ? `${font} (not installed)` : font}</option>;
 
 function FontPicker(props: {
   title: string;
@@ -232,12 +264,12 @@ export function AppearanceSection({ draft }: { draft: SettingsDraft }) {
           <FontPicker title="Interface font" font={a.interface_font} size={a.interface_font_size} range={INTERFACE_SIZE}
             onFont={(v) => set({ interface_font: v })} onSize={(v) => set({ interface_font_size: v }, 300)}>
             <option value={SYSTEM_FONT}>{SYSTEM_FONT}</option>
-            {missingOption(a.interface_font, [SYSTEM_FONT, ...installed.families])}
+            {missingOption(a.interface_font, installed, [SYSTEM_FONT, ...installed.families])}
             {installed.families.map(fontOption)}
           </FontPicker>
           <FontPicker title="Terminal font" font={a.terminal_font} size={a.terminal_font_size} range={TERMINAL_SIZE}
             onFont={(v) => set({ terminal_font: v })} onSize={(v) => set({ terminal_font_size: v }, 300)}>
-            {missingOption(a.terminal_font, installed.families)}
+            {missingOption(a.terminal_font, installed)}
             <optgroup label="Monospace">{installed.monospace.map(fontOption)}</optgroup>
             {otherFonts.length > 0 && <optgroup label="Other fonts">{otherFonts.map(fontOption)}</optgroup>}
           </FontPicker>
@@ -264,7 +296,7 @@ export function RemoteSection() {
         <input type="checkbox" className={check} checked={lan.on} disabled readOnly />
         Allow access from devices on my network <span className={dim}>({lan.on ? 'on' : 'off'})</span>
       </label>
-      <p className={`mt-2 text-[12px] ${dim}`}>Not available in Alpha: Lotse opens no network listener. Remote access arrives in a later release.</p>
+      <p className={`mt-2 text-[12px] ${dim}`}>Not available yet: Lotse opens no network listener. Remote access may arrive in a later release.</p>
     </section>
   );
 }
@@ -287,7 +319,9 @@ const KEYS: [string, string][] = [
   ['Add a project', '⇧⌘O'],
   ['Settings', '⌘,'],
   ['Toggle sidebar', '⌃⌘S'],
-  ['Changes · Files · Transcript · Usage · Session', '⇧⌘D · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I'],
+  ['Changes · Files · Transcript · Usage · Session', '⇧⌘G · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I'],
+  ['Open prompt composer', '⌘⇧↩'],
+  ['Full diff review', '⇧⌘R'],
   ['All shortcuts', '⌘/'],
 ];
 

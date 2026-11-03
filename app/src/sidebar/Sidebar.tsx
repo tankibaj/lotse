@@ -293,6 +293,7 @@ export function Sidebar() {
         ref={navRef}
         className="min-h-0 flex-1 space-y-0.5 overflow-x-hidden overflow-y-auto overscroll-contain px-2 pb-3"
         aria-label="Projects"
+        tabIndex={-1} // a scroller must not become a Tab stop of its own (WebKit/Chromium make some focusable); the rows are the stops
         onKeyDown={onKeyDown}
         onPointerEnter={() => (hovering.current = true)}
         onPointerLeave={() => (hovering.current = false)}

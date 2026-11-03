@@ -24,6 +24,9 @@ const HOST_MARKERS: &[&str] = &[
     "CLAUDE_PID",
     "CLAUDE_EFFORT",
     "CLAUDE_CODE_ENTRYPOINT",
+    // bare mode (`claude --bare`): hooks, plugins and auto-memory off. Inherited from a parent
+    // session it would silence every Lotse hook in the pane's own Claude.
+    "CLAUDE_CODE_SIMPLE",
     "CLAUDE_CODE_EXECPATH",
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_CODE_CHILD_SESSION",
@@ -230,6 +233,8 @@ mod tests {
             ("CLAUDE_CODE_CHILD_SESSION", "1"),
             ("CLAUDE_CODE_SESSION_ID", "abc"),
             ("CLAUDE_CODE_ENTRYPOINT", "cli"),
+            // "bare" mode of the parent: no hooks, no plugins: Lotse's would never report
+            ("CLAUDE_CODE_SIMPLE", "1"),
             ("CLAUDE_CODE_MESSAGING_SOCKET", "/tmp/x.sock"),
             ("CLAUDE_CODE_MESSAGING_TOKEN", "t"),
             ("CLAUDE_PID", "42"),

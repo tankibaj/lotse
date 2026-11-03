@@ -5,8 +5,9 @@ mod common;
 
 use common::*;
 use lotse_proto::{
-    AgentKind, DiffStatus, ErrorCode, Event, NewSession, Project, ProjectId, Request, Response,
-    Session, Snapshot, Transcript, TranscriptRole, UsageToday, Workspace, WorkspaceId,
+    AgentKind, DiffBase, DiffStatus, ErrorCode, Event, NewSession, Project, ProjectId, Request,
+    Response, Session, Snapshot, Transcript, TranscriptRole, TranscriptSource, UsageToday,
+    Workspace, WorkspaceId,
 };
 use std::path::Path;
 use std::process::Command;
@@ -197,6 +198,7 @@ fn get_diff_returns_the_session_folders_changes() {
 
     let Response::Diff(diff) = c.request(Request::GetDiff {
         session_id: session.id.clone(),
+        base: DiffBase::Head,
     }) else {
         panic!("no diff")
     };
@@ -216,12 +218,14 @@ fn get_diff_without_git_and_for_an_unknown_session() {
     let session = c.create_session(&plain, Some("/bin/sh"));
     let Response::Diff(diff) = c.request(Request::GetDiff {
         session_id: session.id,
+        base: DiffBase::Head,
     }) else {
         panic!("no diff")
     };
     assert!(!diff.is_git && diff.files.is_empty());
     let r = c.request(Request::GetDiff {
         session_id: "nope".into(),
+        base: DiffBase::Head,
     });
     assert_eq!(error_code(r), ErrorCode::NotFound);
 }
@@ -309,7 +313,8 @@ fn a_claude_transcript_announced_by_a_hook_can_be_shown() {
         Transcript {
             available: false,
             turns: vec![],
-            truncated: false
+            truncated: false,
+            source: TranscriptSource::Claude,
         }
     );
 
@@ -373,14 +378,11 @@ fn a_hook_cannot_point_the_daemon_at_files_outside_home() {
 }
 
 #[test]
-fn agents_without_a_transcript_say_so() {
+fn agents_without_a_transcript_show_their_scrollback() {
     let d = Daemon::start();
     let mut c = d.client();
     let project = c.add_project(&d.project_dir("proj"));
-    for (agent, label) in [
-        (AgentKind::OpenCode, "OpenCode"),
-        (AgentKind::Terminal, "Terminal"),
-    ] {
+    for agent in [AgentKind::OpenCode, AgentKind::Terminal] {
         let session = agent_session(&mut c, &project, agent);
         // OpenCode's plugin payload has no transcript path
         c.expect_ok(Request::HookEvent {
@@ -388,10 +390,11 @@ fn agents_without_a_transcript_say_so() {
             session_id: Some(session.id.clone()),
             payload: serde_json::json!({"hook_event_name": "SessionIdle", "session_id": "x"}),
         });
+        // since Beta (wp07) the terminal's own scrollback stands in for the transcript
         match transcript(&mut c, &session) {
-            Response::Error(e) => {
-                assert_eq!(e.code, ErrorCode::Unavailable);
-                assert_eq!(e.message, format!("Not available for {label}"));
+            Response::Transcript(t) => {
+                assert!(t.available, "{agent:?}");
+                assert_eq!(t.source, TranscriptSource::Scrollback, "{agent:?}");
             }
             other => panic!("{other:?}"),
         }

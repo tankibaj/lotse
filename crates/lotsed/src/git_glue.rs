@@ -1,6 +1,8 @@
 //! `lotse-git` wired into the daemon: git line of a session, isolated worktrees.
 
 use crate::git::is_git_repo;
+use crate::launch::LaunchEnv;
+use crate::pr;
 use lotse_proto::GitInfo;
 use std::path::{Path, PathBuf};
 
@@ -11,13 +13,35 @@ pub fn info(dir: &Path) -> GitInfo {
         tracing::debug!("git info for {}: {e}", dir.display());
         GitInfo {
             is_git: is_git_repo(dir),
-            branch: String::new(),
-            ahead: 0,
-            dirty: 0,
-            worktree: false,
-            worktree_path: None,
+            ..GitInfo::default()
         }
     })
+}
+
+/// [`info`] plus the branch's pull request. `pr_env` is `Some` only while Settings › External ›
+/// PR status is on; then this may run `gh` / `glab` (see [`crate::pr::status`]: up to 5 s on a
+/// cache miss, one miss per branch and minute), so it stays off the async runtime too.
+pub fn info_with_pr(dir: &Path, pr_env: Option<&LaunchEnv>) -> GitInfo {
+    let mut git = info(dir);
+    if git.is_git
+        && let Some(env) = pr_env
+    {
+        git.pr = pr::status(dir, &git.branch, env);
+    }
+    git
+}
+
+/// [`info_with_pr`] for the periodic refresh of every session's git line, which shares one thread
+/// and so must not wait for `gh` / `glab`: the PR is whatever [`pr::status_in_background`] has (the
+/// lookup runs on its own thread; [`pr::generation`] moves when its answer changes).
+pub fn info_with_pr_refresh(dir: &Path, pr_env: Option<&LaunchEnv>) -> GitInfo {
+    let mut git = info(dir);
+    if git.is_git
+        && let Some(env) = pr_env
+    {
+        git.pr = pr::status_in_background(dir, &git.branch, env);
+    }
+    git
 }
 
 /// The folder a new session runs in: `repo` itself, or a new isolated worktree for `branch`

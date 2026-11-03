@@ -49,7 +49,7 @@ use std::time::SystemTime;
 /// Longest `PermRequest::summary`, in characters.
 const SUMMARY_MAX_CHARS: usize = 160;
 const DEFAULT_PERM_TOOL: &str = "approval";
-const DEFAULT_PERM_SUMMARY: &str = "Waiting for your input";
+const DEFAULT_PERM_SUMMARY: &str = crate::claude::PLACEHOLDER_PERM_SUMMARY;
 
 // ---- process identity ---------------------------------------------------------------------------
 
@@ -339,6 +339,7 @@ fn perm_request(verdict: Option<&Verdict>) -> PermRequest {
         tool,
         summary: summary.chars().take(SUMMARY_MAX_CHARS).collect(),
         always: None,
+        id: None,
     }
 }
 
@@ -498,6 +499,7 @@ mod tests {
                 tool: "command".into(),
                 summary: "rm -rf build".into(),
                 always: None,
+                id: None,
             })
         );
         // A pager (keep) with a blocked-looking screen underneath changes nothing.
@@ -520,6 +522,7 @@ mod tests {
                 tool: "command".into(),
                 summary: DEFAULT_PERM_SUMMARY.into(),
                 always: None,
+                id: None,
             })
         );
     }

@@ -433,7 +433,9 @@ impl NotifyLimiter {
             slot.window_start = Some(now);
             slot.sent = 0;
         }
-        let new_request = perm.is_some() && perm != slot.last_perm.as_ref();
+        // the same request is not new when only its prompt id changed (Perm, Run, Perm again)
+        let same = |a: &PermRequest, b: &PermRequest| a.tool == b.tool && a.summary == b.summary;
+        let new_request = perm.is_some_and(|p| slot.last_perm.as_ref().is_none_or(|l| !same(p, l)));
         let allowed = slot.sent == 0 || (new_request && slot.sent < MAX_DISTINCT_PERMS);
         if allowed {
             slot.sent += 1;
@@ -443,21 +445,28 @@ impl NotifyLimiter {
     }
 }
 
-/// Settings + per-project override → `Some(sound)` when a banner is due (mock `notifies`).
-/// A custom "off" silences the whole event, sound included; the sound follows the global row.
-///
-/// Known limit: "banner off, sound on" yields `None` (no event), because `Event::Notification` has no
-/// banner flag and the app always shows a banner for it. Sound-only needs a proto field (request).
+/// What a notification shows and plays.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    pub banner: bool,
+    pub sound: bool,
+    /// The global row's macOS system sound; only with `sound`.
+    pub sound_name: Option<String>,
+}
+
+/// Settings + per-project override → what to show and play, `None` when there is nothing to do
+/// (mock `notifies`). A custom "off" and Mute silence the whole event, sound included; a custom "on"
+/// takes the sound from the global row. Banner off with sound on is a sound-only event.
 pub fn resolve(
     settings: &NotificationSettings,
     mode: &NotificationMode,
     kind: NotificationKind,
-) -> Option<bool> {
+) -> Option<Resolved> {
     let global = match kind {
-        NotificationKind::Perm => settings.perm,
-        NotificationKind::Fail => settings.fail,
-        NotificationKind::Done => settings.done,
-        NotificationKind::SubAgentDone => settings.sub_agent_done,
+        NotificationKind::Perm => &settings.perm,
+        NotificationKind::Fail => &settings.fail,
+        NotificationKind::Done => &settings.done,
+        NotificationKind::SubAgentDone => &settings.sub_agent_done,
     };
     let banner = match mode {
         NotificationMode::Mute => return None,
@@ -474,7 +483,18 @@ pub fn resolve(
             NotificationKind::SubAgentDone => *sub_agent_done,
         },
     };
-    banner.then_some(global.sound)
+    let custom_off = matches!(mode, NotificationMode::Custom { .. }) && !banner;
+    if custom_off || !(banner || global.sound) {
+        return None;
+    }
+    Some(Resolved {
+        banner,
+        sound: global.sound,
+        sound_name: global
+            .sound_name
+            .clone()
+            .filter(|n| global.sound && !n.is_empty()),
+    })
 }
 
 /// The `Event::Notification` for a trigger, or `None` when settings or the project say no.
@@ -488,7 +508,11 @@ pub fn notification(
     at: UnixMs,
 ) -> Option<Event> {
     let kind = trigger.kind();
-    let sound = resolve(settings, mode, kind)?;
+    let shown = resolve(settings, mode, kind)?;
+    let prompt_id = match trigger {
+        Trigger::Perm(Some(p)) => p.id.clone(),
+        _ => None,
+    };
     let (subtitle, body) = match trigger {
         Trigger::Perm(Some(p)) => (
             "Needs permission",
@@ -505,7 +529,10 @@ pub fn notification(
         title: format!("{project_name} · {}", session.agent.label()),
         subtitle: subtitle.into(),
         body,
-        sound,
+        banner: shown.banner,
+        sound: shown.sound,
+        sound_name: shown.sound_name,
+        prompt_id,
         at,
     })
 }
@@ -574,11 +601,33 @@ mod tests {
                     tool: "Bash".into(),
                     summary: format!("cmd {n}"),
                     always: None,
+                    id: None,
                 };
                 limiter.allow(&Trigger::Perm(Some(req)), t0)
             })
             .count();
         assert_eq!(allowed, MAX_DISTINCT_PERMS as usize);
+    }
+
+    /// Perm(X), Run, Perm(X) hands out a new prompt id each time; it is still one request.
+    #[test]
+    fn the_same_request_with_a_new_prompt_id_gets_one_banner_per_window() {
+        let t0 = Instant::now();
+        let ask = |id: &str, summary: &str| {
+            Trigger::Perm(Some(PermRequest {
+                tool: "Bash".into(),
+                summary: summary.into(),
+                always: None,
+                id: Some(id.into()),
+            }))
+        };
+        let mut limiter = NotifyLimiter::default();
+        let allowed = (0..50)
+            .filter(|n| limiter.allow(&ask(&format!("id-{n}"), "ls"), t0))
+            .count();
+        assert_eq!(allowed, 1, "a flapping request is one banner");
+        // a different request still passes inside the window
+        assert!(limiter.allow(&ask("id-x", "rm -rf build"), t0));
     }
 
     #[test]
@@ -774,6 +823,7 @@ mod tests {
             tool: "Bash".into(),
             summary: "npx playwright test e2e/patients".into(),
             always: None,
+            id: Some("p-1".into()),
         }));
         let Some(Event::Notification {
             title,
@@ -799,6 +849,12 @@ mod tests {
             Some("Bash(npx playwright test e2e/patients)")
         );
         assert!(sound);
+        // the banner's Allow/Deny answers this prompt only
+        let again = notification(&settings(), &NotificationMode::Global, "p", &s, &perm, 1);
+        assert!(matches!(
+            again,
+            Some(Event::Notification { prompt_id: Some(ref id), banner: true, .. }) if id == "p-1"
+        ));
         // done: banner, no sound; sub-agent done: off
         let done = notification(
             &settings(),
@@ -816,32 +872,105 @@ mod tests {
         assert!(notification(&settings(), &NotificationMode::Global, "p", &s, &sub, 1).is_none());
     }
 
+    fn prefs(banner: bool, sound: bool, sound_name: Option<&str>) -> EventPrefs {
+        EventPrefs {
+            banner,
+            sound,
+            allow_deny: false,
+            sound_name: sound_name.map(Into::into),
+        }
+    }
+
+    /// `(banner, sound, sound_name)` of the notification a `done` trigger gets, `None` for no event.
+    fn done_with(
+        settings: &NotificationSettings,
+        mode: &NotificationMode,
+    ) -> Option<(bool, bool, Option<String>)> {
+        let s = session(AgentKind::ClaudeCode);
+        match notification(settings, mode, "p", &s, &Trigger::Done, 1)? {
+            Event::Notification {
+                banner,
+                sound,
+                sound_name,
+                ..
+            } => Some((banner, sound, sound_name)),
+            other => panic!("not a notification: {other:?}"),
+        }
+    }
+
     #[test]
-    fn sound_without_banner_sends_nothing_until_the_proto_can_say_so() {
+    fn sound_without_banner_is_a_sound_only_event() {
         let sound_only = NotificationSettings {
-            done: EventPrefs {
-                banner: false,
-                sound: true,
-                allow_deny: false,
-            },
+            done: prefs(false, true, None),
             ..settings()
         };
         assert_eq!(
-            resolve(
-                &sound_only,
-                &NotificationMode::Global,
-                NotificationKind::Done
-            ),
-            None
+            done_with(&sound_only, &NotificationMode::Global),
+            Some((false, true, None))
         );
+        // both off: nothing to show or play
+        let off = NotificationSettings {
+            done: prefs(false, false, Some("Glass")),
+            ..settings()
+        };
+        assert_eq!(done_with(&off, &NotificationMode::Global), None);
+    }
+
+    #[test]
+    fn the_sound_name_comes_from_the_global_row_and_needs_the_sound() {
+        let named = NotificationSettings {
+            done: prefs(true, true, Some("Glass")),
+            ..settings()
+        };
         assert_eq!(
-            resolve(
-                &settings(),
-                &NotificationMode::Global,
-                NotificationKind::Perm
-            ),
-            Some(true)
+            done_with(&named, &NotificationMode::Global),
+            Some((true, true, Some("Glass".into())))
         );
+        // a name on a silent row is not sent
+        let silent = NotificationSettings {
+            done: prefs(true, false, Some("Glass")),
+            ..settings()
+        };
+        assert_eq!(
+            done_with(&silent, &NotificationMode::Global),
+            Some((true, false, None))
+        );
+        // an empty name is no name
+        let blank = NotificationSettings {
+            done: prefs(true, true, Some("")),
+            ..settings()
+        };
+        assert_eq!(
+            done_with(&blank, &NotificationMode::Global),
+            Some((true, true, None))
+        );
+        // a custom "on" keeps the global sound and name
+        let custom = NotificationMode::Custom {
+            perm: false,
+            fail: false,
+            done: true,
+            sub_agent_done: false,
+        };
+        assert_eq!(
+            done_with(&named, &custom),
+            Some((true, true, Some("Glass".into())))
+        );
+    }
+
+    #[test]
+    fn mute_and_a_custom_off_silence_sound_only_rows_too() {
+        let sound_only = NotificationSettings {
+            done: prefs(false, true, Some("Glass")),
+            ..settings()
+        };
+        assert_eq!(done_with(&sound_only, &NotificationMode::Mute), None);
+        let custom_off = NotificationMode::Custom {
+            perm: true,
+            fail: true,
+            done: false,
+            sub_agent_done: true,
+        };
+        assert_eq!(done_with(&sound_only, &custom_off), None);
     }
 
     #[test]
@@ -867,16 +996,25 @@ mod tests {
         let sub = Trigger::SubAgentDone("x".into());
         assert!(notification(&settings(), &custom, "p", &s, &sub, 1).is_some());
         assert!(notification(&settings(), &custom, "p", &s, &Trigger::Fail, 1).is_none());
-        let off = NotificationSettings {
-            fail: EventPrefs {
-                banner: false,
-                sound: true,
-                allow_deny: false,
-            },
+        // WP09: banner off + sound on is now a sound-only event instead of nothing
+        let sound_only = NotificationSettings {
+            fail: prefs(false, true, None),
             ..settings()
         };
-        assert!(
-            notification(&off, &NotificationMode::Global, "p", &s, &Trigger::Fail, 1).is_none()
-        );
+        assert!(matches!(
+            notification(
+                &sound_only,
+                &NotificationMode::Global,
+                "p",
+                &s,
+                &Trigger::Fail,
+                1
+            ),
+            Some(Event::Notification {
+                banner: false,
+                sound: true,
+                ..
+            })
+        ));
     }
 }

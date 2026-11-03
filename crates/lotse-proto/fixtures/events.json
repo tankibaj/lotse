@@ -5,14 +5,14 @@
   { "type": "event", "body": { "event": "session_created", "data": {
     "id": "a8", "project_id": "p1", "title": "Claude Code", "agent": "claude_code", "command": "claude",
     "status": "unknown", "sub_agents": [],
-    "git": { "is_git": true, "branch": "main", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null },
+    "git": { "is_git": true, "branch": "main", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null, "behind": 0, "added": 0, "removed": 0, "pr": null },
     "created_at": 1793610840000, "last_activity": 1793610840000, "running_since": null,
     "unread": false, "perm": null, "source": "process"
   } } },
   { "type": "event", "body": { "event": "session_updated", "data": {
     "id": "a6", "project_id": "p4", "title": "Starship prompt", "agent": "opencode", "command": "opencode",
     "status": "done", "sub_agents": [],
-    "git": { "is_git": true, "branch": "main", "ahead": 1, "dirty": 0, "worktree": false, "worktree_path": null },
+    "git": { "is_git": true, "branch": "main", "ahead": 1, "dirty": 0, "worktree": false, "worktree_path": null, "behind": 0, "added": 0, "removed": 0, "pr": null },
     "created_at": 1793596440000, "last_activity": 1793608920000, "running_since": null,
     "unread": false, "perm": null, "source": "hook"
   } } },
@@ -20,7 +20,7 @@
   { "type": "event", "body": { "event": "session_exited", "data": { "session_id": "a4", "exit_code": 1 } } },
   { "type": "event", "body": { "event": "session_exited", "data": { "session_id": "a7", "exit_code": null } } },
   { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a1", "status": "run", "source": "hook", "perm": null, "running_since": 1793610679000, "at": 1793610679000 } } },
-  { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a3", "status": "perm", "source": "hook", "perm": { "tool": "Bash", "summary": "npx playwright test e2e/patients" }, "running_since": null, "at": 1793610835000 } } },
+  { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a3", "status": "perm", "source": "hook", "perm": { "tool": "Bash", "summary": "npx playwright test e2e/patients", "always": "remember", "id": "5f0c1c3e-7d0b-4a39-9d0e-0a8f4c2b6e11" }, "running_since": null, "at": 1793610835000 } } },
   { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a4", "status": "fail", "source": "osc7501", "perm": null, "running_since": null, "at": 1793610000000 } } },
   { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a6", "status": "done", "source": "hook", "perm": null, "running_since": null, "at": 1793608920000 } } },
   { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a2", "status": "idle", "source": "osc7501", "perm": null, "running_since": null, "at": 1793607240000 } } },
@@ -31,7 +31,7 @@
     { "id": "a3-s3", "name": "e2e-runner", "status": "perm" }
   ] } } },
   { "type": "event", "body": { "event": "sub_agent_status", "data": { "session_id": "a1", "sub_agent_id": "a1-s2", "status": "fail" } } },
-  { "type": "event", "body": { "event": "git_info_changed", "data": { "session_id": "a1", "git": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding" } } } },
+  { "type": "event", "body": { "event": "git_info_changed", "data": { "session_id": "a1", "git": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding", "behind": 1, "added": 42, "removed": 7, "pr": { "number": 128, "url": "https://github.com/acme/billing-api/pull/128", "state": "draft", "checks": null, "provider": "github" } } } } },
   { "type": "event", "body": { "event": "settings_changed", "data": {
     "launch_commands": { "terminal": "$SHELL -l", "claude_code": "claude", "codex": "codex", "opencode": "opencode" },
     "notifications": {
@@ -43,15 +43,17 @@
       "paused": true
     },
     "appearance": { "theme": "light", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
-    "scrollback_bytes": 4194304
+    "scrollback_bytes": 4194304,
+    "external": { "pr_status": false, "mcp_live": false }
   } } },
   { "type": "event", "body": { "event": "workspace_added", "data": { "id": "w2", "name": "Client work" } } },
   { "type": "event", "body": { "event": "workspace_updated", "data": { "id": "w2", "name": "Clients" } } },
   { "type": "event", "body": { "event": "workspace_removed", "data": { "workspace_id": "w2" } } },
   { "type": "event", "body": { "event": "usage_changed", "data": { "input_tokens": 52000, "output_tokens": 38000, "cache_read_tokens": 300000, "cache_write_tokens": 22000, "cost_micros": 4180000 } } },
   { "type": "event", "body": { "event": "usage_changed", "data": { "input_tokens": 10, "output_tokens": 5, "cache_read_tokens": 0, "cache_write_tokens": 0, "cost_micros": null } } },
-  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a3", "kind": "perm", "title": "praxis-web · Claude Code", "subtitle": "Needs permission", "body": "Bash(npx playwright test e2e/patients)", "sound": true, "at": 1793610835000 } } },
-  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "sound": true, "at": 1793610000000 } } },
-  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a6", "kind": "done", "title": "dotfiles · OpenCode", "subtitle": "Done", "body": null, "sound": false, "at": 1793608920000 } } },
-  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a1", "kind": "sub_agent_done", "title": "billing-api · Claude Code", "subtitle": "Sub-agent done", "body": "explore-repo", "sound": false, "at": 1793610700000 } } }
+  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a3", "kind": "perm", "title": "praxis-web · Claude Code", "subtitle": "Needs permission", "body": "Bash(npx playwright test e2e/patients)", "banner": true, "sound": true, "sound_name": "Glass", "prompt_id": "5f0c1c3e-7d0b-4a39-9d0e-0a8f4c2b6e11", "at": 1793610835000 } } },
+  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "banner": true, "sound": true, "at": 1793610000000 } } },
+  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a6", "kind": "done", "title": "dotfiles · OpenCode", "subtitle": "Done", "body": null, "banner": true, "sound": false, "at": 1793608920000 } } },
+  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a1", "kind": "sub_agent_done", "title": "billing-api · Claude Code", "subtitle": "Sub-agent done", "body": "explore-repo", "banner": true, "sound": false, "at": 1793610700000 } } },
+  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "banner": false, "sound": true, "at": 1793610001000 } } }
 ]
