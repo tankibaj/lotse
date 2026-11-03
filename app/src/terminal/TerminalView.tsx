@@ -9,6 +9,7 @@ import type { SessionId } from '../lib/client';
 import { DEFAULT_FONT_SIZE, FONT_WEIGHT, FONT_WEIGHT_BOLD, LINE_HEIGHT, terminalFontFamily } from './font';
 import { moveFocusOut } from './focus';
 import { isLinkClick, openExternal } from './links';
+import { registerTerminal } from './registry';
 import { wantsWebgl } from './renderer';
 import { readXtermTheme } from './xtermTheme';
 
@@ -113,6 +114,7 @@ export function TerminalView({
     });
     term.current = t;
     fit.current = fitAddon;
+    const unregister = registerTerminal(sessionId, t);
     const refit = () => {
       if (el.clientWidth > 0 && el.clientHeight > 0) fitAddon.fit();
     };
@@ -176,6 +178,7 @@ export function TerminalView({
       offData();
       disposables.forEach((d) => d.dispose());
       if (requested) void client.detach(sessionId).catch(() => {});
+      unregister();
       term.current = null;
       fit.current = null;
       t.dispose();

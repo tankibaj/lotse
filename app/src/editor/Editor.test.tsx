@@ -118,6 +118,79 @@ describe('Editor', () => {
     expect(screen.getByText('UTF-8 · LF')).toBeInTheDocument();
   });
 
+  describe('the agent changes the file under the open editor', () => {
+    const AGENT = 'agent version\n';
+    const ui = (props: Partial<Parameters<typeof Editor>[0]> = {}) => (
+      <ClientProvider client={client}>
+        <Editor sessionId="a1" path={TOTALS} {...props} />
+      </ClientProvider>
+    );
+    /** Mount, edit, then let the agent write the file and the host pass the `change` of it down. */
+    const editThenAgentWrites = async (onDirtyChange = vi.fn()) => {
+      const { rerender } = render(ui({ onDirtyChange }));
+      await loaded();
+      const before = view();
+      typeAtStart('// mine\n');
+      await client.writeFile('a1', TOTALS, AGENT);
+      rerender(ui({ onDirtyChange, change: CHANGE }));
+      return { rerender, before, onDirtyChange };
+    };
+
+    it('keeps the unsaved edits: same view, same buffer, still dirty, and says the file changed on disk', async () => {
+      const { before, onDirtyChange } = await editThenAgentWrites();
+      await screen.findByText(/Changed on disk/);
+      expect(view()).toBe(before); // not destroyed and recreated
+      expect(view().state.doc.toString().startsWith('// mine\n')).toBe(true);
+      expect(screen.getByRole('button', { name: 'Reload' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Keep mine' })).toBeInTheDocument();
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    });
+
+    it('Reload takes the disk version and drops the edits', async () => {
+      const { onDirtyChange } = await editThenAgentWrites();
+      fireEvent.click(await screen.findByRole('button', { name: 'Reload' }));
+      await waitFor(() => expect(view().state.doc.toString()).toBe(AGENT));
+      expect(screen.getByText('Saved')).toBeInTheDocument();
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it('Keep mine dismisses the notice and the next ⌘S overwrites the agent version (no conflict)', async () => {
+      await editThenAgentWrites();
+      fireEvent.click(await screen.findByRole('button', { name: 'Keep mine' }));
+      await waitFor(() => expect(screen.queryByText(/Changed on disk/)).toBeNull());
+      expect(screen.getByText('Edited · ⌘S to save')).toBeInTheDocument();
+      cmdS();
+      await screen.findByText('Saved');
+      expect((await client.readFile('a1', TOTALS)).text.startsWith('// mine\n')).toBe(true);
+    });
+
+    it('a clean buffer just follows the disk (nothing to lose, nothing to ask)', async () => {
+      const { rerender } = render(ui());
+      await loaded();
+      await client.writeFile('a1', TOTALS, AGENT);
+      rerender(ui({ change: CHANGE }));
+      await waitFor(() => expect(view().state.doc.toString()).toBe(AGENT));
+      expect(screen.queryByText(/Changed on disk/)).toBeNull();
+      expect(screen.getByText('Saved')).toBeInTheDocument();
+    });
+
+    it('the Diff toggle appears once the change does, without touching the buffer', async () => {
+      const { before } = await editThenAgentWrites();
+      await screen.findByRole('button', { name: 'Diff' });
+      expect(view()).toBe(before);
+      expect(view().state.doc.toString().startsWith('// mine\n')).toBe(true);
+    });
+  });
+
+  it('⇧⌘R in the editor asks the host for the full review (⌥⌘D is the Dock\'s)', async () => {
+    const onReview = vi.fn();
+    mount({ change: CHANGE, onReview });
+    await loaded();
+    fireEvent.keyDown(view().contentDOM, { key: 'R', code: 'KeyR', keyCode: 82, metaKey: true, shiftKey: true });
+    expect(onReview).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('button', { name: /Review/ })).toHaveTextContent('⇧⌘R');
+  });
+
   it('a file that cannot be read shows the error and no editor', async () => {
     mount({ path: 'nope.ts' });
     expect(await screen.findByRole('alert')).toHaveTextContent('no file nope.ts');

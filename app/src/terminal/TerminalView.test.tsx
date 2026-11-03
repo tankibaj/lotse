@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient } from '../lib/client';
 import { FakeTerminal } from './fakeXterm';
+import { bracketedPasteOn } from './registry';
 import { TerminalView } from './TerminalView';
 
 vi.mock('@xterm/xterm', async () => (await import('./fakeXterm')).xtermModule);
@@ -54,6 +55,17 @@ describe('TerminalView', () => {
     await waitFor(() => expect(FakeTerminal.last.text).toContain('Claude Code'));
     FakeTerminal.last.resizeTo(100, 30);
     expect(resize).toHaveBeenCalledWith('a1', 100, 30);
+  });
+
+  it('registers its terminal for the session, so the composer can read the bracketed-paste mode, and forgets it on unmount', async () => {
+    const { unmount } = mount();
+    await waitFor(() => expect(FakeTerminal.last.text).toContain('Claude Code'));
+    expect(bracketedPasteOn('a1')).toBe(false);
+    FakeTerminal.last.modes.bracketedPasteMode = true; // the agent sent CSI ? 2004 h
+    expect(bracketedPasteOn('a1')).toBe(true);
+    expect(bracketedPasteOn('a2')).toBe(false);
+    unmount();
+    expect(bracketedPasteOn('a1')).toBe(false);
   });
 
   it('detaches and disposes on unmount', async () => {

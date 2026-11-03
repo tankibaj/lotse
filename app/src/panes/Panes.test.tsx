@@ -275,8 +275,9 @@ describe('Panes', () => {
       expect(paneIds()).toEqual(['a1']);
     });
 
-    it('⌘⌥D (full diff review) does not split', async () => {
+    it('⇧⌘R (full diff review) and ⌘⌥D do not split', async () => {
       await mount();
+      fireEvent.keyDown(window, { code: 'KeyR', key: 'R', metaKey: true, shiftKey: true });
       key('KeyD', { altKey: true });
       expect(paneIds()).toEqual(['a1']);
     });

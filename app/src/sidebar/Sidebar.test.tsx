@@ -255,6 +255,42 @@ describe('session cards', () => {
     expect(labels()).toEqual(['Allow', 'Always', 'Deny']);
   });
 
+  it('the scrolling project list is not a Tab stop of its own', async () => {
+    await ready();
+    expect(screen.getByRole('navigation', { name: 'Projects' })).toHaveAttribute('tabindex', '-1');
+  });
+
+  describe('a prompt the daemon cannot answer (e.g. a folder-trust dialog: no readable options)', () => {
+    // `always` is the daemon's "I read the prompt on screen" (absent until it did, and when nothing readable is drawn)
+    const unanswerable = (client: MockClient) => client.setStatus('a3', 'perm', { tool: 'trust', summary: 'Do you trust this folder?', always: undefined });
+
+    it('shows no Allow / Always / Deny, says to answer in the terminal, and sends nothing', async () => {
+      const { client } = await ready();
+      const resolve = vi.spyOn(client, 'resolvePermission');
+      act(() => unanswerable(client));
+      const group = within(card('a3')).getByRole('group', { name: /^Permission/ });
+      expect(within(group).queryAllByRole('button')).toHaveLength(0);
+      expect(group).toHaveTextContent('Answer in the terminal');
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('the buttons come once the daemon has read an answerable prompt', async () => {
+      const { client } = await ready();
+      act(() => unanswerable(client));
+      act(() => client.setStatus('a3', 'perm', { tool: 'Bash', summary: 'ls', always: 'remember' }));
+      const group = within(card('a3')).getByRole('group', { name: /^Permission/ });
+      expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual(['Allow', 'Always', 'Deny']);
+      expect(group).not.toHaveTextContent('Answer in the terminal');
+    });
+
+    it('a perm status without a request at all is not answerable either', async () => {
+      const { client } = await ready();
+      act(() => client.setStatus('a3', 'perm', null));
+      const group = within(card('a3')).getByRole('group', { name: /^Permission/ });
+      expect(within(group).queryAllByRole('button')).toHaveLength(0);
+    });
+  });
+
   it('each button sends its own decision for its own session', async () => {
     const { client } = await ready();
     const resolve = vi.spyOn(client, 'resolvePermission').mockResolvedValue();

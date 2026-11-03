@@ -28,7 +28,7 @@ export interface EditorProps {
   change?: EditorChange;
   /** What the Diff toggle compares against. Default `HEAD`. */
   baseRev?: string;
-  /** "Review ⌥⌘D": the host opens the full review. */
+  /** "Review ⇧⌘R": the host opens the full review. */
   onReview?: () => void;
   /** Unsaved edits exist (edited, saving, or a save that failed). Pass a stable function. */
   onDirtyChange?: (dirty: boolean) => void;
@@ -45,6 +45,13 @@ const diffC = new Compartment();
 const lockedExt = [EditorState.readOnly.of(true), EditorView.editable.of(false)];
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The file as the agent's base saw it: a file missing there is new, so everything counts as added. `null`: unknown. */
+const readBase = (client: ReturnType<typeof useClient>, sessionId: SessionId, path: string, baseRev: string) =>
+  client.readFile(sessionId, path, baseRev).then(
+    (f) => f.text,
+    (e: unknown) => (e instanceof DaemonError && e.code === 'not_found' ? '' : null),
+  );
 
 /** One file in CodeMirror 6, edited through the daemon: ⌘S writes it guarded by the sha it was read with. */
 export function Editor(props: EditorProps) {
@@ -63,16 +70,51 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
   const [load, setLoad] = useState<Load>({ state: 'loading' });
   const [save, setSave] = useState<Save>('saved');
   const [saveError, setSaveError] = useState('');
-  const [base, setBase] = useState<string | null>(null);
+  const [fetchedBase, setFetchedBase] = useState<string | null>(null);
   const [diff, setDiff] = useState(false);
   const [reloads, setReloads] = useState(0);
   const [themeTick, setThemeTick] = useState(0);
   const hasChange = change !== undefined;
+  const base = hasChange ? fetchedBase : null;
+  const changeSig = change ? `${change.added}:${change.removed}:${change.by}` : '';
   const ready = load.state === 'ready';
+  // The agent's change as of the latest render, and as of the last time the diff base was read. The load below reads
+  // the first, but does not depend on it: a change arriving later must not destroy the view (and the user's unsaved
+  // buffer); the effect after the load deals with it.
+  const latest = useRef({ hasChange, baseRev });
+  const asked = useRef({ hasChange, baseRev });
+  const [seenSig, setSeenSig] = useState(changeSig);
+  const [external, setExternal] = useState(false);
+
+  useEffect(() => {
+    latest.current = { hasChange, baseRev };
+  }, [hasChange, baseRev]);
 
   useEffect(() => {
     reviewRef.current = onReview;
   }, [onReview]);
+
+  /** Drop the buffer and read the file again. */
+  const reload = () => {
+    setLoad({ state: 'loading' });
+    setSave('saved');
+    setExternal(false);
+    setDiff(false);
+    setReloads((n) => n + 1);
+  };
+
+  // The agent changed this file (the host passes a new `change`). A clean buffer just follows the disk; unsaved edits
+  // are kept and the user chooses (Reload / Keep mine), instead of being thrown away with the view. State adjusted
+  // while rendering, as React documents for a state that follows a prop.
+  if (seenSig !== changeSig) {
+    setSeenSig(changeSig);
+    if (changeSig !== '') {
+      if (!ready || save === 'saved') reload();
+      else setExternal(true);
+    }
+  }
+  // Edits undone while the notice was up: nothing left to protect, take the disk version.
+  if (external && save === 'saved') reload();
 
   useEffect(() => {
     onDirtyChange?.(save !== 'saved');
@@ -88,13 +130,9 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
   useEffect(() => {
     let alive = true;
     let view: EditorView | null = null;
-    // The file as the agent's base saw it: a file missing there is new, so everything counts as added.
-    const baseText = hasChange
-      ? client.readFile(sessionId, path, baseRev).then(
-          (f) => f.text,
-          (e: unknown) => (e instanceof DaemonError && e.code === 'not_found' ? '' : null),
-        )
-      : Promise.resolve(null);
+    const { hasChange, baseRev } = latest.current;
+    asked.current = { hasChange, baseRev };
+    const baseText = hasChange ? readBase(client, sessionId, path, baseRev) : Promise.resolve(null);
 
     const doSave = () => {
       if (!view) return;
@@ -148,7 +186,7 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
                   }),
                   keymap.of([
                     { key: 'Meta-s', preventDefault: true, run: () => (doSave(), true) },
-                    { key: 'Alt-Meta-d', preventDefault: true, run: () => (reviewRef.current?.(), true) },
+                    { key: 'Shift-Meta-r', preventDefault: true, run: () => (reviewRef.current?.(), true) },
                     ...searchKeymap,
                     ...historyKeymap,
                     ...defaultKeymap,
@@ -165,7 +203,7 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
           const line = view.state.doc.line(Math.min(firstChangedLine(baseDoc, doc), view.state.doc.lines));
           view.dispatch({ selection: { anchor: line.from }, effects: EditorView.scrollIntoView(line.from, { y: 'center' }) });
         }
-        setBase(baseDoc);
+        setFetchedBase(baseDoc);
         setLoad({ state: 'ready', binary: file.binary, size: file.size, indent, eol });
       },
       (e: unknown) => {
@@ -178,7 +216,21 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
       view?.destroy();
       viewRef.current = null;
     };
-  }, [client, sessionId, path, hasChange, baseRev, reloads]);
+  }, [client, sessionId, path, reloads]);
+
+  // The diff base follows `change` / `baseRev` without reloading the file (no change: no base, see `base` above).
+  useEffect(() => {
+    if (!ready) return;
+    const was = asked.current;
+    if (was.hasChange === hasChange && was.baseRev === baseRev) return;
+    asked.current = { hasChange, baseRev };
+    if (!hasChange) return;
+    let alive = true;
+    void readBase(client, sessionId, path, baseRev).then((b) => alive && setFetchedBase(b));
+    return () => {
+      alive = false;
+    };
+  }, [ready, hasChange, baseRev, client, sessionId, path]);
 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: themeC.reconfigure(editorTheme(fontFamily, fontSize)) });
@@ -192,11 +244,19 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
     });
   }, [diff, base, ready]);
 
-  const reload = () => {
-    setLoad({ state: 'loading' });
-    setSave('saved');
-    setDiff(false);
-    setReloads((n) => n + 1);
+  /** Keep the buffer against the agent's version: the next ⌘S writes over it (the sha it is guarded by becomes the disk's). */
+  const keepMine = () => {
+    client.readFile(sessionId, path).then(
+      (f) => {
+        shaRef.current = f.sha;
+        setExternal(false);
+        setSave((s) => (s === 'conflict' ? 'edited' : s));
+      },
+      (e: unknown) => {
+        setSaveError(errorText(e));
+        setSave('error');
+      },
+    );
   };
 
   const binary = load.state === 'ready' && load.binary;
@@ -222,7 +282,7 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
           )}
           {onReview && (
             <button type="button" onClick={onReview} className="inline-flex h-5 items-center gap-1 rounded px-1.5 text-blue hover:bg-sel">
-              Review <span className="opacity-60">⌥⌘D</span>
+              Review <span className="opacity-60">⇧⌘R</span>
             </button>
           )}
         </div>
@@ -250,6 +310,17 @@ function EditorBody({ sessionId, path, change, baseRev = 'HEAD', onReview, onDir
               'Read-only'
             ) : diff ? (
               'Read-only while diff is shown'
+            ) : external ? (
+              <>
+                <span className="text-orange">Changed on disk by the agent</span> ·{' '}
+                <button type="button" onClick={reload} className="text-blue hover:underline">
+                  Reload
+                </button>{' '}
+                ·{' '}
+                <button type="button" onClick={keepMine} className="text-blue hover:underline">
+                  Keep mine
+                </button>
+              </>
             ) : save === 'saved' ? (
               'Saved'
             ) : save === 'edited' ? (

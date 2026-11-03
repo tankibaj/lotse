@@ -12,6 +12,7 @@ export class FakeTerminal {
   cols = 80;
   rows = 24;
   options: Record<string, unknown>;
+  modes = { bracketedPasteMode: false };
   written: string[] = [];
   resets = 0;
   focused = 0;

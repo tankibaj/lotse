@@ -6,7 +6,26 @@ export const STATUS_RANK: Record<Status, number> = { perm: 5, fail: 4, run: 3, d
 export type PaletteAction =
   | { type: 'session'; sessionId: string }
   | { type: 'project'; projectId: string }
-  | { type: 'command'; id: 'next-need' | 'add-project' | 'new-session' | 'split-right' | 'split-down' | 'settings' | 'shortcuts' | 'pause' };
+  | { type: 'command'; id: CommandId };
+
+export type CommandId =
+  | 'next-need'
+  | 'add-project'
+  | 'new-session'
+  | 'split-right'
+  | 'split-down'
+  | 'settings'
+  | 'shortcuts'
+  | 'pause'
+  | 'panel-session'
+  | 'panel-changes'
+  | 'panel-files'
+  | 'panel-transcript'
+  | 'panel-usage'
+  | 'open-composer'
+  | 'open-review'
+  | 'show-transcript'
+  | 'show-changes';
 
 export interface PaletteItem {
   key: string;
@@ -20,12 +39,21 @@ export interface PaletteItem {
 
 const AGENT_LABEL = { terminal: 'Terminal', claude_code: 'Claude Code', codex: 'Codex', opencode: 'OpenCode' } as const;
 
-export const COMMANDS: { id: Extract<PaletteAction, { type: 'command' }>['id']; label: string; hint: string; glyph: string }[] = [
+export const COMMANDS: { id: CommandId; label: string; hint: string; glyph: string }[] = [
   { id: 'next-need', label: 'Next session that needs you', hint: '⌘J', glyph: '▲' },
   { id: 'add-project', label: 'Add a Project…', hint: '⇧⌘O', glyph: '+' },
   { id: 'new-session', label: 'New session…', hint: '', glyph: '+' },
   { id: 'split-right', label: 'Split Right', hint: '⌘D', glyph: '▐' },
   { id: 'split-down', label: 'Split Down', hint: '⇧⌘D', glyph: '▄' },
+  { id: 'panel-session', label: 'Session panel', hint: '⇧⌘I', glyph: '◫' },
+  { id: 'panel-changes', label: 'Changes panel', hint: '⇧⌘G', glyph: '◫' },
+  { id: 'panel-files', label: 'Files panel', hint: '⇧⌘F', glyph: '◫' },
+  { id: 'panel-transcript', label: 'Transcript panel', hint: '⇧⌘T', glyph: '◫' },
+  { id: 'panel-usage', label: 'Usage & time panel', hint: '⇧⌘U', glyph: '◫' },
+  { id: 'open-composer', label: 'Open composer', hint: '⌘⇧↩', glyph: '✎' },
+  { id: 'open-review', label: 'Open review', hint: '⇧⌘R', glyph: '±' },
+  { id: 'show-transcript', label: 'Show transcript', hint: '', glyph: '≡' },
+  { id: 'show-changes', label: 'Show changes', hint: '', glyph: '±' },
   { id: 'settings', label: 'Settings…', hint: '⌘,', glyph: '⚙︎' },
   { id: 'shortcuts', label: 'Keyboard shortcuts', hint: '⌘/', glyph: '⌘' },
   { id: 'pause', label: 'Pause notifications', hint: '⌥⌘N', glyph: '○' },

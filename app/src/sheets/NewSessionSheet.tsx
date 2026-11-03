@@ -15,14 +15,16 @@ export function NewSessionSheet() {
   const client = useClient();
   const snap = useSnapshot();
   const selected = useSelectedSessionId();
-  const [projectId, setProjectId] = useState<string | null>(() => {
+  // Back from Settings › Agents ("Change…"): the form comes back as it was left.
+  const [opened] = useState(() => {
     const o = getOverlay();
-    return o?.name === 'newSession' ? (o.projectId ?? null) : null;
+    return o?.name === 'newSession' ? o : null;
   });
-  const [agent, setAgent] = useState<AgentKind>('terminal');
-  const [worktree, setWorktree] = useState(false);
-  const [branch, setBranch] = useState(DEFAULT_BRANCH);
-  const [prompt, setPrompt] = useState('');
+  const [projectId, setProjectId] = useState<string | null>(opened?.projectId ?? null);
+  const [agent, setAgent] = useState<AgentKind>(opened?.draft?.agent ?? 'terminal');
+  const [worktree, setWorktree] = useState(opened?.draft?.worktree ?? false);
+  const [branch, setBranch] = useState(opened?.draft?.branch ?? DEFAULT_BRANCH);
+  const [prompt, setPrompt] = useState(opened?.draft?.prompt ?? '');
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
 
@@ -94,7 +96,7 @@ export function NewSessionSheet() {
         </div>
         <div className="-mt-1 mb-3 font-mono text-[11px] text-dim" data-testid="cmd-hint">
           Runs <span className="text-txt">{command}</span> ·{' '}
-          <button type="button" className="text-blue" onClick={() => openSettings('Agents')}>Change…</button>
+          <button type="button" className="text-blue" onClick={() => openSettings('Agents', { name: 'newSession', ...(pid ? { projectId: pid } : {}), draft: { agent, worktree, branch, prompt } })}>Change…</button>
         </div>
 
         <label className="mb-3 flex items-center gap-2 text-[12px]">

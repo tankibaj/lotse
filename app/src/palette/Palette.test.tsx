@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../lib/client/types';
-import { emitUiCommand } from '../lib/ui/commands';
+import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { mountWp5 } from '../sheets/harness';
 import { onSplitRequest } from '../panes/splitBus';
@@ -60,6 +60,57 @@ describe('Command palette', () => {
     await userEvent.click(row('Split Right') as HTMLElement);
     expect(asked).toEqual([[null, 'down'], [null, 'right']]);
     off();
+  });
+
+  it('has a command for each panel, the composer, the review and the transcript / changes sheets, with their shortcuts', async () => {
+    mountWp5();
+    await open();
+    const row = (name: string) => screen.getAllByRole('option').find((o) => o.textContent?.includes(name));
+    expect(row('Session panel')).toHaveTextContent('⇧⌘I');
+    expect(row('Changes panel')).toHaveTextContent('⇧⌘G');
+    expect(row('Files panel')).toHaveTextContent('⇧⌘F');
+    expect(row('Transcript panel')).toHaveTextContent('⇧⌘T');
+    expect(row('Usage & time panel')).toHaveTextContent('⇧⌘U');
+    expect(row('Open composer')).toHaveTextContent('⌘⇧↩');
+    expect(row('Open review')).toHaveTextContent('⇧⌘R');
+    expect(row('Show transcript')).toBeDefined();
+    expect(row('Show changes')).toBeDefined();
+  });
+
+  it('panel commands toggle that panel; composer, review and the sheets act on the selected session', async () => {
+    mountWp5();
+    selectSession('a2');
+    const got: unknown[] = [];
+    const offs = (['togglePanel', 'openComposer', 'openReview', 'showTranscript', 'showChanges'] as const).map((c) =>
+      onUiCommand(c, (arg) => got.push([c, arg])),
+    );
+    for (const [query, want] of [
+      ['changes panel', ['togglePanel', 'changes']],
+      ['usage', ['togglePanel', 'usage']],
+      ['open composer', ['openComposer', undefined]],
+      ['open review', ['openReview', 'a2']],
+      ['show transcript', ['showTranscript', 'a2']],
+      ['show changes', ['showChanges', 'a2']],
+    ] as const) {
+      got.length = 0;
+      act(() => void emitUiCommand('openPalette'));
+      await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
+      expect(got, query).toEqual([want]);
+      if (!query.startsWith('show')) expect(getOverlay()).toBeNull(); // the sheets open themselves on showChanges / showTranscript
+    }
+    offs.forEach((off) => off());
+  });
+
+  it('review, transcript and changes commands do nothing without a selected session', async () => {
+    mountWp5();
+    const got: unknown[] = [];
+    const offs = (['openReview', 'showTranscript', 'showChanges'] as const).map((c) => onUiCommand(c, () => got.push(c)));
+    for (const query of ['open review', 'show transcript', 'show changes']) {
+      act(() => void emitUiCommand('openPalette'));
+      await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
+    }
+    expect(got).toEqual([]);
+    offs.forEach((off) => off());
   });
 
   it('filters by label or hint and reports no matches', async () => {

@@ -112,27 +112,35 @@ export function Shell() {
     document.documentElement.dataset.vibrancy = '';
     return () => document.documentElement.removeAttribute('data-vibrancy');
   }, []);
+  // Esc leaves the review. Capture phase: xterm stops the keydown of a focused terminal from bubbling up to the window.
+  useEffect(() => {
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || !getReview()) return;
+      e.preventDefault();
+      e.stopPropagation(); // the terminal behind must not also receive the Esc
+      closeReview();
+    };
+    addEventListener('keydown', onEsc, true);
+    return () => removeEventListener('keydown', onEsc, true);
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && getReview()) {
-        closeReview();
-        return;
-      }
       if (!e.metaKey) return;
       const handled = (fn: () => void) => {
         e.preventDefault();
         fn();
       };
       if (e.ctrlKey) return e.code === 'KeyS' ? handled(toggleSidebar) : undefined;
-      // ⇧⌘ + letter: the panels. ⌘⇧Return: the composer. ⌥⌘D: review the selected session's changes.
+      // ⇧⌘ + letter: the panels. ⌘⇧Return: the composer. ⇧⌘R: review the selected session's changes
+      // (⌥⌘D is macOS's own Show/Hide Dock: the OS takes it before the app sees it).
       if (e.shiftKey && !e.altKey) {
         const panel = PANELS.find((p) => p.code === e.code);
         if (panel) return handled(() => emitUiCommand('togglePanel', panel.id));
         if (e.code === 'Enter') return handled(() => emitUiCommand('openComposer'));
-      }
-      if (e.altKey && !e.shiftKey && e.code === 'KeyD') {
-        const id = getSelectedSessionId();
-        if (id) handled(() => emitUiCommand('openReview', id));
+        if (e.code === 'KeyR') {
+          const id = getSelectedSessionId();
+          if (id) handled(() => emitUiCommand('openReview', id));
+        }
       }
     };
     addEventListener('keydown', onKey);
@@ -234,8 +242,12 @@ export function Shell() {
             <PanelToolbar />
           </div>
           <div className="flex min-h-0 flex-1">
-            <div data-slot="panes" className="relative flex min-w-0 flex-1">
-              <Panes />
+            {/* A column: the panes take what the composer leaves, so an open composer shrinks (and refits) the terminals
+                instead of covering the bottom of them. */}
+            <div data-slot="panes" className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+              <div className="flex min-h-0 min-w-0 flex-1">
+                <Panes />
+              </div>
               <div data-slot="composer" className="contents">
                 <Composer />
               </div>
