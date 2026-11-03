@@ -31,54 +31,29 @@ fn every_new_request_answers_unavailable_until_its_wp_lands() {
     let mut c = d.client();
     let session_id = SessionId::new("nope");
     let s = || session_id.clone();
-    let requests = [
-        Request::GetReview { session_id: s() },
-        Request::ListFiles {
-            session_id: s(),
-            changed_only: false,
-        },
-        Request::ReadFile {
-            session_id: s(),
-            path: "a.txt".into(),
-            rev: None,
-        },
-        Request::WriteFile {
-            session_id: s(),
-            path: "a.txt".into(),
-            text: "x".into(),
-            expected_sha: None,
-        },
-        Request::GetUsage { session_id: s() },
-        Request::ExportTranscript {
-            session_id: s(),
-            format: ExportFormat::Markdown,
-        },
-        Request::GetSessionInfo { session_id: s() },
-        Request::StopTask {
-            session_id: s(),
-            pid: 1,
-        },
-        Request::ListConnectors { session_id: s() },
-        Request::CheckConnectors { session_id: s() },
-    ];
+    let requests = [Request::ExportTranscript {
+        session_id: s(),
+        format: ExportFormat::Markdown,
+    }];
     for req in requests {
         let method = req.method();
         let resp = c.request(req);
         assert!(unavailable(&resp), "{method}: {resp:?}");
     }
-    // get_diff against HEAD keeps working; against the merge-base it waits for wp04
+    // get_diff answers for both bases now that wp04 landed: an unknown session is not_found
     let diff = |c: &mut Client, base| {
         c.request(Request::GetDiff {
             session_id: s(),
             base,
         })
     };
-    let resp = diff(&mut c, DiffBase::Head);
-    assert!(
-        matches!(&resp, Response::Error(e) if e.code == ErrorCode::NotFound),
-        "{resp:?}"
-    );
-    assert!(unavailable(&diff(&mut c, DiffBase::MergeBase)));
+    for base in [DiffBase::Head, DiffBase::MergeBase] {
+        let resp = diff(&mut c, base);
+        assert!(
+            matches!(&resp, Response::Error(e) if e.code == ErrorCode::NotFound),
+            "{resp:?}"
+        );
+    }
 }
 
 fn agent_session(c: &mut Client, d: &Daemon, command: &str) -> Session {
