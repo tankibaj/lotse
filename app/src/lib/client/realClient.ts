@@ -3,7 +3,13 @@ import type { DaemonClient, ConnectionState, Unsubscribe } from './DaemonClient'
 import type {
   AgentKind,
   AttachInfo,
+  Connector,
   DaemonEvent,
+  DiffBase,
+  Export,
+  ExportFormat,
+  FileContent,
+  FileTree,
   GitDiff,
   GitInfo,
   HelloOk,
@@ -11,16 +17,20 @@ import type {
   NewProject,
   NewSession,
   PermDecision,
+  PermVia,
   Project,
   ProjectId,
   ProjectPatch,
   Request,
   Response,
+  Review,
   Session,
   SessionId,
+  SessionInfo,
   Settings,
   Snapshot,
   Transcript,
+  Usage,
   Workspace,
   WorkspaceId,
 } from './types';
@@ -258,8 +268,11 @@ export class RealClient implements DaemonClient {
   markRead(sessionId: SessionId): Promise<void> {
     return this.ok({ method: 'mark_read', params: { session_id: sessionId } });
   }
-  resolvePermission(sessionId: SessionId, decision: PermDecision): Promise<void> {
-    return this.ok({ method: 'resolve_permission', params: { session_id: sessionId, decision } });
+  resolvePermission(sessionId: SessionId, decision: PermDecision, opts: { via?: PermVia; promptId?: string } = {}): Promise<void> {
+    const params: Extract<Request, { method: 'resolve_permission' }>['params'] = { session_id: sessionId, decision };
+    if (opts.via !== undefined) params.via = opts.via;
+    if (opts.promptId !== undefined) params.prompt_id = opts.promptId;
+    return this.ok({ method: 'resolve_permission', params });
   }
   attach(sessionId: SessionId, cols: number, rows: number): Promise<AttachInfo> {
     // the replay can arrive before the answer: bytes are queued for this session until a terminal subscribes
@@ -293,11 +306,44 @@ export class RealClient implements DaemonClient {
   getGitInfo(projectId: ProjectId, sessionId?: SessionId): Promise<GitInfo> {
     return this.data({ method: 'get_git_info', params: { project_id: projectId, session_id: sessionId ?? null } }, 'git_info');
   }
-  getDiff(sessionId: SessionId): Promise<GitDiff> {
-    return this.data({ method: 'get_diff', params: { session_id: sessionId } }, 'diff');
+  getDiff(sessionId: SessionId, base?: DiffBase): Promise<GitDiff> {
+    return this.data({ method: 'get_diff', params: base ? { session_id: sessionId, base } : { session_id: sessionId } }, 'diff');
   }
   getTranscript(sessionId: SessionId, limit?: number): Promise<Transcript> {
     return this.data({ method: 'get_transcript', params: { session_id: sessionId, limit: limit ?? null } }, 'transcript');
+  }
+  getReview(sessionId: SessionId): Promise<Review> {
+    return this.data({ method: 'get_review', params: { session_id: sessionId } }, 'review');
+  }
+  listFiles(sessionId: SessionId, changedOnly = false): Promise<FileTree> {
+    return this.data({ method: 'list_files', params: { session_id: sessionId, changed_only: changedOnly } }, 'file_tree');
+  }
+  readFile(sessionId: SessionId, path: string, rev?: string): Promise<FileContent> {
+    return this.data({ method: 'read_file', params: { session_id: sessionId, path, rev: rev ?? null } }, 'file');
+  }
+  writeFile(sessionId: SessionId, path: string, text: string, expectedSha?: string): Promise<FileContent> {
+    return this.data(
+      { method: 'write_file', params: { session_id: sessionId, path, text, expected_sha: expectedSha ?? null } },
+      'file',
+    );
+  }
+  getUsage(sessionId: SessionId): Promise<Usage> {
+    return this.data({ method: 'get_usage', params: { session_id: sessionId } }, 'usage');
+  }
+  exportTranscript(sessionId: SessionId, format: ExportFormat): Promise<Export> {
+    return this.data({ method: 'export_transcript', params: { session_id: sessionId, format } }, 'export');
+  }
+  getSessionInfo(sessionId: SessionId): Promise<SessionInfo> {
+    return this.data({ method: 'get_session_info', params: { session_id: sessionId } }, 'session_info');
+  }
+  stopTask(sessionId: SessionId, pid: number): Promise<void> {
+    return this.ok({ method: 'stop_task', params: { session_id: sessionId, pid } });
+  }
+  listConnectors(sessionId: SessionId): Promise<Connector[]> {
+    return this.data({ method: 'list_connectors', params: { session_id: sessionId } }, 'connectors');
+  }
+  checkConnectors(sessionId: SessionId): Promise<Connector[]> {
+    return this.data({ method: 'check_connectors', params: { session_id: sessionId } }, 'connectors');
   }
   hookEvent(agent: AgentKind, sessionId: SessionId | null, payload: unknown): Promise<void> {
     return this.ok({ method: 'hook_event', params: { agent, session_id: sessionId, payload } });

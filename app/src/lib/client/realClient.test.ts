@@ -133,6 +133,111 @@ describe('RealClient', () => {
     ]);
   });
 
+  it('maps the proto 4 methods to requests and unwraps their responses', async () => {
+    const seen: Request[] = [];
+    const review = { base: 'main', ahead: 2, behind: 1, commits: [], truncated: false };
+    const tree = { root: '/r', is_git: true, entries: [], truncated: false };
+    const file = { path: 'a.ts', text: 'x', sha: 'abc', binary: false, size: 1 };
+    const usage = {
+      started_at: 1,
+      total_ms: 2,
+      working_ms: 1,
+      waiting_ms: 1,
+      lanes: [],
+      tokens: { input: 1, cache_read: 2, cache_write: 3, output: 4 },
+      spend: { session: 1, project: 2, all: 3 },
+      model: null,
+      priced: true,
+    };
+    const exp = { file_name: 't.md', content: '#', redactions: 0 };
+    const info = { agent_version: null, model: null, machine: 'Mac', cwd: '/r', worktree: null, source: 'hook', tasks: [] };
+    const connectors = [{ agent: 'claude_code', name: 'x', transport: 'stdio', config_path: '.mcp.json', status: { state: 'configured' } }];
+    const h = fakeHost((r) => {
+      seen.push(r);
+      switch (r.method) {
+        case 'get_review':
+          return { kind: 'review', data: review };
+        case 'list_files':
+          return { kind: 'file_tree', data: tree };
+        case 'read_file':
+        case 'write_file':
+          return { kind: 'file', data: file };
+        case 'get_usage':
+          return { kind: 'usage', data: usage };
+        case 'export_transcript':
+          return { kind: 'export', data: exp };
+        case 'get_session_info':
+          return { kind: 'session_info', data: info } as Response;
+        case 'list_connectors':
+        case 'check_connectors':
+          return { kind: 'connectors', data: connectors } as Response;
+        case 'get_diff':
+          return { kind: 'diff', data: { is_git: true, files: [], truncated: false } };
+        default:
+          return { kind: 'ok' };
+      }
+    });
+    const c = new RealClient({ transport: h.transport });
+    expect(await c.getReview('s1')).toEqual(review);
+    expect(await c.listFiles('s1')).toEqual(tree);
+    await c.listFiles('s1', true);
+    expect(await c.readFile('s1', 'a.ts')).toEqual(file);
+    await c.readFile('s1', 'a.ts', 'HEAD');
+    expect(await c.writeFile('s1', 'a.ts', 'y', 'abc')).toEqual(file);
+    await c.writeFile('s1', 'a.ts', 'z');
+    expect(await c.getUsage('s1')).toEqual(usage);
+    expect(await c.exportTranscript('s1', 'json_lines')).toEqual(exp);
+    expect(await c.getSessionInfo('s1')).toEqual(info);
+    await c.stopTask('s1', 4711);
+    expect(await c.listConnectors('s1')).toEqual(connectors);
+    expect(await c.checkConnectors('s1')).toEqual(connectors);
+    await c.getDiff('s1', 'merge_base');
+    expect(seen).toEqual([
+      { method: 'get_review', params: { session_id: 's1' } },
+      { method: 'list_files', params: { session_id: 's1', changed_only: false } },
+      { method: 'list_files', params: { session_id: 's1', changed_only: true } },
+      { method: 'read_file', params: { session_id: 's1', path: 'a.ts', rev: null } },
+      { method: 'read_file', params: { session_id: 's1', path: 'a.ts', rev: 'HEAD' } },
+      { method: 'write_file', params: { session_id: 's1', path: 'a.ts', text: 'y', expected_sha: 'abc' } },
+      { method: 'write_file', params: { session_id: 's1', path: 'a.ts', text: 'z', expected_sha: null } },
+      { method: 'get_usage', params: { session_id: 's1' } },
+      { method: 'export_transcript', params: { session_id: 's1', format: 'json_lines' } },
+      { method: 'get_session_info', params: { session_id: 's1' } },
+      { method: 'stop_task', params: { session_id: 's1', pid: 4711 } },
+      { method: 'list_connectors', params: { session_id: 's1' } },
+      { method: 'check_connectors', params: { session_id: 's1' } },
+      { method: 'get_diff', params: { session_id: 's1', base: 'merge_base' } },
+    ]);
+  });
+
+  it('resolve_permission carries via and prompt_id only when given', async () => {
+    const seen: Request[] = [];
+    const h = fakeHost((r) => {
+      seen.push(r);
+      return { kind: 'ok' };
+    });
+    const c = new RealClient({ transport: h.transport });
+    await c.resolvePermission('s1', 'allow', { via: 'notification', promptId: 'p-1' });
+    await c.resolvePermission('s1', 'deny', { via: 'sidebar' });
+    await c.resolvePermission('s1', 'always', {});
+    expect(seen).toEqual([
+      { method: 'resolve_permission', params: { session_id: 's1', decision: 'allow', via: 'notification', prompt_id: 'p-1' } },
+      { method: 'resolve_permission', params: { session_id: 's1', decision: 'deny', via: 'sidebar' } },
+      { method: 'resolve_permission', params: { session_id: 's1', decision: 'always' } },
+    ]);
+  });
+
+  it('a stale write_file is a `conflict` DaemonError; a wrong response kind is `internal`', async () => {
+    const h = fakeHost((r) =>
+      r.method === 'write_file' ? { kind: 'error', data: { code: 'conflict', message: 'the file changed on disk' } } : { kind: 'ok' },
+    );
+    const c = new RealClient({ transport: h.transport });
+    const err = await c.writeFile('s1', 'a.ts', 'x', 'stale').catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DaemonError);
+    expect((err as DaemonError).code).toBe('conflict');
+    await expect(c.getReview('s1')).rejects.toMatchObject({ code: 'internal' });
+  });
+
   it('turns a proto error into a DaemonError with its code', async () => {
     const h = fakeHost(() => ({ kind: 'error', data: { code: 'conflict', message: 'the process is still running; Retry re-runs a command that has exited' } }));
     const c = new RealClient({ transport: h.transport });
