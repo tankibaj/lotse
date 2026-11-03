@@ -30,7 +30,7 @@ use lotse_proto::{
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -83,14 +83,47 @@ fn agent_roots(
     roots
 }
 
+/// What a session's login environment says about where its agent keeps its files. The daemon keeps
+/// that environment per session and never sets it on itself, so a transcript below the user's
+/// `CLAUDE_CONFIG_DIR` / `CODEX_HOME` is only recognised through these values.
+#[derive(Debug, Clone, Default)]
+pub struct AgentDirs {
+    /// `HOME` as the session sees it.
+    pub home: Option<PathBuf>,
+    pub claude_config_dir: Option<OsString>,
+    pub codex_home: Option<OsString>,
+}
+
+impl AgentDirs {
+    /// The three values out of a session's environment (`get` looks a variable up); an empty one is
+    /// no value.
+    pub fn from_vars(get: impl Fn(&str) -> Option<String>) -> Self {
+        let var = |name: &str| get(name).filter(|v| !v.is_empty());
+        Self {
+            home: var("HOME").map(PathBuf::from),
+            claude_config_dir: var("CLAUDE_CONFIG_DIR").map(OsString::from),
+            codex_home: var("CODEX_HOME").map(OsString::from),
+        }
+    }
+}
+
 /// `raw` as a path the daemon may read, see [`validate_in`], with the agents' own folders as roots
-/// ([`agent_roots`]). Returns the resolved path.
-pub fn validate_path(raw: &str, home: &Path) -> Option<PathBuf> {
+/// ([`agent_roots`]): below `home` (the daemon's) and below the session's `dirs`. A variable the
+/// session does not have falls back to the daemon's own environment. Returns the resolved path.
+pub fn validate_path(raw: &str, home: &Path, dirs: &AgentDirs) -> Option<PathBuf> {
     let (claude, codex) = (
-        std::env::var_os("CLAUDE_CONFIG_DIR"),
-        std::env::var_os("CODEX_HOME"),
+        dirs.claude_config_dir
+            .clone()
+            .or_else(|| std::env::var_os("CLAUDE_CONFIG_DIR")),
+        dirs.codex_home
+            .clone()
+            .or_else(|| std::env::var_os("CODEX_HOME")),
     );
-    validate_in(raw, &agent_roots(home, claude.as_deref(), codex.as_deref()))
+    let mut roots = agent_roots(home, claude.as_deref(), codex.as_deref());
+    if let Some(session_home) = dirs.home.as_deref().filter(|h| h.is_absolute()) {
+        roots.extend(agent_roots(session_home, None, None));
+    }
+    validate_in(raw, &roots)
 }
 
 /// `raw` as a path the daemon may read: absolute, named `*.jsonl`, not itself a symlink, and a
@@ -148,15 +181,16 @@ pub struct Parsed {
 }
 
 /// The last `max_bytes` of the transcript at `path`, as turns. The path is checked again (it may
-/// have been swapped for a link since it was recorded).
+/// have been swapped for a link since it was recorded), against the session's `dirs`.
 pub fn parse_file(
     path: &Path,
     agent: AgentKind,
     home: &Path,
+    dirs: &AgentDirs,
     max_bytes: u64,
 ) -> std::io::Result<Parsed> {
     let denied = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "transcript path");
-    let real = validate_path(&path.to_string_lossy(), home).ok_or_else(denied)?;
+    let real = validate_path(&path.to_string_lossy(), home, dirs).ok_or_else(denied)?;
     let mut file = open_nofollow(&real)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(max_bytes);
@@ -178,14 +212,15 @@ pub fn parse_file(
     })
 }
 
-/// The last `limit` turns (at most [`MAX_TURNS`]) of the transcript at `path`.
+/// The last `limit` turns (at most [`MAX_TURNS`]) of the transcript at `path`, for the daemon's own
+/// folders (no session environment).
 pub fn read_turns(
     path: &Path,
     agent: AgentKind,
     limit: usize,
     home: &Path,
 ) -> std::io::Result<Transcript> {
-    let parsed = parse_file(path, agent, home, TAIL_BYTES)?;
+    let parsed = parse_file(path, agent, home, &AgentDirs::default(), TAIL_BYTES)?;
     Ok(window(parsed.turns, parsed.cut, limit, source_of(agent)))
 }
 
@@ -676,14 +711,14 @@ mod tests {
     }
 
     fn ok(raw: &Path, home: &Path) -> bool {
-        validate_path(&raw.to_string_lossy(), home).is_some()
+        validate_path(&raw.to_string_lossy(), home, &AgentDirs::default()).is_some()
     }
 
     #[test]
     fn a_jsonl_file_below_home_is_accepted_and_resolved() {
         let h = home();
         let p = write(h.path(), ".claude/projects/x/s.jsonl", "{}\n");
-        let real = validate_path(&p.to_string_lossy(), h.path()).unwrap();
+        let real = validate_path(&p.to_string_lossy(), h.path(), &AgentDirs::default()).unwrap();
         assert_eq!(real, std::fs::canonicalize(&p).unwrap());
     }
 
@@ -712,8 +747,9 @@ mod tests {
         std::fs::create_dir(h.path().join("dir.jsonl")).unwrap();
         assert!(!ok(&h.path().join("dir.jsonl"), h.path()), "a directory");
         assert!(!ok(&h.path().join("missing.jsonl"), h.path()));
-        assert!(validate_path("relative/s.jsonl", h.path()).is_none());
-        assert!(validate_path("", h.path()).is_none());
+        let dirs = AgentDirs::default();
+        assert!(validate_path("relative/s.jsonl", h.path(), &dirs).is_none());
+        assert!(validate_path("", h.path(), &dirs).is_none());
     }
 
     #[test]
@@ -845,9 +881,50 @@ mod tests {
         .unwrap();
         let through = mirror.path().join("sessions/2026/11/03/rollout-a.jsonl");
         assert_eq!(
-            validate_path(&through.to_string_lossy(), h.path()),
+            validate_path(&through.to_string_lossy(), h.path(), &AgentDirs::default()),
             Some(std::fs::canonicalize(real).unwrap())
         );
+    }
+
+    #[test]
+    fn the_sessions_login_environment_names_the_agent_folders() {
+        // the daemon's own environment has no `CLAUDE_CONFIG_DIR`: the session's value decides
+        let (h, tmp) = (home(), home());
+        let dirs = AgentDirs::from_vars(|name| match name {
+            "CLAUDE_CONFIG_DIR" => Some(tmp.path().join("claude-work").to_string_lossy().into()),
+            "CODEX_HOME" => Some(tmp.path().join("codex-work").to_string_lossy().into()),
+            _ => None,
+        });
+        let own = write(tmp.path(), "claude-work/projects/x/s.jsonl", "{}\n");
+        let rollout = write(tmp.path(), "codex-work/sessions/2026/r.jsonl", "{}\n");
+        let elsewhere = write(tmp.path(), "elsewhere/projects/x/s.jsonl", "{}\n");
+        let accepted = |p: &Path| validate_path(&p.to_string_lossy(), h.path(), &dirs);
+        assert_eq!(accepted(&own), Some(std::fs::canonicalize(&own).unwrap()));
+        assert!(accepted(&rollout).is_some());
+        assert!(accepted(&elsewhere).is_none(), "outside every agent folder");
+        assert!(
+            !ok(&own, h.path()),
+            "without the session's values the same file is refused"
+        );
+        // an empty or relative value adds nothing
+        let empty = AgentDirs::from_vars(|name| (name == "CLAUDE_CONFIG_DIR").then(String::new));
+        assert!(empty.claude_config_dir.is_none());
+        let relative = AgentDirs::from_vars(|_| Some("rel".into()));
+        assert!(validate_path(&own.to_string_lossy(), h.path(), &relative).is_none());
+    }
+
+    #[test]
+    fn the_sessions_home_adds_its_default_agent_folders() {
+        let (daemon_home, session_home) = (home(), home());
+        let p = write(session_home.path(), ".claude/projects/x/s.jsonl", "{}\n");
+        let dirs = AgentDirs {
+            home: Some(session_home.path().to_path_buf()),
+            ..AgentDirs::default()
+        };
+        assert!(validate_path(&p.to_string_lossy(), daemon_home.path(), &dirs).is_some());
+        assert!(!ok(&p, daemon_home.path()));
+        let stray = write(session_home.path(), "Documents/s.jsonl", "{}\n");
+        assert!(validate_path(&stray.to_string_lossy(), daemon_home.path(), &dirs).is_none());
     }
 
     #[test]

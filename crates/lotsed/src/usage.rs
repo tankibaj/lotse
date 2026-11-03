@@ -411,7 +411,7 @@ fn scan_file(path: &Path, st: &mut FileState, day: DayBounds) {
 
 /// Read the complete lines after `st.offset`, adding today's usage entries.
 fn read_new_lines(path: &Path, st: &mut FileState, day: DayBounds) -> std::io::Result<()> {
-    let mut file = std::fs::File::open(path)?;
+    let mut file = crate::transcript::open_nofollow(path)?;
     file.seek(SeekFrom::Start(st.offset))?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
@@ -501,9 +501,11 @@ mod tests {
         stamp(path);
     }
 
+    /// The file's path is resolved, as `validate_path` hands it over (files are opened without
+    /// following links, and the temp folder sits behind `/var`).
     fn tracker_with(text: &str) -> (UsageTracker, tempfile::TempDir, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.jsonl");
+        let path = std::fs::canonicalize(dir.path()).unwrap().join("s.jsonl");
         write_file(&path, text);
         let t = UsageTracker::new();
         t.add(path.clone());
@@ -518,6 +520,28 @@ mod tests {
     }
 
     const NOW: &str = "2026-11-02T10:00:00.000Z";
+
+    #[test]
+    fn a_file_swapped_for_a_link_after_validation_is_not_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        // resolved, as `validate_path` hands the path over (the temp folder sits behind `/var`)
+        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let (real, other) = (dir.join("s.jsonl"), dir.join("other.jsonl"));
+        let text = line("m1", "claude-opus-4-5-20251101", NOW, (1_000, 0, 0, 0));
+        write_file(&real, &text);
+        let t = UsageTracker::new();
+        t.add(real.clone());
+        t.refresh(DAY);
+        assert_eq!(t.current().input_tokens, 1_000, "read while it is a file");
+
+        write_file(&other, &text);
+        std::fs::remove_file(&real).unwrap();
+        std::os::unix::fs::symlink(&other, &real).unwrap();
+        let t = UsageTracker::new();
+        t.add(real);
+        t.refresh(DAY);
+        assert_eq!(t.current().input_tokens, 0, "the link was followed");
+    }
 
     #[test]
     fn sums_the_four_token_kinds_and_prices_them() {
@@ -664,11 +688,11 @@ mod tests {
 
     #[test]
     fn several_files_add_up_and_a_missing_one_is_skipped() {
-        let (t, d, _p) = tracker_with(&line("a", "claude-sonnet-4-5", NOW, (100, 0, 0, 0)));
-        let other = d.path().join("t.jsonl");
+        let (t, _d, path) = tracker_with(&line("a", "claude-sonnet-4-5", NOW, (100, 0, 0, 0)));
+        let other = path.with_file_name("t.jsonl");
         write_file(&other, &line("b", "claude-haiku-4-5", NOW, (0, 40, 0, 0)));
         t.add(other);
-        t.add(d.path().join("gone.jsonl"));
+        t.add(path.with_file_name("gone.jsonl"));
         let u = t.refresh(DAY).unwrap();
         assert_eq!((u.input_tokens, u.output_tokens), (100, 40));
         // 100 * $3/M + 40 * $5/M
@@ -677,8 +701,8 @@ mod tests {
 
     #[test]
     fn refresh_scans_files_without_holding_the_tracker_lock() {
-        let (t, d, path) = tracker_with(&line("a", "claude-sonnet-4-5", NOW, (100, 0, 0, 0)));
-        let late = d.path().join("late.jsonl");
+        let (t, _d, path) = tracker_with(&line("a", "claude-sonnet-4-5", NOW, (100, 0, 0, 0)));
+        let late = path.with_file_name("late.jsonl");
         write_file(&late, &line("b", "claude-sonnet-4-5", NOW, (5, 0, 0, 0)));
         let scans = std::cell::Cell::new(0);
         let u = t

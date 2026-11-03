@@ -6,7 +6,8 @@
 //! `TOKEN_COUNT=5`, `ssh://git@host`) keeps the match unchanged.
 //!
 //! - private key blocks, whole, cut off before their END line (a clipped turn loses it), or cut off
-//!   after their BEGIN line (the base64 lines before an END line are masked with it);
+//!   after their BEGIN line (the base64 lines before an END line are masked with it, the last one
+//!   even when short: `Ag==`);
 //! - vendor tokens: `sk-` / `sk-ant-`, `ghp_` `gho_` `ghu_` `ghs_` `ghr_` `github_pat_`, `glpat-`,
 //!   `AKIA` / `ASIA`, `xox?-`, JWTs;
 //! - `Bearer` / `Basic` credentials, URL userinfo (`scheme://user:password@`);
@@ -89,9 +90,11 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             whole,
         ),
         // what is left of a key whose BEGIN line was cut away (a chunk, the window, a turn of its
-        // own): the base64 lines before an END line go with it
+        // own): the base64 lines before an END line go with it. A key's last body line is often
+        // short (`Ag==`, `AQAB`, `=`): one such line may sit right before END, the others need 8+
+        // characters so ordinary text is not masked
         rule(
-            r"(?m)(?:^[ \t]*[A-Za-z0-9+/=]{8,}[ \t]*\r?\n)*-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
+            r"(?m)(?:^[ \t]*[A-Za-z0-9+/=]{8,}[ \t]*\r?\n)*(?:^[ \t]*[A-Za-z0-9+/=]{1,7}[ \t]*\r?\n)?-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
             &["-----END "],
             whole,
         ),
@@ -167,4 +170,45 @@ fn is_secret_value(value: &str) -> bool {
             bare.to_ascii_lowercase().as_str(),
             "true" | "false" | "null" | "none" | "nil"
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BODY: &str = "KEYBODY00aB3xaB3xaB3xaB3x\nKEYBODY01aB3xaB3xaB3xaB3x";
+    const END: &str = "-----END RSA PRIVATE KEY-----";
+
+    #[test]
+    fn an_orphan_key_body_ending_in_a_short_line_is_masked_whole() {
+        // a key's last base64 line is often short: padding (`Ag==`), an exponent (`AQAB`), `=`
+        for short in ["Ag==", "AQAB", "="] {
+            let text = format!("before\n{BODY}\n{short}\n{END}\nafter");
+            let (out, n) = redact(&text);
+            assert_eq!(out, "before\n[REDACTED]\nafter", "{short}");
+            assert_eq!(n, 1, "{short}");
+        }
+    }
+
+    #[test]
+    fn only_one_short_line_goes_with_the_end_line() {
+        let text = format!("intro\nab\ncd\n{END}");
+        let (out, n) = redact(&text);
+        assert_eq!(out, "intro\nab\n[REDACTED]");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn ordinary_text_before_an_end_line_is_not_masked() {
+        // prose has spaces; a short word inside a sentence is not a body line
+        let text = format!("The build finished\nand it ended with ok\n{END}");
+        assert_eq!(
+            redact(&text).0,
+            format!("The build finished\nand it ended with ok\n[REDACTED]")
+        );
+        // a short last word of a paragraph before an unrelated line (no key end) is left alone
+        let text = "Some ordinary paragraph that ends in a word\nok\nthe next, unrelated line\n";
+        let (out, n) = redact(text);
+        assert_eq!((out.as_ref(), n), (text, 0));
+    }
 }

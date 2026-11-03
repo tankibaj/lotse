@@ -17,7 +17,7 @@ use crate::db::{Db, PermEventRow};
 use crate::redact::redact;
 use crate::session::SessionHandle;
 use crate::state::State;
-use crate::transcript::{self, DEFAULT_TURNS, EXPORT};
+use crate::transcript::{self, AgentDirs, DEFAULT_TURNS, EXPORT};
 use lotse_proto::{
     AgentKind, ErrorCode, ProtoError, Response, SessionId, Transcript, TranscriptApproval,
     TranscriptRole, TranscriptSource, TranscriptTurn,
@@ -96,7 +96,7 @@ pub async fn collect(
         },
         announced,
         cwd: h.cwd(),
-        codex_home: h.env_var("CODEX_HOME").map(PathBuf::from),
+        dirs: h.agent_dirs(),
         home: state.config().home.clone(),
     };
     let db = state.db().clone();
@@ -111,7 +111,8 @@ struct Inputs {
     agent: AgentKind,
     announced: Option<(AgentKind, PathBuf)>,
     cwd: PathBuf,
-    codex_home: Option<PathBuf>,
+    /// The session's login environment: where its agents keep their files.
+    dirs: AgentDirs,
     home: Option<PathBuf>,
     /// Only filled for the agents whose transcript is their scrollback.
     scrollback: Vec<u8>,
@@ -132,8 +133,11 @@ fn pick(inp: &Inputs) -> Pick {
         AgentKind::ClaudeCode => Pick::Nothing(TranscriptSource::Claude),
         AgentKind::Codex => {
             let codex_home = inp
+                .dirs
                 .codex_home
-                .clone()
+                .as_ref()
+                .map(PathBuf::from)
+                .or_else(|| inp.dirs.home.as_ref().map(|h| h.join(".codex")))
                 .or_else(|| inp.home.as_ref().map(|h| h.join(".codex")));
             match codex_home.and_then(|h| newest_rollout(&h.join("sessions"), &inp.cwd)) {
                 Some(path) => Pick::File(AgentKind::Codex, path),
@@ -157,7 +161,7 @@ fn read(inp: &Inputs, db: &Db, scope: Scope) -> std::io::Result<Collected> {
                 Scope::Recent(_) => transcript::TAIL_BYTES,
                 Scope::Full => EXPORT_READ_BYTES,
             };
-            let parsed = transcript::parse_file(&path, agent, home, max)?;
+            let parsed = transcript::parse_file(&path, agent, home, &inp.dirs, max)?;
             (
                 parsed.turns,
                 parsed.model,
@@ -265,7 +269,8 @@ fn newest_rollout(sessions: &Path, cwd: &Path) -> Option<PathBuf> {
                         continue;
                     }
                     let path = entry.path();
-                    if let Ok(meta) = std::fs::metadata(&path)
+                    // a rollout that is a link is never read (and `validate_path` refuses it)
+                    if let Ok(meta) = std::fs::symlink_metadata(&path)
                         && meta.is_file()
                         && let Ok(modified) = meta.modified()
                     {
@@ -310,7 +315,11 @@ fn subdirs_newest_first(dir: &Path) -> Vec<PathBuf> {
 
 /// The folder a rollout was started in: `payload.cwd` of its first line (`session_meta`).
 fn rollout_cwd(path: &Path) -> Option<PathBuf> {
-    let file = std::fs::File::open(path).ok()?;
+    // the mirror links the `sessions` folder: resolve the folders, but never a link as the file
+    let real = std::fs::canonicalize(path.parent()?)
+        .ok()?
+        .join(path.file_name()?);
+    let file = transcript::open_nofollow(&real).ok()?;
     let mut line = String::new();
     BufReader::new(file)
         .take(MAX_META_LINE)
@@ -484,6 +493,13 @@ mod tests {
         assert_eq!(masked, 1);
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].text, "[REDACTED]\nafter");
+        // the same tail with a short last body line (padding)
+        let mut tail: Vec<String> = lines[60..].to_vec();
+        tail.insert(tail.len() - 2, "Ag==".into());
+        let (turns, masked) = scrollback_turns(tail.join("\n").as_bytes());
+        assert_eq!(masked, 1);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text, "[REDACTED]\nafter");
     }
 
     fn event(
@@ -598,5 +614,49 @@ mod tests {
             "the folder's wins"
         );
         assert_eq!(newest_rollout(&tmp.path().join("missing"), &work), None);
+    }
+
+    #[test]
+    fn a_mirrored_sessions_folder_is_searched_and_a_linked_rollout_is_not() {
+        // Lotse's Codex mirror links its `sessions` to the real one
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real/sessions/2026/11/03");
+        std::fs::create_dir_all(&real).unwrap();
+        let mirror = tmp.path().join("mirror");
+        std::fs::create_dir_all(&mirror).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("real/sessions"), mirror.join("sessions"))
+            .unwrap();
+        let work = tmp.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let meta = |cwd: &Path| {
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"cwd\":\"{}\"}}}}\n",
+                cwd.display()
+            )
+        };
+        std::fs::write(
+            real.join("rollout-other.jsonl"),
+            meta(Path::new("/elsewhere")),
+        )
+        .unwrap();
+        let sessions = mirror.join("sessions");
+        assert_eq!(
+            newest_rollout(&sessions, &work),
+            None,
+            "the other folder's rollout is read through the mirror, not taken as unknown"
+        );
+        let mine = real.join("rollout-mine.jsonl");
+        std::fs::write(&mine, meta(&work)).unwrap();
+        assert_eq!(
+            newest_rollout(&sessions, &work),
+            Some(sessions.join("2026/11/03/rollout-mine.jsonl"))
+        );
+
+        // a rollout that is itself a link is never taken
+        std::fs::remove_file(&mine).unwrap();
+        let target = tmp.path().join("target.txt");
+        std::fs::write(&target, meta(&work)).unwrap();
+        std::os::unix::fs::symlink(&target, &mine).unwrap();
+        assert_eq!(newest_rollout(&sessions, &work), None);
     }
 }
