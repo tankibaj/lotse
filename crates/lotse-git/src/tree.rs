@@ -126,6 +126,8 @@ fn git_files(
                 "--ignore-submodules=dirty",
                 "--relative",
                 base,
+                // a file named like the revision must not make it ambiguous
+                "--",
             ],
             MAX_LIST_BYTES,
         )

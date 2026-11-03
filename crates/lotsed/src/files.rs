@@ -7,9 +7,14 @@
 //! (a NUL byte, or not UTF-8) is read-only. A write goes to a temp file in the same folder and is
 //! renamed over the target, so a reader never sees half a file.
 //!
-//! Limit: the checks run before the file is opened, not atomically with it. Someone who can
-//! already change the folder concurrently (the user's own agent) could swap a folder for a link
-//! in between; the daemon runs with that user's rights anyway.
+//! `resolve` leaves a path with no symlink in it, and everything is opened with `NOFOLLOW`
+//! (`O_NOFOLLOW_ANY` on macOS): a link swapped in after the check fails the open instead of being
+//! followed. A write opens the parent folder once and creates the temp file and renames it
+//! relative to that handle (`openat`, `renameat`), so the folder cannot change under it.
+//!
+//! Limit: between `resolve` and opening the parent, a real folder on the path can still be moved
+//! or replaced by another real folder (never by a link). Only someone who already controls the
+//! folder (the user's own agent) can do that, with the user's rights the daemon runs with anyway.
 
 use crate::state::{State, unavailable};
 use lotse_git::GitError;
@@ -24,6 +29,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Largest file read or written as text.
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
+
+/// Open flag that makes a link anywhere in the path fail the open (`O_NOFOLLOW_ANY`; other
+/// systems check only the last part).
+#[cfg(target_os = "macos")]
+const NOFOLLOW: i32 = nix::libc::O_NOFOLLOW_ANY;
+#[cfg(not(target_os = "macos"))]
+const NOFOLLOW: i32 = nix::libc::O_NOFOLLOW;
 
 pub async fn handle(state: &Arc<State>, req: Request) -> Response {
     match req {
@@ -112,6 +124,8 @@ fn not_found(what: &str) -> Failure {
 fn io_failure(e: &std::io::Error) -> Failure {
     match e.kind() {
         ErrorKind::NotFound | ErrorKind::NotADirectory => not_found("file"),
+        // `NOFOLLOW` met a link
+        _ if e.raw_os_error() == Some(nix::libc::ELOOP) => invalid("the path contains a symlink"),
         _ => Failure::new(
             ErrorCode::Unavailable,
             format!("cannot access the file: {e}"),
@@ -191,11 +205,12 @@ struct Loaded {
     cut: bool,
 }
 
-/// Opens `path` without blocking (a FIFO is no file) and without following a link, and reads it.
+/// Opens `path` without blocking (a FIFO is no file) and without following a link anywhere in
+/// it, and reads it.
 fn load(path: &Path) -> Result<Loaded, Failure> {
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW)
+        .custom_flags(nix::libc::O_NONBLOCK | NOFOLLOW)
         .open(path)
         .map_err(|e| io_failure(&e))?;
     let meta = file.metadata().map_err(|e| io_failure(&e))?;
@@ -317,30 +332,59 @@ fn write(
 }
 
 /// Puts `bytes` in `target` (an existing regular file, already resolved): written to a new temp
-/// file next to it with the same permissions, then renamed over it.
+/// file next to it with the same permissions, then renamed over it. The parent folder is opened
+/// once (no link in its path) and every step is relative to that handle.
 fn replace(target: &Path, bytes: &[u8]) -> Result<(), Failure> {
+    use nix::fcntl::{OFlag, openat, renameat};
+    use nix::sys::stat::Mode;
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
     static TEMPS: AtomicU64 = AtomicU64::new(0);
-    let (Some(dir), Ok(meta)) = (target.parent(), fs::metadata(target)) else {
+    let (Some(dir_path), Some(name)) = (target.parent(), target.file_name()) else {
         return Err(not_found("file"));
     };
-    let temp = dir.join(format!(
+    let dir = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(NOFOLLOW | nix::libc::O_DIRECTORY)
+        .open(dir_path)
+        .map_err(|e| io_failure(&e))?;
+    let nofollow = OFlag::from_bits_retain(NOFOLLOW);
+    let errno = |e: nix::errno::Errno| io_failure(&std::io::Error::from(e));
+
+    // the file being replaced gives its permissions to the new one
+    let old = openat(
+        &dir,
+        name,
+        OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC | nofollow,
+        Mode::empty(),
+    )
+    .map_err(errno)?;
+    let meta = fs::File::from(old).metadata().map_err(|e| io_failure(&e))?;
+    if !meta.is_file() {
+        return Err(invalid("not a regular file"));
+    }
+
+    let temp = format!(
         ".lotse-{}-{}.tmp",
         std::process::id(),
         TEMPS.fetch_add(1, Ordering::Relaxed)
-    ));
-    let written = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)?;
+    );
+    let written = (|| -> std::io::Result<()> {
+        let fd = openat(
+            &dir,
+            temp.as_str(),
+            OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL | OFlag::O_CLOEXEC | nofollow,
+            Mode::S_IRUSR | Mode::S_IWUSR,
+        )?;
+        let mut file = fs::File::from(fd);
         file.write_all(bytes)?;
         file.set_permissions(meta.permissions())?;
         file.sync_all()?;
-        fs::rename(&temp, target)
+        renameat(&dir, temp.as_str(), &dir, name)?;
+        Ok(())
     })();
     written.map_err(|e| {
-        let _ = fs::remove_file(&temp);
+        let _ = unlinkat(&dir, temp.as_str(), UnlinkatFlags::NoRemoveDir);
         io_failure(&e)
     })
 }
@@ -459,16 +503,57 @@ mod tests {
         assert_eq!(ok, root.canonicalize().unwrap().join("in/f"));
     }
 
+    /// `real/f` reachable as `link/f`, `link` being a symlink to `real`.
+    #[cfg(target_os = "macos")]
+    fn linked_parent() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        fs::create_dir(base.join("real")).unwrap();
+        fs::write(base.join("real/f"), "old").unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+        assert_eq!(fs::read_to_string(base.join("link/f")).unwrap(), "old");
+        (tmp, base.join("link/f"), base.join("real/f"))
+    }
+
+    // O_NOFOLLOW_ANY: a link anywhere in the path fails at the open itself (a swap between
+    // `resolve` and the open cannot lead out). Not testable on Linux, where O_NOFOLLOW checks
+    // only the last part; the daemon ships on macOS.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn open_and_replace_refuse_a_link_in_any_part_of_the_path() {
+        let (_tmp, through_link, real) = linked_parent();
+        assert!(load(&through_link).is_err());
+        assert!(replace(&through_link, b"new").is_err());
+        assert_eq!(fs::read_to_string(&real).unwrap(), "old");
+        // the same file by its real path is fine
+        assert_eq!(load(&real).unwrap().bytes, b"old");
+        replace(&real, b"new").unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn replace_does_not_follow_a_link_that_took_the_place_of_the_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = tmp.path().canonicalize().unwrap();
+        fs::write(base.join("secret"), "secret").unwrap();
+        std::os::unix::fs::symlink(base.join("secret"), base.join("f")).unwrap();
+        assert!(replace(&base.join("f"), b"pwned").is_err());
+        assert_eq!(fs::read_to_string(base.join("secret")).unwrap(), "secret");
+    }
+
     #[test]
     fn a_failed_replace_leaves_no_temp_file() {
         let tmp = tempfile::tempdir().unwrap();
-        let target = tmp.path().join("t.txt");
+        // `replace` takes a resolved path: the temp dir itself sits behind a link on macOS
+        let base = tmp.path().canonicalize().unwrap();
+        let target = base.join("t.txt");
         fs::write(&target, "old").unwrap();
         replace(&target, b"new").unwrap();
         assert_eq!(fs::read_to_string(&target).unwrap(), "new");
-        let missing = tmp.path().join("gone.txt");
+        let missing = base.join("gone.txt");
         assert!(replace(&missing, b"x").is_err());
-        let names: Vec<_> = fs::read_dir(tmp.path())
+        let names: Vec<_> = fs::read_dir(&base)
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();

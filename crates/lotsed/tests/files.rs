@@ -157,6 +157,28 @@ fn list_files_changed_only_lists_just_the_changed_files() {
 }
 
 #[test]
+fn list_files_works_when_a_file_or_folder_is_named_like_a_revision() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let dir = repo(&d, "proj");
+    put(&dir, "HEAD", "not a revision\n"); // untracked: git sees HEAD as ref and path
+    put(&dir, "main/x.txt", "x\n");
+    let s = open(&mut c, &dir);
+
+    let all = tree(list(&mut c, &s, false));
+    assert_eq!(entry(&all, "HEAD").status, Some(DiffStatus::Untracked));
+    let changed = tree(list(&mut c, &s, true));
+    assert!(paths(&changed).contains(&"HEAD") && paths(&changed).contains(&"main/x.txt"));
+    // and once tracked and changed
+    git(&dir, &["add", "HEAD"]);
+    git(&dir, &["commit", "-q", "-m", "head"]);
+    put(&dir, "HEAD", "edited\n");
+    let t = tree(list(&mut c, &s, true));
+    assert_eq!(entry(&t, "HEAD").status, Some(DiffStatus::Modified));
+    assert_eq!(entry(&t, "HEAD").added, 1);
+}
+
+#[test]
 fn list_files_in_a_subfolder_session_is_relative_to_that_folder() {
     let d = Daemon::start();
     let mut c = d.client();
