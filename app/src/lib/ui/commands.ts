@@ -9,6 +9,10 @@
 //   showChanges (session id)                     -> WP5: read-only `git diff` sheet of the session's folder
 //   showTranscript (session id)                  -> WP5: read-only transcript sheet
 //   toggleSidebar                                -> shell
+//   togglePanel (panel name)                     -> shell: one right panel at a time (`lib/ui/panel`)
+//   openReview (session id, optional file)       -> shell: the full-window review (`review/`)
+//   openFile (session id, path)                  -> editor pane (no listener until it lands)
+//   openComposer                                 -> composer: the prompt box over the focused pane
 
 export type UiCommand =
   | 'showChanges'
@@ -20,10 +24,14 @@ export type UiCommand =
   | 'toggleSidebar'
   | 'openProjectStyle'
   | 'splitSession'
-  | 'splitSessionDown';
+  | 'splitSessionDown'
+  | 'togglePanel'
+  | 'openReview'
+  | 'openFile'
+  | 'openComposer';
 
-/** Optional payload: a project id or a session id, depending on the command. */
-export type UiCommandHandler = (arg?: string) => void;
+/** Optional payload: a project id, a session id or a panel name, depending on the command; `extra` is a file path. */
+export type UiCommandHandler = (arg?: string, extra?: string) => void;
 
 const handlers = new Map<UiCommand, Set<UiCommandHandler>>();
 
@@ -36,8 +44,8 @@ export function onUiCommand(command: UiCommand, handler: UiCommandHandler): () =
 }
 
 /** Fire a command. Returns the number of handlers that ran (0: nobody listens yet). */
-export function emitUiCommand(command: UiCommand, arg?: string): number {
+export function emitUiCommand(command: UiCommand, arg?: string, extra?: string): number {
   const set = handlers.get(command);
-  set?.forEach((h) => h(arg));
+  set?.forEach((h) => (extra === undefined ? h(arg) : h(arg, extra)));
   return set?.size ?? 0;
 }

@@ -1,9 +1,11 @@
 import { readFileSync } from 'node:fs';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient, useClient } from '../lib/client';
-import { onUiCommand } from '../lib/ui/commands';
+import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
+import { closePanel, closeReview } from '../lib/ui/panel';
+import { selectSession } from '../lib/ui/selection';
 import { Shell } from './Shell';
 
 // The drop watcher of the sheets talks to the webview when it believes it runs inside Tauri (one test fakes that).
@@ -80,20 +82,16 @@ describe('Shell', () => {
     expect(tablist).toHaveClass('self-stretch'); // tabs stay bottom-attached, full bar height
   });
 
-  it('shows the mock\'s five panel buttons, inert with a "Coming soon" tooltip until the Beta panels land', async () => {
+  it('shows the mock\'s five panel buttons, enabled, with their shortcut in the tooltip (Changes is ⇧⌘G)', () => {
     mount();
     const bar = screen.getByRole('toolbar', { name: 'Panels' });
     const buttons = [...bar.querySelectorAll('button')];
     expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(['Session', 'Changes', 'Files', 'Transcript', 'Usage and time']);
+    expect(buttons.map((b) => b.title)).toEqual(['Session ⇧⌘I', 'Changes ⇧⌘G', 'Files ⇧⌘F', 'Transcript ⇧⌘T', 'Usage & time ⇧⌘U']);
     for (const b of buttons) {
-      expect(b).toHaveAttribute('aria-disabled', 'true');
-      expect(b.title).toMatch(/Coming soon$/);
+      expect(b).not.toHaveAttribute('aria-disabled');
+      expect(b).toHaveAttribute('aria-pressed', 'false');
     }
-    const commands = vi.fn();
-    const off = (['openSettings', 'openPalette', 'openNewSession', 'openAddProject', 'toggleSidebar'] as const).map((c) => onUiCommand(c, commands));
-    await userEvent.click(buttons[0]!);
-    expect(commands).not.toHaveBeenCalled();
-    off.forEach((f) => f());
   });
 
   it('the settings and search buttons raise UI commands without knowing who listens', async () => {
@@ -125,6 +123,109 @@ describe('Shell', () => {
     localStorage.setItem('lotse-side', '900');
     mount();
     expect(screen.getByLabelText('Sidebar')).toHaveStyle({ width: '260px' });
+  });
+});
+
+describe('Shell panels', () => {
+  const panel = () => document.querySelector('[data-slot="panel"] aside');
+  const press = (code: string, mods: Partial<KeyboardEventInit> = { metaKey: true, shiftKey: true }) => fireEvent.keyDown(window, { code, ...mods });
+
+  // the selection, panel and review live in module stores: start each test clean
+  beforeEach(() => selectSession(null));
+  afterEach(() => {
+    act(() => {
+      closePanel();
+      closeReview();
+      selectSession(null);
+    });
+  });
+
+  it('the toolbar button opens the panel (340 px) and the same button closes it', async () => {
+    mount();
+    expect(panel()).toBeNull();
+    const files = screen.getByRole('button', { name: 'Files' });
+    await userEvent.click(files);
+    expect(panel()).toHaveAttribute('aria-label', 'Files');
+    expect(panel()).toHaveClass('w-[340px]');
+    expect(files).toHaveAttribute('aria-pressed', 'true');
+    await userEvent.click(files);
+    expect(panel()).toBeNull();
+    expect(files).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('shows one panel at a time: another button swaps it, never stacks', async () => {
+    mount();
+    await userEvent.click(screen.getByRole('button', { name: 'Files' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Transcript' }));
+    expect(document.querySelectorAll('[data-slot="panel"] aside')).toHaveLength(1);
+    expect(panel()).toHaveAttribute('aria-label', 'Transcript');
+    expect(screen.getByRole('button', { name: 'Files' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it.each([
+    ['KeyI', 'Session'],
+    ['KeyG', 'Changes'],
+    ['KeyF', 'Files'],
+    ['KeyT', 'Transcript'],
+    ['KeyU', 'Usage and time'],
+  ])('⇧⌘ %s opens the %s panel and toggles it closed', (code, name) => {
+    mount();
+    press(code);
+    expect(panel()).toHaveAttribute('aria-label', name === 'Usage and time' ? 'Usage & time' : name);
+    press(code);
+    expect(panel()).toBeNull();
+  });
+
+  it('⇧⌘D no longer opens Changes (⌘⇧D is split down)', () => {
+    mount();
+    press('KeyD');
+    expect(panel()).toBeNull();
+  });
+
+  it('the togglePanel command opens a panel by name and ignores unknown names', () => {
+    mount();
+    act(() => void emitUiCommand('togglePanel', 'usage'));
+    expect(panel()).toHaveAttribute('aria-label', 'Usage & time');
+    act(() => void emitUiCommand('togglePanel', 'nope'));
+    expect(panel()).toHaveAttribute('aria-label', 'Usage & time');
+  });
+
+  it('openReview shows the full-window review; Esc closes it', () => {
+    mount();
+    const review = () => document.querySelector('[data-slot="review"] [role="dialog"]');
+    expect(review()).toBeNull();
+    act(() => void emitUiCommand('openReview', 'a1', 'src/a.ts'));
+    expect(review()).toHaveAttribute('aria-label', 'Review');
+    expect(review()).toHaveTextContent('a1');
+    expect(review()).toHaveTextContent('src/a.ts');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(review()).toBeNull();
+  });
+
+  it('Back closes the review too', async () => {
+    mount();
+    act(() => void emitUiCommand('openReview', 'a1'));
+    await userEvent.click(screen.getByRole('button', { name: /Back/ }));
+    expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toBeNull();
+  });
+
+  it('⌥⌘D reviews the selected session, and does nothing without one', () => {
+    mount();
+    press('KeyD', { metaKey: true, altKey: true });
+    expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toBeNull();
+    act(() => selectSession('a2'));
+    press('KeyD', { metaKey: true, altKey: true });
+    expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toHaveTextContent('a2');
+    act(() => selectSession(null));
+  });
+
+  it('⌘⇧Return raises openComposer', () => {
+    const open = vi.fn();
+    const off = onUiCommand('openComposer', open);
+    mount();
+    press('Enter');
+    expect(open).toHaveBeenCalledTimes(1);
+    off();
   });
 });
 
