@@ -596,6 +596,11 @@ impl SessionHandle {
         self.lock().spec.cwd.clone()
     }
 
+    /// Process group of the session leader while survivors may still hold it (Session panel tasks).
+    pub fn pgid(&self) -> Option<u32> {
+        self.lock().pgid
+    }
+
     /// Merge engine updates into the session and broadcast what changed. Called with the session
     /// lock held so events keep their order; returns what may deserve a notification.
     fn apply(&self, g: &mut Inner, updates: Vec<StatusUpdate>) -> Vec<(Session, Trigger)> {
