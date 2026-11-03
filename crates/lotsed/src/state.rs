@@ -131,10 +131,13 @@ impl State {
                 }
             }
         }
+        let hub = Arc::new(Hub::default());
+        let db = Arc::new(db);
+        crate::history::install(&hub, db.clone());
         Ok(Arc::new(Self {
             cfg,
-            hub: Arc::new(Hub::default()),
-            db: Arc::new(db),
+            hub,
+            db,
             settings: Arc::new(RwLock::new(settings)),
             sessions: RwLock::new(HashMap::new()),
             started_at: now_ms(),
