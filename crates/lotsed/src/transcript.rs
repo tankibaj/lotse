@@ -3,32 +3,65 @@
 //! The path comes from an agent's hook payload (`transcript_path`), i.e. from outside the daemon,
 //! so it is never trusted: [`validate_path`] only lets a regular `*.jsonl` file below the user's
 //! home through, after resolving symlinks. The file is read from its tail, bounded in bytes, turns
-//! and text length, and only the conversation is kept (no tool output, no thinking).
+//! and text length. Only the conversation is kept: the text, and each tool call with its status and
+//! a short excerpt of its output (paired by call id); no thinking. Secrets are masked
+//! ([`crate::redact`]) before anything is cut, so a clipped token cannot leave a readable half.
 //!
-//! - Claude Code: one JSON object per line, `type` `user` / `assistant`, `message.content` text and
-//!   `tool_use` blocks. Checked against the transcripts Claude Code writes today.
-//! - Codex: its rollout file, `response_item` lines with `payload.type` `message` / `function_call`.
-//!   **Unverified:** shaped from Codex's rollout format as remembered; no live Codex run was
-//!   available (tests never run an agent). An unreadable line is skipped, never an error.
-//! - OpenCode: its plugin payload carries no transcript path, so there is nothing to read.
+//! - Claude Code: one JSON object per line, `type` `user` / `assistant`, `message.content` text,
+//!   `tool_use` and `tool_result` blocks, `message.model`. Checked against the transcripts Claude
+//!   Code writes today. A `Task` call names its sub-agent (`input.subagent_type`).
+//! - Codex: its rollout file, each line the envelope `{metadata, ordinal, payload, timestamp,
+//!   type}` (checked against the rollouts Codex writes: `session_meta`, `event_msg`,
+//!   `response_item`, `turn_context`, `token_usage_record`, `world_state`). `response_item` lines
+//!   with `payload.type` `message` / `function_call` / `function_call_output`, `turn_context` for
+//!   the model; the other types carry nothing a transcript shows.
+//!   **Unverified:** the shape of a tool output other than the JSON `{output, metadata.exit_code}`
+//!   and `Exit code: N` forms (tests never run an agent). An unreadable line is skipped, never an
+//!   error.
+//! - OpenCode: its plugin payload carries no transcript path; `transcript_sources` shows its
+//!   scrollback.
 
+use crate::redact::redact;
 use lotse_proto::{
-    AgentKind, Transcript, TranscriptRole, TranscriptSource, TranscriptTool, TranscriptTurn, UnixMs,
+    AgentKind, ToolStatus, Transcript, TranscriptRole, TranscriptSource, TranscriptTool,
+    TranscriptTurn, UnixMs,
 };
 use serde_json::Value;
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_TURNS: usize = 50;
 pub const MAX_TURNS: usize = 200;
-/// Bytes read from the end of the file; older turns are left out.
-const TAIL_BYTES: u64 = 2 * 1024 * 1024;
-/// Characters kept of one turn's text.
-const MAX_TEXT: usize = 4_000;
-/// Characters kept of a tool call's summary.
-const MAX_SUMMARY: usize = 160;
+/// Bytes read from the end of the file for `get_transcript`; older turns are left out.
+pub(crate) const TAIL_BYTES: u64 = 2 * 1024 * 1024;
 /// Text bytes in one answer (the newest turns win).
 const MAX_TOTAL_TEXT: usize = 256 * 1024;
+
+/// How much of a turn is kept, in characters.
+#[derive(Debug, Clone, Copy)]
+pub struct Clip {
+    pub text: usize,
+    /// A tool call's summary (its command or path).
+    pub summary: usize,
+    /// The excerpt of a tool's output.
+    pub result: usize,
+}
+
+/// What `get_transcript` keeps of a turn.
+pub const VIEW: Clip = Clip {
+    text: 4_000,
+    summary: 160,
+    result: 300,
+};
+
+/// What an export keeps: whole messages, longer tool lines.
+pub const EXPORT: Clip = Clip {
+    text: usize::MAX,
+    summary: 2_000,
+    result: 2_000,
+};
 
 /// `raw` as a path the daemon may read: absolute, a regular file, named `*.jsonl`, and inside
 /// `home` once symlinks are resolved (a link in the home folder that points elsewhere, or at a
@@ -50,22 +83,31 @@ fn is_jsonl(p: &Path) -> bool {
     p.extension().is_some_and(|e| e == "jsonl")
 }
 
-/// The last `limit` turns (at most [`MAX_TURNS`]) of the transcript at `path`. The path is checked
-/// again (it may have been swapped for a link since it was recorded).
-pub fn read_turns(
+/// What was read of a transcript file: its turns as written (not yet masked or clipped).
+pub struct Parsed {
+    pub turns: Vec<TranscriptTurn>,
+    /// The newest model the agent named.
+    pub model: Option<String>,
+    /// The file is longer than what was read: older turns are missing.
+    pub cut: bool,
+}
+
+/// The last `max_bytes` of the transcript at `path`, as turns. The path is checked again (it may
+/// have been swapped for a link since it was recorded).
+pub fn parse_file(
     path: &Path,
     agent: AgentKind,
-    limit: usize,
     home: &Path,
-) -> std::io::Result<Transcript> {
+    max_bytes: u64,
+) -> std::io::Result<Parsed> {
     let denied = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "transcript path");
     let real = validate_path(&path.to_string_lossy(), home).ok_or_else(denied)?;
     let mut file = std::fs::File::open(&real)?;
     let len = file.metadata()?.len();
-    let start = len.saturating_sub(TAIL_BYTES);
+    let start = len.saturating_sub(max_bytes);
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = Vec::with_capacity((len - start) as usize);
-    file.take(TAIL_BYTES).read_to_end(&mut bytes)?;
+    file.take(max_bytes).read_to_end(&mut bytes)?;
     let text = String::from_utf8_lossy(&bytes);
     // a tail starts mid-line: drop the partial first line
     let text = if start > 0 {
@@ -73,15 +115,39 @@ pub fn read_turns(
     } else {
         &text
     };
-    let mut turns: Vec<TranscriptTurn> = text
-        .lines()
-        .flat_map(|line| parse_line(agent, line))
-        .collect();
+    let (turns, model) = assemble(text.lines().flat_map(|line| parse_line(agent, line)));
+    Ok(Parsed {
+        turns,
+        model,
+        cut: start > 0,
+    })
+}
+
+/// The last `limit` turns (at most [`MAX_TURNS`]) of the transcript at `path`.
+pub fn read_turns(
+    path: &Path,
+    agent: AgentKind,
+    limit: usize,
+    home: &Path,
+) -> std::io::Result<Transcript> {
+    let parsed = parse_file(path, agent, home, TAIL_BYTES)?;
+    Ok(window(parsed.turns, parsed.cut, limit, source_of(agent)))
+}
+
+/// The newest `limit` turns (clamped to 1..=[`MAX_TURNS`]), masked and clipped as [`VIEW`] says,
+/// and within [`MAX_TOTAL_TEXT`] bytes. `cut`: older turns are missing already.
+pub fn window(
+    mut turns: Vec<TranscriptTurn>,
+    cut: bool,
+    limit: usize,
+    source: TranscriptSource,
+) -> Transcript {
     let limit = limit.clamp(1, MAX_TURNS);
-    let mut truncated = start > 0 || turns.len() > limit;
+    let mut truncated = cut || turns.len() > limit;
     if turns.len() > limit {
         turns.drain(..turns.len() - limit);
     }
+    shape(&mut turns, VIEW);
     // the newest turns win when the answer would get too big
     let mut size = 0;
     let keep_from = turns
@@ -95,12 +161,46 @@ pub fn read_turns(
         turns.drain(..keep_from);
         truncated = true;
     }
-    Ok(Transcript {
+    Transcript {
         available: true,
         turns,
         truncated,
-        source: source_of(agent),
-    })
+        source,
+    }
+}
+
+/// Mask the secrets in every text of `turns` ([`crate::redact`]), then clip them to `clip`: in this
+/// order, so a token cut by the clip was masked whole. Returns how many secrets were masked.
+pub fn shape(turns: &mut [TranscriptTurn], clip: Clip) -> u32 {
+    let mut masked = 0;
+    for turn in turns {
+        masked += clean(&mut turn.text, clip.text);
+        if let Some(tool) = &mut turn.tool {
+            masked += clean(&mut tool.summary, clip.summary);
+            if let Some(result) = &mut tool.result {
+                masked += clean(result, clip.result);
+            }
+        }
+        if let Some(approval) = &mut turn.approval {
+            masked += clean(&mut approval.command, clip.summary);
+        }
+    }
+    masked
+}
+
+fn clean(text: &mut String, max: usize) -> u32 {
+    let (owned, n) = match redact(text) {
+        (Cow::Owned(s), n) => (Some(s), n),
+        (Cow::Borrowed(_), n) => (None, n),
+    };
+    if let Some(s) = owned {
+        *text = s;
+    }
+    // fewer bytes than `max` cannot be more characters
+    if max < text.len() && text.chars().nth(max).is_some() {
+        *text = clip(text, max);
+    }
+    n
 }
 
 /// Where `agent`'s transcript comes from (Beta adds OpenCode and scrollback in `transcript_sources`).
@@ -113,7 +213,20 @@ pub fn source_of(agent: AgentKind) -> TranscriptSource {
     }
 }
 
-fn parse_line(agent: AgentKind, line: &str) -> Vec<TranscriptTurn> {
+/// What one line of a transcript file says.
+enum Line {
+    /// A message, or a tool call (with the id its output comes back under).
+    Turn(TranscriptTurn, Option<String>),
+    /// The output of the tool call `call`.
+    Result {
+        call: String,
+        failed: bool,
+        text: String,
+    },
+    Model(String),
+}
+
+fn parse_line(agent: AgentKind, line: &str) -> Vec<Line> {
     if line.trim().is_empty() {
         return Vec::new();
     }
@@ -121,17 +234,59 @@ fn parse_line(agent: AgentKind, line: &str) -> Vec<TranscriptTurn> {
         return Vec::new();
     };
     match agent {
-        AgentKind::ClaudeCode => claude_turns(&v),
-        AgentKind::Codex => codex_turns(&v),
+        AgentKind::ClaudeCode => claude_lines(&v),
+        AgentKind::Codex => codex_lines(&v),
         AgentKind::Terminal | AgentKind::OpenCode => Vec::new(),
     }
+}
+
+/// The turns of `lines` with each tool call given its status and output, and the newest model.
+/// A call without an output is running when only tool calls follow it, else its fate is unknown.
+fn assemble(lines: impl Iterator<Item = Line>) -> (Vec<TranscriptTurn>, Option<String>) {
+    let mut turns: Vec<TranscriptTurn> = Vec::new();
+    let mut calls: HashMap<String, usize> = HashMap::new();
+    let mut model = None;
+    for line in lines {
+        match line {
+            Line::Turn(turn, call) => {
+                if let Some(call) = call {
+                    calls.insert(call, turns.len());
+                }
+                turns.push(turn);
+            }
+            Line::Result { call, failed, text } => {
+                // the call may lie before the part of the file that was read
+                if let Some(tool) = calls.get(&call).and_then(|&i| turns[i].tool.as_mut()) {
+                    tool.status = Some(if failed {
+                        ToolStatus::Fail
+                    } else {
+                        ToolStatus::Done
+                    });
+                    let text = text.trim();
+                    tool.result = (!text.is_empty()).then(|| text.to_owned());
+                }
+            }
+            Line::Model(m) => model = Some(m),
+        }
+    }
+    let mut only_tools_follow = true;
+    for turn in turns.iter_mut().rev() {
+        match &mut turn.tool {
+            Some(tool) if tool.status.is_none() && only_tools_follow => {
+                tool.status = Some(ToolStatus::Run);
+            }
+            Some(_) => {}
+            None => only_tools_follow = false,
+        }
+    }
+    (turns, model)
 }
 
 fn turn(role: TranscriptRole, text: &str, at: Option<UnixMs>) -> Option<TranscriptTurn> {
     let text = text.trim();
     (!text.is_empty()).then(|| TranscriptTurn {
         role,
-        text: clip(text, MAX_TEXT),
+        text: text.to_owned(),
         tool: None,
         at,
         approval: None,
@@ -145,7 +300,7 @@ fn tool_turn(name: &str, summary: &str, at: Option<UnixMs>) -> TranscriptTurn {
         text: String::new(),
         tool: Some(TranscriptTool {
             name: clip(name, 60),
-            summary: clip(summary.trim(), MAX_SUMMARY),
+            summary: summary.trim().to_owned(),
             status: None,
             result: None,
         }),
@@ -199,7 +354,10 @@ fn command_text(v: &Value) -> Option<String> {
     }
 }
 
-fn claude_turns(v: &Value) -> Vec<TranscriptTurn> {
+/// Claude Code calls that start a sub-agent; the input's `subagent_type` names it.
+const SUB_AGENT_TOOLS: [&str; 2] = ["Task", "Agent"];
+
+fn claude_lines(v: &Value) -> Vec<Line> {
     let flag = |k: &str| v.get(k).and_then(Value::as_bool).unwrap_or(false);
     if flag("isSidechain") || flag("isMeta") {
         return Vec::new();
@@ -208,27 +366,67 @@ fn claude_turns(v: &Value) -> Vec<TranscriptTurn> {
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(parse_iso_utc_ms);
-    let content = v.get("message").and_then(|m| m.get("content"));
+    let message = v.get("message");
     let role = match v.get("type").and_then(Value::as_str) {
         Some("user") => TranscriptRole::User,
         Some("assistant") => TranscriptRole::Assistant,
         _ => return Vec::new(),
     };
+    let mut lines = Vec::new();
+    // `<synthetic>` marks messages Claude Code wrote itself
+    if let Some(model) = message
+        .and_then(|m| m.get("model"))
+        .and_then(Value::as_str)
+        .filter(|m| !m.is_empty() && !m.starts_with('<'))
+    {
+        lines.push(Line::Model(model.to_owned()));
+    }
+    match message.and_then(|m| m.get("content")) {
+        Some(Value::String(s)) => {
+            lines.extend(turn(role, s, at).map(|t| Line::Turn(t, None)));
+        }
+        Some(Value::Array(blocks)) => lines.extend(blocks.iter().filter_map(|b| {
+            match b.get("type").and_then(Value::as_str) {
+                Some("text") => {
+                    turn(role, b.get("text")?.as_str()?, at).map(|t| Line::Turn(t, None))
+                }
+                Some("tool_use") if role == TranscriptRole::Assistant => {
+                    let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
+                    let input = b.get("input");
+                    let mut t =
+                        tool_turn(name, &input.map(summarize_input).unwrap_or_default(), at);
+                    if SUB_AGENT_TOOLS.contains(&name) {
+                        t.sub_agent = input
+                            .and_then(|i| i.get("subagent_type"))
+                            .and_then(Value::as_str)
+                            .map(|s| clip(s, 60));
+                    }
+                    let id = b.get("id").and_then(Value::as_str).map(str::to_owned);
+                    Some(Line::Turn(t, id))
+                }
+                Some("tool_result") if role == TranscriptRole::User => Some(Line::Result {
+                    call: b.get("tool_use_id")?.as_str()?.to_owned(),
+                    failed: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                    text: b.get("content").map(result_text).unwrap_or_default(),
+                }),
+                _ => None, // thinking, images
+            }
+        })),
+        _ => {}
+    }
+    lines
+}
+
+/// A tool result's `content`: a string, or blocks of which the text ones count.
+fn result_text(content: &Value) -> String {
     match content {
-        Some(Value::String(s)) => turn(role, s, at).into_iter().collect(),
-        Some(Value::Array(blocks)) => blocks
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
             .iter()
-            .filter_map(|b| match b.get("type").and_then(Value::as_str) {
-                Some("text") => turn(role, b.get("text")?.as_str()?, at),
-                Some("tool_use") if role == TranscriptRole::Assistant => Some(tool_turn(
-                    b.get("name").and_then(Value::as_str).unwrap_or("tool"),
-                    &b.get("input").map(summarize_input).unwrap_or_default(),
-                    at,
-                )),
-                _ => None, // tool results, thinking, images
-            })
-            .collect(),
-        _ => Vec::new(),
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
     }
 }
 
@@ -240,17 +438,31 @@ fn codex_boilerplate(text: &str) -> bool {
         || t.starts_with("# AGENTS.md")
 }
 
-fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
-    if v.get("type").and_then(Value::as_str) != Some("response_item") {
+/// One line of a Codex rollout: the envelope `{metadata, ordinal, payload, timestamp, type}`.
+fn codex_lines(v: &Value) -> Vec<Line> {
+    let Some(p) = v.get("payload") else {
+        return Vec::new();
+    };
+    let kind = v.get("type").and_then(Value::as_str);
+    if kind == Some("turn_context") {
+        return p
+            .get("model")
+            .and_then(Value::as_str)
+            .filter(|m| !m.is_empty())
+            .map(|m| Line::Model(m.to_owned()))
+            .into_iter()
+            .collect();
+    }
+    if kind != Some("response_item") {
+        // session_meta, event_msg (its user and agent messages repeat the response items),
+        // token_usage_record, world_state
         return Vec::new();
     }
     let at = v
         .get("timestamp")
         .and_then(Value::as_str)
         .and_then(parse_iso_utc_ms);
-    let Some(p) = v.get("payload") else {
-        return Vec::new();
-    };
+    let call_id = || p.get("call_id").and_then(Value::as_str).map(str::to_owned);
     match p.get("type").and_then(Value::as_str) {
         Some("message") => {
             let role = match p.get("role").and_then(Value::as_str) {
@@ -272,7 +484,10 @@ fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
             if codex_boilerplate(&text) {
                 return Vec::new();
             }
-            turn(role, &text, at).into_iter().collect()
+            turn(role, &text, at)
+                .map(|t| Line::Turn(t, None))
+                .into_iter()
+                .collect()
         }
         Some("function_call") => {
             let name = p.get("name").and_then(Value::as_str).unwrap_or("tool");
@@ -282,7 +497,20 @@ fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
                 .and_then(Value::as_str)
                 .and_then(|a| serde_json::from_str::<Value>(a).ok())
                 .unwrap_or(Value::Null);
-            vec![tool_turn(name, &summarize_input(&args), at)]
+            vec![Line::Turn(
+                tool_turn(name, &summarize_input(&args), at),
+                call_id(),
+            )]
+        }
+        // `apply_patch` and the like: the input is the patch itself, its first line says enough
+        Some("custom_tool_call") => {
+            let name = p.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let first = p
+                .get("input")
+                .and_then(Value::as_str)
+                .and_then(|i| i.lines().find(|l| !l.trim().is_empty()))
+                .unwrap_or_default();
+            vec![Line::Turn(tool_turn(name, first, at), call_id())]
         }
         Some("local_shell_call") => {
             let cmd = p
@@ -290,9 +518,50 @@ fn codex_turns(v: &Value) -> Vec<TranscriptTurn> {
                 .and_then(|a| a.get("command"))
                 .and_then(command_text)
                 .unwrap_or_default();
-            vec![tool_turn("shell", &cmd, at)]
+            vec![Line::Turn(tool_turn("shell", &cmd, at), call_id())]
+        }
+        Some("function_call_output" | "custom_tool_call_output") => {
+            let Some(call) = call_id() else {
+                return Vec::new();
+            };
+            let output = match p.get("output") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "",
+            };
+            let (failed, text) = codex_output(output);
+            vec![Line::Result { call, failed, text }]
         }
         _ => Vec::new(),
+    }
+}
+
+/// A Codex tool output: a JSON document `{output, metadata: {exit_code}}` inside a string, or plain
+/// text that may start with `Exit code: N`. A non-zero exit code is a failure.
+fn codex_output(output: &str) -> (bool, String) {
+    if let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(output) {
+        let failed = doc
+            .get("metadata")
+            .and_then(|m| m.get("exit_code"))
+            .and_then(Value::as_i64)
+            .is_some_and(|code| code != 0);
+        let text = doc
+            .get("output")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return (failed, text.to_owned());
+    }
+    match output
+        .strip_prefix("Exit code: ")
+        .and_then(|rest| rest.split_once('\n'))
+    {
+        Some((code, rest)) => {
+            let body = rest.split_once("Output:\n").map_or(rest, |(_, body)| body);
+            (
+                code.trim().parse::<i64>().is_ok_and(|c| c != 0),
+                body.to_owned(),
+            )
+        }
+        None => (false, output.to_owned()),
     }
 }
 
@@ -473,7 +742,11 @@ not json at all
         assert_eq!(t.turns[0].at, Some(1_793_613_600_000));
         assert_eq!(t.turns[1].at, Some(1_793_613_605_250));
         let all = serde_json::to_string(&t).unwrap();
-        assert!(!all.contains("HUGE OUTPUT") && !all.contains("secret thoughts"));
+        assert!(!all.contains("secret thoughts"));
+        // since Beta (wp07) a tool's output is paired with its call, as an excerpt
+        let bash = t.turns[2].tool.as_ref().unwrap();
+        assert_eq!(bash.result.as_deref(), Some("HUGE OUTPUT"));
+        assert_eq!(bash.status, Some(ToolStatus::Done));
     }
 
     #[test]
@@ -497,7 +770,7 @@ not json at all
         let last = t.turns.last().unwrap();
         assert_eq!(
             last.text.chars().count(),
-            MAX_TEXT + 1,
+            VIEW.text + 1,
             "clipped with an ellipsis"
         );
         assert!(last.text.ends_with('…'));

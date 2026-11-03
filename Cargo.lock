@@ -2181,6 +2181,7 @@ dependencies = [
  "lotse-proto",
  "nix 0.31.3",
  "portable-pty",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

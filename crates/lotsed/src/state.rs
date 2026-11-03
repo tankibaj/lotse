@@ -11,11 +11,11 @@ use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
 use crate::transcript;
 use crate::usage::{DayBounds, UsageTracker};
-use crate::{export, files, mcp, review, session_info, session_usage};
+use crate::{export, files, mcp, review, session_info, session_usage, transcript_sources};
 use lotse_proto::{
     AgentKind, DaemonInfo, DetectSource, DiffBase, ErrorCode, Event, Frame, Message, NewProject,
     NewSession, PROTO_VERSION, Project, ProjectId, ProjectPatch, ProtoError, Request, Response,
-    ResponseEnvelope, Session, SessionId, Settings, Snapshot, Transcript, Workspace, WorkspaceId,
+    ResponseEnvelope, Session, SessionId, Settings, Snapshot, Workspace, WorkspaceId,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -592,40 +592,8 @@ impl State {
         }
     }
 
-    async fn get_transcript(&self, id: &SessionId, limit: Option<u32>) -> Response {
-        let Some(h) = self.session(id) else {
-            return not_found("session");
-        };
-        let Some((agent, path)) = h.transcript() else {
-            // no hook has named a transcript: nothing to show (yet), or the agent has none at all
-            return match h.snapshot().agent {
-                a @ (AgentKind::Terminal | AgentKind::OpenCode) => err(
-                    ErrorCode::Unavailable,
-                    format!("Not available for {}", a.label()),
-                ),
-                a @ (AgentKind::ClaudeCode | AgentKind::Codex) => {
-                    Response::Transcript(Transcript {
-                        available: false,
-                        turns: Vec::new(),
-                        truncated: false,
-                        source: transcript::source_of(a),
-                    })
-                }
-            };
-        };
-        let Some(home) = self.cfg.home.clone() else {
-            return err(ErrorCode::Unavailable, "no home folder");
-        };
-        let limit = limit.map_or(transcript::DEFAULT_TURNS, |l| l as usize);
-        match tokio::task::spawn_blocking(move || {
-            transcript::read_turns(&path, agent, limit, &home)
-        })
-        .await
-        {
-            Ok(Ok(t)) => Response::Transcript(t),
-            Ok(Err(e)) => err(ErrorCode::Unavailable, format!("transcript: {e}")),
-            Err(e) => internal(e),
-        }
+    async fn get_transcript(self: &Arc<Self>, id: &SessionId, limit: Option<u32>) -> Response {
+        transcript_sources::get(self, id, limit).await
     }
 
     /// Read what changed in the followed transcripts; push the total when it moved.

@@ -601,6 +601,22 @@ impl SessionHandle {
         self.lock().pgid
     }
 
+    /// The raw terminal output still in the ring buffer (the scrollback transcript).
+    pub fn scrollback(&self) -> Vec<u8> {
+        self.lock().ring.snapshot()
+    }
+
+    /// A variable of the environment the process was started with.
+    pub fn env_var(&self, name: &str) -> Option<String> {
+        self.lock()
+            .spec
+            .env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+    }
+
     /// Merge engine updates into the session and broadcast what changed. Called with the session
     /// lock held so events keep their order; returns what may deserve a notification.
     fn apply(&self, g: &mut Inner, updates: Vec<StatusUpdate>) -> Vec<(Session, Trigger)> {

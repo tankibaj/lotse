@@ -1,0 +1,12 @@
+{"metadata":{},"ordinal":0,"payload":{"id":"fixture-session","cwd":"@@CWD@@","originator":"codex_cli","cli_version":"0.0.0"},"timestamp":"2026-11-03T09:10:00.000Z","type":"session_meta"}
+{"metadata":{},"ordinal":1,"payload":{"cwd":"@@CWD@@","model":"gpt-5-codex","approval_policy":"on-request"},"timestamp":"2026-11-03T09:10:00.500Z","type":"turn_context"}
+{"metadata":{},"ordinal":2,"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>\n  <cwd>@@CWD@@</cwd>\n</environment_context>"}]},"timestamp":"2026-11-03T09:10:01.000Z","type":"response_item"}
+{"metadata":{},"ordinal":3,"payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"add a unit test for round_cents"}]},"timestamp":"2026-11-03T09:10:02.000Z","type":"response_item"}
+{"metadata":{},"ordinal":4,"payload":{"type":"user_message","message":"add a unit test for round_cents"},"timestamp":"2026-11-03T09:10:02.000Z","type":"event_msg"}
+{"metadata":{},"ordinal":5,"payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cargo test round\"]}","call_id":"call_1"},"timestamp":"2026-11-03T09:10:05.000Z","type":"response_item"}
+{"metadata":{},"ordinal":6,"payload":{"type":"function_call_output","call_id":"call_1","output":"{\"output\":\"test round ... ok\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":1.2}}"},"timestamp":"2026-11-03T09:10:07.000Z","type":"response_item"}
+{"metadata":{},"ordinal":7,"payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cargo clippy\"]}","call_id":"call_2"},"timestamp":"2026-11-03T09:10:10.000Z","type":"response_item"}
+{"metadata":{},"ordinal":8,"payload":{"type":"function_call_output","call_id":"call_2","output":"{\"output\":\"error: lint failed\\n\",\"metadata\":{\"exit_code\":101,\"duration_seconds\":3.4}}"},"timestamp":"2026-11-03T09:10:14.000Z","type":"response_item"}
+{"metadata":{},"ordinal":9,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added the test; clippy still fails."}]},"timestamp":"2026-11-03T09:10:20.000Z","type":"response_item"}
+{"metadata":{},"ordinal":10,"payload":{"type":"token_count","info":null},"timestamp":"2026-11-03T09:10:20.100Z","type":"token_usage_record"}
+{"metadata":{},"ordinal":11,"payload":{"type":"snapshot"},"timestamp":"2026-11-03T09:10:20.200Z","type":"world_state"}
