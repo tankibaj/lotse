@@ -9,7 +9,7 @@ use crate::hub::{ClientTx, Hub, PermDecisionRecord};
 use crate::launch::{self, LaunchEnv};
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
-use crate::transcript;
+use crate::transcript::{self, AgentDirs};
 use crate::usage::{DayBounds, UsageTracker};
 use crate::{export, files, mcp, review, session_info, session_usage, transcript_sources};
 use lotse_proto::{
@@ -123,12 +123,13 @@ impl State {
         }
         let settings = db.load_settings()?;
         let data_dir = cfg.data_dir.clone();
-        // follow the transcripts of the previous run too: today's total survives a restart
+        // follow the transcripts of the previous run too: today's total survives a restart (no
+        // session yet: the daemon's own environment names the agent folders)
         let usage = Arc::new(UsageTracker::new());
         if let Some(home) = cfg.home.as_deref() {
             let since = now_ms().saturating_sub(TRANSCRIPT_MEMORY_MS);
             for raw in db.recent_transcripts(since)? {
-                if let Some(path) = transcript::validate_path(&raw, home) {
+                if let Some(path) = transcript::validate_path(&raw, home, &AgentDirs::default()) {
                     usage.add(path);
                 }
             }

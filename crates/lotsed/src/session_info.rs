@@ -8,6 +8,7 @@
 use crate::launch;
 use crate::session::{SessionHandle, now_ms};
 use crate::state::{State, unavailable};
+use crate::transcript::{self, AgentDirs};
 use lotse_proto::{
     AgentKind, BackgroundTask, ErrorCode, ProtoError, Request, Response, SessionId, SessionInfo,
 };
@@ -102,6 +103,7 @@ async fn get_info(state: &Arc<State>, session_id: &SessionId) -> Response {
     let transcript = h.transcript();
     let group = group_of(&h);
     let home = state.config().home.clone();
+    let dirs = h.agent_dirs();
     let env = state.launch_env().await;
     let configured = launch::configured_command(&state.settings(), meta.agent).to_owned();
     let agent = meta.agent;
@@ -113,7 +115,7 @@ async fn get_info(state: &Arc<State>, session_id: &SessionId) -> Response {
             .and_then(|p| cached_version(agent, &p, env.vars()));
         let model = transcript
             .zip(home)
-            .and_then(|((_, path), home)| latest_model(&path, &home));
+            .and_then(|((_, path), home)| latest_model(&path, &home, &dirs));
         let tasks = group.and_then(|g| listed_tasks(&g)).unwrap_or_default();
         SessionInfo {
             agent_version,
@@ -288,9 +290,9 @@ fn machine_name() -> &'static str {
 /// The model named by the newest entry of the transcript that names one. Claude Code puts it at
 /// `message.model` of assistant entries; Codex (**Unverified**, shaped from its rollout format) at
 /// `payload.model` of `turn_context` entries. Placeholders like `<synthetic>` do not count.
-fn latest_model(path: &Path, home: &Path) -> Option<String> {
-    let real = crate::transcript::validate_path(&path.to_string_lossy(), home)?;
-    let mut file = std::fs::File::open(real).ok()?;
+fn latest_model(path: &Path, home: &Path, dirs: &AgentDirs) -> Option<String> {
+    let real = transcript::validate_path(&path.to_string_lossy(), home, dirs)?;
+    let mut file = transcript::open_nofollow(&real).ok()?;
     let len = file.metadata().ok()?.len();
     let start = len.saturating_sub(MODEL_TAIL_BYTES);
     file.seek(SeekFrom::Start(start)).ok()?;

@@ -370,16 +370,27 @@ fn key_lines() -> Vec<String> {
     lines
 }
 
+/// The same key with a short last body line (padding), as real keys often have.
+fn key_lines_short_tail() -> Vec<String> {
+    let mut lines = key_lines();
+    lines.insert(lines.len() - 1, "Ag==".into());
+    lines
+}
+
 /// 29 lines of output, the key (so it starts at line 30), then a last line.
-fn scrollback_with_key() -> String {
+fn scrollback_with_key(key: Vec<String>) -> String {
     let mut lines: Vec<String> = (1..30).map(|i| format!("output line {i}")).collect();
-    lines.extend(key_lines());
+    lines.extend(key);
     lines.push("after the key".into());
     lines.join("\n") + "\n"
 }
 
 fn assert_no_key(text: &str, what: &str) {
     assert!(!text.contains("KEYBODY"), "{what}: a key line got through");
+    assert!(
+        !text.contains("Ag=="),
+        "{what}: the short last line got through"
+    );
     assert!(
         !text.contains("END RSA PRIVATE KEY"),
         "{what}: the END line got through"
@@ -392,30 +403,40 @@ fn transcript_scrollback_never_shows_a_private_key_cut_by_chunks() {
     let mut c = d.client();
     let project = c.add_project(&d.project_dir("proj"));
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("out.txt"), scrollback_with_key()).unwrap();
-    common::script(
-        dir.path(),
-        "pane.sh",
-        &format!(
-            "cat '{}'\nprintf 'all done\\n'\nsleep 5",
-            dir.path().join("out.txt").display()
-        ),
-    );
-    let script = dir.path().join("pane.sh").to_string_lossy().into_owned();
-    for agent in [AgentKind::Terminal, AgentKind::OpenCode] {
-        let s = create(&mut c, &project, agent, &script);
-        c.attach(&s.id, 80, 24);
-        assert!(c.wait_output(&s.id, "all done"), "{agent:?}");
-        for limit in [None, Some(1), Some(2), Some(3), Some(200)] {
-            let t = get(&mut c, &s, limit);
-            let all = serde_json::to_string(&t).unwrap();
-            assert_no_key(&all, &format!("{agent:?} limit {limit:?}"));
+    // the second key ends in a short line (`Ag==`)
+    for (n, key) in [key_lines(), key_lines_short_tail()]
+        .into_iter()
+        .enumerate()
+    {
+        let (out, pane) = (format!("out{n}.txt"), format!("pane{n}.sh"));
+        std::fs::write(dir.path().join(&out), scrollback_with_key(key)).unwrap();
+        common::script(
+            dir.path(),
+            &pane,
+            &format!(
+                "cat '{}'\nprintf 'all done\\n'\nsleep 5",
+                dir.path().join(&out).display()
+            ),
+        );
+        let script = dir.path().join(&pane).to_string_lossy().into_owned();
+        for agent in [AgentKind::Terminal, AgentKind::OpenCode] {
+            let s = create(&mut c, &project, agent, &script);
+            c.attach(&s.id, 80, 24);
+            assert!(c.wait_output(&s.id, "all done"), "{agent:?} {n}");
+            for limit in [None, Some(1), Some(2), Some(3), Some(200)] {
+                let t = get(&mut c, &s, limit);
+                let all = serde_json::to_string(&t).unwrap();
+                assert_no_key(&all, &format!("{agent:?} key {n} limit {limit:?}"));
+            }
+            let all = get(&mut c, &s, None);
+            let text: Vec<_> = all.turns.iter().map(|t| t.text.as_str()).collect();
+            let text = text.join("\n");
+            assert!(
+                text.contains("output line 29\n[REDACTED]\nafter the key"),
+                "{agent:?} key {n}"
+            );
+            assert!(text.contains("output line 1\n"));
         }
-        let all = get(&mut c, &s, None);
-        let text: Vec<_> = all.turns.iter().map(|t| t.text.as_str()).collect();
-        let text = text.join("\n");
-        assert!(text.contains("output line 29\n[REDACTED]\nafter the key"));
-        assert!(text.contains("output line 1\n"));
     }
 }
 
@@ -430,8 +451,7 @@ fn claude_blocks(blocks: &[String]) -> String {
 }
 
 /// The key cut in the middle: the first block ends inside the body, the second holds the rest.
-fn split_key() -> [String; 2] {
-    let lines = key_lines();
+fn split_key(lines: Vec<String>) -> [String; 2] {
     [
         format!("here is the key:\n{}", lines[..20].join("\n")),
         format!("{}\nthat was all", lines[20..].join("\n")),
@@ -443,24 +463,33 @@ fn transcript_claude_never_shows_a_private_key_split_across_turns() {
     let d = Daemon::start();
     let mut c = d.client();
     let project = c.add_project(&d.project_dir("proj"));
-    let s = create(&mut c, &project, AgentKind::ClaudeCode, "/bin/sh");
-    let file = d.home.join(".claude/projects/p/split.jsonl");
-    write(&file, &claude_blocks(&split_key()));
-    c.expect_ok(Request::HookEvent {
-        agent: AgentKind::ClaudeCode,
-        session_id: Some(s.id.clone()),
-        payload: json!({"hook_event_name": "UserPromptSubmit", "transcript_path": file}),
-    });
-    for limit in [None, Some(1), Some(2)] {
-        let t = get(&mut c, &s, limit);
-        assert!(t.available);
-        assert_no_key(&serde_json::to_string(&t).unwrap(), &format!("{limit:?}"));
+    // the second key ends in a short line (`Ag==`)
+    for (n, key) in [key_lines(), key_lines_short_tail()]
+        .into_iter()
+        .enumerate()
+    {
+        let s = create(&mut c, &project, AgentKind::ClaudeCode, "/bin/sh");
+        let file = d.home.join(format!(".claude/projects/p/split{n}.jsonl"));
+        write(&file, &claude_blocks(&split_key(key)));
+        c.expect_ok(Request::HookEvent {
+            agent: AgentKind::ClaudeCode,
+            session_id: Some(s.id.clone()),
+            payload: json!({"hook_event_name": "UserPromptSubmit", "transcript_path": file}),
+        });
+        for limit in [None, Some(1), Some(2)] {
+            let t = get(&mut c, &s, limit);
+            assert!(t.available);
+            assert_no_key(
+                &serde_json::to_string(&t).unwrap(),
+                &format!("key {n} {limit:?}"),
+            );
+        }
+        let t = get(&mut c, &s, Some(1));
+        assert_eq!(
+            t.turns[0].text, "[REDACTED]\nthat was all",
+            "key {n}: what follows the key stays"
+        );
     }
-    let t = get(&mut c, &s, Some(1));
-    assert_eq!(
-        t.turns[0].text, "[REDACTED]\nthat was all",
-        "what follows the key stays"
-    );
 }
 
 #[test]
@@ -475,22 +504,31 @@ fn transcript_codex_never_shows_a_private_key_split_across_turns() {
         .to_string()
             + "\n"
     };
-    let [first, second] = split_key();
-    let rollout = d
-        .home
-        .join(".codex/sessions/2026/11/03/rollout-2026-11-03T09-10-00-split.jsonl");
-    write(
-        &rollout,
-        &(rollout_for(&dir).lines().next().unwrap().to_owned()
-            + "\n"
-            + &message(&first)
-            + &message(&second)),
-    );
-    let s = create(&mut c, &project, AgentKind::Codex, "/bin/sh");
-    for limit in [None, Some(1), Some(2)] {
-        let t = get(&mut c, &s, limit);
-        assert!(t.available, "{limit:?}");
-        assert_no_key(&serde_json::to_string(&t).unwrap(), &format!("{limit:?}"));
+    // the second key ends in a short line (`Ag==`); a newer rollout wins, so each gets a later name
+    for (n, key) in [key_lines(), key_lines_short_tail()]
+        .into_iter()
+        .enumerate()
+    {
+        let [first, second] = split_key(key);
+        let rollout = d.home.join(format!(
+            ".codex/sessions/2026/11/03/rollout-2026-11-03T09-1{n}-00-split.jsonl"
+        ));
+        write(
+            &rollout,
+            &(rollout_for(&dir).lines().next().unwrap().to_owned()
+                + "\n"
+                + &message(&first)
+                + &message(&second)),
+        );
+        let s = create(&mut c, &project, AgentKind::Codex, "/bin/sh");
+        for limit in [None, Some(1), Some(2)] {
+            let t = get(&mut c, &s, limit);
+            assert!(t.available, "key {n} {limit:?}");
+            assert_no_key(
+                &serde_json::to_string(&t).unwrap(),
+                &format!("key {n} {limit:?}"),
+            );
+        }
     }
 }
 
@@ -509,6 +547,49 @@ fn a_hook_cannot_name_a_jsonl_outside_the_agent_folders() {
         session_id: Some(s.id.clone()),
         payload: json!({"hook_event_name": "UserPromptSubmit", "transcript_path": elsewhere}),
     });
+    let t = get(&mut c, &s, None);
+    assert!(!t.available && t.turns.is_empty(), "{t:?}");
+}
+
+/// `CLAUDE_CONFIG_DIR=~/.claude-work` in the user's `.zshrc`, a daemon started from the GUI: only the
+/// login shell's environment (which the sessions get) has it, the daemon's own does not.
+#[test]
+fn a_transcript_below_the_login_shells_config_dir_is_readable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("claude-work");
+    common::script(
+        tmp.path(),
+        "fakeshell",
+        &format!(
+            r#"[ "$1" = "-l" ] && [ "$2" = "-i" ] && [ "$3" = "-c" ] || exit 64
+export CLAUDE_CONFIG_DIR="{}"
+exec /bin/sh -c "$4""#,
+            work.display()
+        ),
+    );
+    let d = Daemon::start_with_login_shell(&tmp.path().join("fakeshell"));
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("proj"));
+    let announce = |c: &mut Client, s: &Session, file: &Path| {
+        c.expect_ok(Request::HookEvent {
+            agent: AgentKind::ClaudeCode,
+            session_id: Some(s.id.clone()),
+            payload: json!({"hook_event_name": "UserPromptSubmit", "transcript_path": file}),
+        });
+    };
+
+    let s = create(&mut c, &project, AgentKind::ClaudeCode, "/bin/sh");
+    let own = work.join("projects/p/s.jsonl");
+    write(&own, CLAUDE_TOOLS);
+    announce(&mut c, &s, &own);
+    let t = get(&mut c, &s, None);
+    assert!(t.available && !t.turns.is_empty(), "{t:?}");
+
+    // another folder next to it is still refused
+    let s = create(&mut c, &project, AgentKind::ClaudeCode, "/bin/sh");
+    let elsewhere = tmp.path().join("elsewhere/projects/p/s.jsonl");
+    write(&elsewhere, CLAUDE_TOOLS);
+    announce(&mut c, &s, &elsewhere);
     let t = get(&mut c, &s, None);
     assert!(!t.available && t.turns.is_empty(), "{t:?}");
 }

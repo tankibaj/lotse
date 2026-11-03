@@ -518,10 +518,8 @@ impl SessionHandle {
             .map(|t| t.path.clone());
         let repeat = known.is_some();
         let Some(path) = known.or_else(|| {
-            self.ctx
-                .home
-                .as_deref()
-                .and_then(|home| transcript::validate_path(raw, home))
+            let home = self.ctx.home.as_deref()?;
+            transcript::validate_path(raw, home, &self.agent_dirs())
         }) else {
             tracing::debug!("session {}: transcript path refused", self.id);
             return;
@@ -672,6 +670,20 @@ impl SessionHandle {
             .rev()
             .find(|(k, _)| k == name)
             .map(|(_, v)| v.clone())
+    }
+
+    /// Where the agent keeps its files according to the environment the process was started with
+    /// (the user's login environment), for [`transcript::validate_path`].
+    pub fn agent_dirs(&self) -> transcript::AgentDirs {
+        let g = self.lock();
+        transcript::AgentDirs::from_vars(|name| {
+            g.spec
+                .env
+                .iter()
+                .rev()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        })
     }
 
     /// Merge engine updates into the session and broadcast what changed. Called with the session
@@ -1161,6 +1173,16 @@ mod tests {
     }
 
     fn spawn_sh_in(ctx: Ctx, script: &str) -> Arc<SessionHandle> {
+        spawn_sh_with_env(ctx, script, Vec::new())
+    }
+
+    /// `env` on top of a minimal environment: the session's login environment.
+    fn spawn_sh_with_env(
+        ctx: Ctx,
+        script: &str,
+        mut env: Vec<(String, String)>,
+    ) -> Arc<SessionHandle> {
+        env.insert(0, ("PATH".into(), "/usr/bin:/bin".into()));
         let meta = Session {
             id: SessionId::new("s-1"),
             project_id: ProjectId::new("p-1"),
@@ -1180,7 +1202,7 @@ mod tests {
         let spec = SpawnSpec {
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],
             cwd: std::env::temp_dir(),
-            env: vec![("PATH".into(), "/usr/bin:/bin".into())],
+            env,
         };
         SessionHandle::spawn(ctx, meta, false, spec, 1024, 80, 24, |_, _| true).unwrap()
     }
@@ -1221,7 +1243,8 @@ mod tests {
     /// A Claude session whose home holds one transcript; the tracker wants a write on every add.
     fn claude_with_transcript() -> (Arc<SessionHandle>, Ctx, tempfile::TempDir, PathBuf) {
         let home = tempfile::tempdir().unwrap();
-        let file = home.path().join("t.jsonl");
+        let file = home.path().join(".claude/projects/p/t.jsonl");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
         std::fs::write(&file, "").unwrap();
         let ctx = Ctx {
             hub: Arc::new(Hub::default()),
@@ -1260,11 +1283,45 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_may_name_a_transcript_below_the_sessions_config_dir() {
+        // the daemon never sets `CLAUDE_CONFIG_DIR` on itself: only the session's login env has it
+        let (home, tmp) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let ctx = Ctx {
+            hub: Arc::new(Hub::default()),
+            db: Arc::new(Db::open_in_memory().unwrap()),
+            settings: Arc::new(RwLock::new(Settings::default())),
+            usage: Arc::new(UsageTracker::with_persist_every(Duration::ZERO)),
+            home: Some(home.path().to_path_buf()),
+        };
+        let work = tmp.path().join("claude-work");
+        let h = spawn_sh_with_env(
+            ctx,
+            "sleep 5",
+            vec![(
+                "CLAUDE_CONFIG_DIR".into(),
+                work.to_string_lossy().into_owned(),
+            )],
+        );
+        let write = |rel: &str| {
+            let p = tmp.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, "").unwrap();
+            std::fs::canonicalize(p).unwrap()
+        };
+        let elsewhere = write("elsewhere/projects/x/s.jsonl");
+        announce(&h, &elsewhere);
+        assert_eq!(h.transcript(), None, "outside the agents' folders");
+        let own = write("claude-work/projects/x/s.jsonl");
+        announce(&h, &own);
+        assert_eq!(h.transcript().map(|(_, p)| p), Some(own));
+    }
+
+    #[test]
     fn a_path_through_a_link_is_validated_once_and_compared_as_announced() {
         let (h, ctx, home, file) = claude_with_transcript();
         // announced through a link: the same file as `file`, a different string than its canonical path
         let link = home.path().join("link");
-        std::os::unix::fs::symlink(home.path(), &link).unwrap();
+        std::os::unix::fs::symlink(file.parent().unwrap(), &link).unwrap();
         let raw = link.join("t.jsonl");
         assert_ne!(std::fs::canonicalize(&raw).unwrap(), raw);
         announce(&h, &raw);

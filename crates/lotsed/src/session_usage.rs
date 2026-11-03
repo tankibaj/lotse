@@ -332,7 +332,7 @@ impl Message {
 
 /// Sum a whole transcript; `today` counts the messages of `day` only.
 fn scan(path: &Path, day: DayBounds) -> std::io::Result<Scan> {
-    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut reader = BufReader::new(crate::transcript::open_nofollow(path)?);
     let mut messages: HashMap<String, Message> = HashMap::new();
     let mut line = Vec::new();
     loop {
@@ -425,9 +425,30 @@ mod tests {
 
     fn scan_text(text: &str) -> Scan {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("s.jsonl");
+        // resolved, as `validate_path` hands the path over (the temp folder sits behind `/var`)
+        let path = std::fs::canonicalize(dir.path()).unwrap().join("s.jsonl");
         std::fs::write(&path, text).unwrap();
         scan(&path, DAY).unwrap()
+    }
+
+    #[test]
+    fn a_file_swapped_for_a_link_after_validation_is_not_scanned() {
+        let tmp = tempfile::tempdir().unwrap();
+        // resolved, as `validate_path` hands the path over (the temp folder sits behind `/var`)
+        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let (real, other) = (dir.join("s.jsonl"), dir.join("other.jsonl"));
+        let text = line(
+            "a",
+            "claude-opus-4-5",
+            "2026-11-02T10:00:00Z",
+            (1_000, 0, 0, 0),
+        );
+        std::fs::write(&real, &text).unwrap();
+        assert_eq!(scan(&real, DAY).unwrap().tokens.input, 1_000);
+        std::fs::write(&other, &text).unwrap();
+        std::fs::remove_file(&real).unwrap();
+        std::os::unix::fs::symlink(&other, &real).unwrap();
+        assert!(scan(&real, DAY).is_err(), "the link was followed");
     }
 
     #[test]
