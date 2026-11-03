@@ -118,11 +118,26 @@ const EVENTS: { key: EventKey; glyph: string; tone: string; label: string }[] = 
   { key: 'sub_agent_done', glyph: '✓', tone: 'text-green', label: 'Sub-agent done' },
 ];
 
+/** The sounds macOS ships in /System/Library/Sounds. The webview cannot list the folder; the set is fixed. */
+const SYSTEM_SOUNDS = ['Basso', 'Blow', 'Bottle', 'Frog', 'Funk', 'Glass', 'Hero', 'Morse', 'Ping', 'Pop', 'Purr', 'Sosumi', 'Submarine', 'Tink'];
+
+/** `EventPrefs` plus the proto 4 sound name (absent: the default sound), until the client types carry it. */
+type SoundPrefs = Omit<EventPrefs, 'sound_name'> & { sound_name?: string | null };
+
+/** One select over the row's `sound` flag and `sound_name`. */
+const soundChoice = (p: SoundPrefs) => (!p.sound ? 'none' : (p.sound_name || 'default'));
+
 export function NotificationsSection({ draft }: { draft: SettingsDraft }) {
   const { settings, update } = draft;
   if (!settings) return null;
   const n: NotificationSettings = settings.notifications;
   const toggle = (key: EventKey, field: keyof EventPrefs, on: boolean) => update((s) => { s.notifications[key][field] = on; });
+  const pickSound = (key: EventKey, choice: string) => update((s) => {
+    const p: SoundPrefs = s.notifications[key];
+    p.sound = choice !== 'none';
+    if (choice === 'none' || choice === 'default') delete p.sound_name;
+    else p.sound_name = choice;
+  });
   return (
     <section aria-labelledby="sec-notifications">
       <h2 id="sec-notifications" className={h2}>Notifications</h2>
@@ -140,7 +155,19 @@ export function NotificationsSection({ draft }: { draft: SettingsDraft }) {
             <tr key={e.key} className="border-t">
               <td className="py-2"><span className={e.tone} aria-hidden="true">{e.glyph}</span> {e.label}</td>
               <td className="text-center"><input type="checkbox" className={check} aria-label={`${e.label} banner`} checked={n[e.key].banner} onChange={(ev) => toggle(e.key, 'banner', ev.target.checked)} /></td>
-              <td className="text-center"><input type="checkbox" className={check} aria-label={`${e.label} sound`} checked={n[e.key].sound} onChange={(ev) => toggle(e.key, 'sound', ev.target.checked)} /></td>
+              <td className="whitespace-nowrap text-center">
+                <input type="checkbox" className={check} aria-label={`${e.label} sound`} checked={n[e.key].sound} onChange={(ev) => toggle(e.key, 'sound', ev.target.checked)} />
+                <select
+                  className="ml-2 rounded-md bg-side px-1 py-0.5 text-[12px] ring-1 ring-line"
+                  aria-label={`${e.label} sound name`}
+                  value={soundChoice(n[e.key])}
+                  onChange={(ev) => pickSound(e.key, ev.target.value)}
+                >
+                  <option value="none">None</option>
+                  <option value="default">Default</option>
+                  {SYSTEM_SOUNDS.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </td>
               <td className={`text-center ${e.key === 'perm' ? '' : dim}`}>
                 {e.key === 'perm'
                   ? <input type="checkbox" className={check} aria-label="Allow/Deny in banner" checked={n.perm.allow_deny} onChange={(ev) => toggle('perm', 'allow_deny', ev.target.checked)} />
