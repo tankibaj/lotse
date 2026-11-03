@@ -12,6 +12,7 @@ mod review;
 mod tree;
 
 pub use lotse_proto::{DiffFile, DiffStatus, GitDiff, GitInfo};
+pub use tree::{Blob, MAX_ENTRIES, list_files, read_blob, valid_rev};
 
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {

@@ -33,21 +33,6 @@ fn every_new_request_answers_unavailable_until_its_wp_lands() {
     let s = || session_id.clone();
     let requests = [
         Request::GetReview { session_id: s() },
-        Request::ListFiles {
-            session_id: s(),
-            changed_only: false,
-        },
-        Request::ReadFile {
-            session_id: s(),
-            path: "a.txt".into(),
-            rev: None,
-        },
-        Request::WriteFile {
-            session_id: s(),
-            path: "a.txt".into(),
-            text: "x".into(),
-            expected_sha: None,
-        },
         Request::GetUsage { session_id: s() },
         Request::ExportTranscript {
             session_id: s(),
