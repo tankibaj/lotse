@@ -359,6 +359,160 @@ fn get_transcript_never_shows_secrets() {
     assert_eq!(t.turns[0].text, "use [REDACTED] please");
 }
 
+// ---- private keys cut by chunks, turns or the window ------------------------------------------------
+
+/// A 4096-bit-shaped RSA key: 51 body lines of 65 base64 characters, each marked `KEYBODY<nn>` so a
+/// test can tell that a line got through. Not a real key.
+fn key_lines() -> Vec<String> {
+    let mut lines = vec!["-----BEGIN RSA PRIVATE KEY-----".to_owned()];
+    lines.extend((0..51).map(|i| format!("KEYBODY{i:02}{}", "aB3x".repeat(14))));
+    lines.push("-----END RSA PRIVATE KEY-----".into());
+    lines
+}
+
+/// 29 lines of output, the key (so it starts at line 30), then a last line.
+fn scrollback_with_key() -> String {
+    let mut lines: Vec<String> = (1..30).map(|i| format!("output line {i}")).collect();
+    lines.extend(key_lines());
+    lines.push("after the key".into());
+    lines.join("\n") + "\n"
+}
+
+fn assert_no_key(text: &str, what: &str) {
+    assert!(!text.contains("KEYBODY"), "{what}: a key line got through");
+    assert!(
+        !text.contains("END RSA PRIVATE KEY"),
+        "{what}: the END line got through"
+    );
+}
+
+#[test]
+fn transcript_scrollback_never_shows_a_private_key_cut_by_chunks() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("proj"));
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("out.txt"), scrollback_with_key()).unwrap();
+    common::script(
+        dir.path(),
+        "pane.sh",
+        &format!(
+            "cat '{}'\nprintf 'all done\\n'\nsleep 5",
+            dir.path().join("out.txt").display()
+        ),
+    );
+    let script = dir.path().join("pane.sh").to_string_lossy().into_owned();
+    for agent in [AgentKind::Terminal, AgentKind::OpenCode] {
+        let s = create(&mut c, &project, agent, &script);
+        c.attach(&s.id, 80, 24);
+        assert!(c.wait_output(&s.id, "all done"), "{agent:?}");
+        for limit in [None, Some(1), Some(2), Some(3), Some(200)] {
+            let t = get(&mut c, &s, limit);
+            let all = serde_json::to_string(&t).unwrap();
+            assert_no_key(&all, &format!("{agent:?} limit {limit:?}"));
+        }
+        let all = get(&mut c, &s, None);
+        let text: Vec<_> = all.turns.iter().map(|t| t.text.as_str()).collect();
+        let text = text.join("\n");
+        assert!(text.contains("output line 29\n[REDACTED]\nafter the key"));
+        assert!(text.contains("output line 1\n"));
+    }
+}
+
+/// `content` as one assistant line of a Claude transcript with these text blocks (each its own turn).
+fn claude_blocks(blocks: &[String]) -> String {
+    let content: Vec<_> = blocks
+        .iter()
+        .map(|b| json!({"type": "text", "text": b}))
+        .collect();
+    json!({"type": "assistant", "message": {"role": "assistant", "content": content}}).to_string()
+        + "\n"
+}
+
+/// The key cut in the middle: the first block ends inside the body, the second holds the rest.
+fn split_key() -> [String; 2] {
+    let lines = key_lines();
+    [
+        format!("here is the key:\n{}", lines[..20].join("\n")),
+        format!("{}\nthat was all", lines[20..].join("\n")),
+    ]
+}
+
+#[test]
+fn transcript_claude_never_shows_a_private_key_split_across_turns() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("proj"));
+    let s = create(&mut c, &project, AgentKind::ClaudeCode, "/bin/sh");
+    let file = d.home.join(".claude/projects/p/split.jsonl");
+    write(&file, &claude_blocks(&split_key()));
+    c.expect_ok(Request::HookEvent {
+        agent: AgentKind::ClaudeCode,
+        session_id: Some(s.id.clone()),
+        payload: json!({"hook_event_name": "UserPromptSubmit", "transcript_path": file}),
+    });
+    for limit in [None, Some(1), Some(2)] {
+        let t = get(&mut c, &s, limit);
+        assert!(t.available);
+        assert_no_key(&serde_json::to_string(&t).unwrap(), &format!("{limit:?}"));
+    }
+    let t = get(&mut c, &s, Some(1));
+    assert_eq!(
+        t.turns[0].text, "[REDACTED]\nthat was all",
+        "what follows the key stays"
+    );
+}
+
+#[test]
+fn transcript_codex_never_shows_a_private_key_split_across_turns() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let dir = d.project_dir("proj");
+    let project = c.add_project(&dir);
+    let message = |text: &str| {
+        json!({"timestamp": "2026-11-03T09:11:00.000Z", "type": "response_item", "payload":
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}})
+        .to_string()
+            + "\n"
+    };
+    let [first, second] = split_key();
+    let rollout = d
+        .home
+        .join(".codex/sessions/2026/11/03/rollout-2026-11-03T09-10-00-split.jsonl");
+    write(
+        &rollout,
+        &(rollout_for(&dir).lines().next().unwrap().to_owned()
+            + "\n"
+            + &message(&first)
+            + &message(&second)),
+    );
+    let s = create(&mut c, &project, AgentKind::Codex, "/bin/sh");
+    for limit in [None, Some(1), Some(2)] {
+        let t = get(&mut c, &s, limit);
+        assert!(t.available, "{limit:?}");
+        assert_no_key(&serde_json::to_string(&t).unwrap(), &format!("{limit:?}"));
+    }
+}
+
+// ---- which files a hook may name -----------------------------------------------------------------
+
+#[test]
+fn a_hook_cannot_name_a_jsonl_outside_the_agent_folders() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("proj"));
+    let s = create(&mut c, &project, AgentKind::ClaudeCode, "/bin/sh");
+    let elsewhere = d.home.join("Documents/notes/s.jsonl");
+    write(&elsewhere, CLAUDE_TOOLS);
+    c.expect_ok(Request::HookEvent {
+        agent: AgentKind::ClaudeCode,
+        session_id: Some(s.id.clone()),
+        payload: json!({"hook_event_name": "UserPromptSubmit", "transcript_path": elsewhere}),
+    });
+    let t = get(&mut c, &s, None);
+    assert!(!t.available && t.turns.is_empty(), "{t:?}");
+}
+
 // ---- approvals, from `perm_events` of the in-process daemon ---------------------------------------
 
 /// The daemon's `State` inside the test process (temp dirs, in-memory database): the test writes

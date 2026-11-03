@@ -14,6 +14,7 @@
 //! Every text is masked ([`crate::redact`]) before it leaves.
 
 use crate::db::{Db, PermEventRow};
+use crate::redact::redact;
 use crate::session::SessionHandle;
 use crate::state::State;
 use crate::transcript::{self, DEFAULT_TURNS, EXPORT};
@@ -144,6 +145,8 @@ fn pick(inp: &Inputs) -> Pick {
 }
 
 fn read(inp: &Inputs, db: &Db, scope: Scope) -> std::io::Result<Collected> {
+    // secrets already masked before the text was cut into turns
+    let mut premasked = 0;
     let (mut turns, model, cut, source) = match pick(inp) {
         Pick::File(agent, path) => {
             let home = inp
@@ -162,12 +165,11 @@ fn read(inp: &Inputs, db: &Db, scope: Scope) -> std::io::Result<Collected> {
                 transcript::source_of(agent),
             )
         }
-        Pick::Scrollback => (
-            scrollback_turns(&inp.scrollback),
-            None,
-            false,
-            TranscriptSource::Scrollback,
-        ),
+        Pick::Scrollback => {
+            let (turns, masked) = scrollback_turns(&inp.scrollback);
+            premasked = masked;
+            (turns, None, false, TranscriptSource::Scrollback)
+        }
         Pick::Nothing(source) => {
             return Ok(Collected {
                 transcript: Transcript {
@@ -193,7 +195,7 @@ fn read(inp: &Inputs, db: &Db, scope: Scope) -> std::io::Result<Collected> {
             redactions: 0,
         },
         Scope::Full => {
-            let redactions = transcript::shape(&mut turns, EXPORT);
+            let redactions = premasked + transcript::shape(&mut turns, EXPORT);
             Collected {
                 transcript: Transcript {
                     available: true,
@@ -328,7 +330,11 @@ fn same_dir(a: &Path, wanted: &Path) -> bool {
 /// The terminal output as text turns: escape sequences gone, a line rewritten with a carriage return
 /// shown as its last version, blank runs collapsed, then cut into chunks of about
 /// [`CHUNK_LINES`] lines. The role is `assistant` (there is no terminal role); `source` tells.
-fn scrollback_turns(bytes: &[u8]) -> Vec<TranscriptTurn> {
+///
+/// Secrets are masked in the whole text *before* it is cut: a secret that spans lines (a private
+/// key) would otherwise cross a chunk boundary, and the window may drop the chunk that holds its
+/// first line. Returns the turns and how many secrets were masked.
+fn scrollback_turns(bytes: &[u8]) -> (Vec<TranscriptTurn>, u32) {
     let text = strip_ansi(&String::from_utf8_lossy(bytes));
     let mut lines: Vec<&str> = Vec::new();
     let mut blank = true;
@@ -344,6 +350,12 @@ fn scrollback_turns(bytes: &[u8]) -> Vec<TranscriptTurn> {
     while lines.last().is_some_and(|l| l.is_empty()) {
         lines.pop();
     }
+    if lines.is_empty() {
+        return (Vec::new(), 0);
+    }
+    let joined = lines.join("\n");
+    let (masked, redactions) = redact(&joined);
+    let lines: Vec<&str> = masked.split('\n').collect();
     let mut turns = Vec::new();
     let mut chunk: Vec<&str> = Vec::new();
     let mut chars = 0;
@@ -369,7 +381,7 @@ fn scrollback_turns(bytes: &[u8]) -> Vec<TranscriptTurn> {
         chunk.push(line);
     }
     flush(&mut chunk, &mut chars);
-    turns
+    (turns, redactions)
 }
 
 /// `text` without terminal control sequences: CSI (`ESC [ … final`), OSC / DCS / PM / APC strings
@@ -437,17 +449,41 @@ mod tests {
     #[test]
     fn scrollback_lines_are_cleaned_and_chunked() {
         let raw = "\r\n\r\nfirst\r\nprogress 1%\rprogress 99%\r\n\r\n\r\n\r\nlast  \r\n\r\n";
-        let turns = scrollback_turns(raw.as_bytes());
+        let (turns, masked) = scrollback_turns(raw.as_bytes());
         assert_eq!(turns.len(), 1);
         assert_eq!(turns[0].text, "first\nprogress 99%\n\nlast");
-        assert!(scrollback_turns(b"").is_empty());
-        assert!(scrollback_turns(b"\x1b[2J\r\n\r\n").is_empty());
+        assert_eq!(masked, 0);
+        assert!(scrollback_turns(b"").0.is_empty());
+        assert!(scrollback_turns(b"\x1b[2J\r\n\r\n").0.is_empty());
 
         let many: String = (0..100).map(|i| format!("line {i}\n")).collect();
-        let turns = scrollback_turns(many.as_bytes());
+        let (turns, _) = scrollback_turns(many.as_bytes());
         assert_eq!(turns.len(), 3, "40 + 40 + 20 lines");
         assert!(turns[2].text.ends_with("line 99"));
         assert!(turns.iter().all(|t| t.role == TranscriptRole::Assistant));
+    }
+
+    #[test]
+    fn a_private_key_across_chunks_is_masked_before_the_cut() {
+        let mut lines: Vec<String> = (1..30).map(|i| format!("line {i}")).collect();
+        lines.push("-----BEGIN RSA PRIVATE KEY-----".into());
+        lines.extend((0..51).map(|i| format!("KEYBODY{i:02}{}", "aB3x".repeat(14))));
+        lines.push("-----END RSA PRIVATE KEY-----".into());
+        lines.push("after".into());
+        let (turns, masked) = scrollback_turns((lines.join("\r\n") + "\r\n").as_bytes());
+        assert_eq!(masked, 1);
+        let all: Vec<&str> = turns.iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            all.iter()
+                .all(|t| !t.contains("KEYBODY") && !t.contains("END RSA"))
+        );
+        assert!(all.join("\n").ends_with("line 29\n[REDACTED]\nafter"));
+        // the ring buffer may start inside the key: only its tail is left
+        let tail = lines[60..].join("\n");
+        let (turns, masked) = scrollback_turns(tail.as_bytes());
+        assert_eq!(masked, 1);
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].text, "[REDACTED]\nafter");
     }
 
     fn event(

@@ -1,8 +1,9 @@
 //! Agent transcripts (Show Transcript): which file the daemon may read, and its last turns.
 //!
 //! The path comes from an agent's hook payload (`transcript_path`), i.e. from outside the daemon,
-//! so it is never trusted: [`validate_path`] only lets a regular `*.jsonl` file below the user's
-//! home through, after resolving symlinks. The file is read from its tail, bounded in bytes, turns
+//! so it is never trusted: [`validate_path`] only lets a regular `*.jsonl` file below the agents'
+//! own folders through (Claude Code's `projects`, Codex's `sessions`; not a symlink itself, and
+//! opened without following one, [`open_nofollow`]). The file is read from its tail, bounded in bytes, turns
 //! and text length. Only the conversation is kept: the text, and each tool call with its status and
 //! a short excerpt of its output (paired by call id); no thinking. Secrets are masked
 //! ([`crate::redact`]) before anything is cut, so a clipped token cannot leave a readable half.
@@ -29,6 +30,7 @@ use lotse_proto::{
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
@@ -63,20 +65,73 @@ pub const EXPORT: Clip = Clip {
     result: 2_000,
 };
 
-/// `raw` as a path the daemon may read: absolute, a regular file, named `*.jsonl`, and inside
-/// `home` once symlinks are resolved (a link in the home folder that points elsewhere, or at a
-/// file that is not `*.jsonl`, is refused). Returns the resolved path.
+/// The folders the agents keep their transcripts in: Claude Code's `projects` (below
+/// `$CLAUDE_CONFIG_DIR` when the daemon has it, and `~/.claude`) and Codex's `sessions` (below
+/// `$CODEX_HOME` and `~/.codex`).
+fn agent_roots(
+    home: &Path,
+    claude_config_dir: Option<&OsStr>,
+    codex_home: Option<&OsStr>,
+) -> Vec<PathBuf> {
+    let mut roots = vec![home.join(".claude/projects"), home.join(".codex/sessions")];
+    // a relative value would mean the daemon's own working folder
+    fn absolute(dir: Option<&OsStr>) -> Option<&Path> {
+        dir.map(Path::new).filter(|d| d.is_absolute())
+    }
+    roots.extend(absolute(claude_config_dir).map(|d| d.join("projects")));
+    roots.extend(absolute(codex_home).map(|d| d.join("sessions")));
+    roots
+}
+
+/// `raw` as a path the daemon may read, see [`validate_in`], with the agents' own folders as roots
+/// ([`agent_roots`]). Returns the resolved path.
 pub fn validate_path(raw: &str, home: &Path) -> Option<PathBuf> {
+    let (claude, codex) = (
+        std::env::var_os("CLAUDE_CONFIG_DIR"),
+        std::env::var_os("CODEX_HOME"),
+    );
+    validate_in(raw, &agent_roots(home, claude.as_deref(), codex.as_deref()))
+}
+
+/// `raw` as a path the daemon may read: absolute, named `*.jsonl`, not itself a symlink, and a
+/// regular file inside one of `roots` once the symlinks of its folders are resolved (a link to a
+/// folder outside the roots, or to a file that is not `*.jsonl`, is refused; Lotse's Codex mirror
+/// links its `sessions` folder to the real one, so a link into a root is fine). Returns the
+/// resolved path.
+fn validate_in(raw: &str, roots: &[PathBuf]) -> Option<PathBuf> {
     let path = Path::new(raw);
     if !path.is_absolute() || !is_jsonl(path) {
         return None;
     }
+    if std::fs::symlink_metadata(path)
+        .ok()?
+        .file_type()
+        .is_symlink()
+    {
+        return None;
+    }
     let real = std::fs::canonicalize(path).ok()?;
-    let home = std::fs::canonicalize(home).ok()?;
-    if !real.starts_with(&home) || real == home || !is_jsonl(&real) {
+    let inside = roots.iter().any(|root| {
+        std::fs::canonicalize(root).is_ok_and(|root| real != root && real.starts_with(&root))
+    });
+    if !inside || !is_jsonl(&real) {
         return None;
     }
     std::fs::metadata(&real).ok()?.is_file().then_some(real)
+}
+
+/// Open `path` (a result of [`validate_path`]) for reading, refusing a symlink anywhere in it:
+/// the file may have been swapped for a link since it was validated.
+pub fn open_nofollow(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(target_os = "macos")]
+    const NOFOLLOW: i32 = nix::libc::O_NOFOLLOW_ANY;
+    #[cfg(not(target_os = "macos"))]
+    const NOFOLLOW: i32 = nix::libc::O_NOFOLLOW;
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(NOFOLLOW)
+        .open(path)
 }
 
 fn is_jsonl(p: &Path) -> bool {
@@ -102,7 +157,7 @@ pub fn parse_file(
 ) -> std::io::Result<Parsed> {
     let denied = || std::io::Error::new(std::io::ErrorKind::PermissionDenied, "transcript path");
     let real = validate_path(&path.to_string_lossy(), home).ok_or_else(denied)?;
-    let mut file = std::fs::File::open(&real)?;
+    let mut file = open_nofollow(&real)?;
     let len = file.metadata()?.len();
     let start = len.saturating_sub(max_bytes);
     file.seek(SeekFrom::Start(start))?;
@@ -683,12 +738,116 @@ mod tests {
             !ok(&disguised, h.path()),
             "link to a file that is not *.jsonl"
         );
+    }
 
-        // a link that stays inside home is fine
-        let real = write(h.path(), "real/s.jsonl", "{}\n");
-        let inside = h.path().join("inside.jsonl");
-        symlink(&real, &inside).unwrap();
-        assert!(ok(&inside, h.path()));
+    #[test]
+    fn a_jsonl_elsewhere_in_home_is_refused() {
+        let h = home();
+        for elsewhere in [
+            "s.jsonl",
+            "Documents/notes/s.jsonl",
+            ".ssh/s.jsonl",
+            ".claude/s.jsonl",
+            ".claude/history/s.jsonl",
+            ".codex/s.jsonl",
+            ".codex/archived/s.jsonl",
+        ] {
+            let p = write(h.path(), elsewhere, "{}\n");
+            assert!(!ok(&p, h.path()), "{elsewhere}");
+        }
+        for own in [
+            ".claude/projects/x/s.jsonl",
+            ".codex/sessions/2026/11/03/rollout-a.jsonl",
+        ] {
+            let p = write(h.path(), own, "{}\n");
+            assert!(ok(&p, h.path()), "{own}");
+        }
+    }
+
+    #[test]
+    fn a_symlinked_transcript_is_refused() {
+        let h = home();
+        let real = write(h.path(), ".claude/projects/x/real.jsonl", "{}\n");
+        assert!(ok(&real, h.path()));
+        // a link to a file that is itself acceptable
+        let link = h.path().join(".claude/projects/x/link.jsonl");
+        symlink(&real, &link).unwrap();
+        assert!(!ok(&link, h.path()), "link to a transcript");
+        // a link that leaves the agent's folder
+        let elsewhere = write(h.path(), "Documents/s.jsonl", "{}\n");
+        let out = h.path().join(".claude/projects/x/out.jsonl");
+        symlink(&elsewhere, &out).unwrap();
+        assert!(!ok(&out, h.path()), "link out of the folder");
+        // a link in a folder of the path that leads outside
+        let dir_link = h.path().join(".claude/projects/docs");
+        symlink(h.path().join("Documents"), &dir_link).unwrap();
+        assert!(!ok(&dir_link.join("s.jsonl"), h.path()), "folder link out");
+    }
+
+    #[test]
+    fn the_agent_folders_follow_the_config_variables() {
+        let h = home();
+        let (cfg, codex) = (home(), home());
+        let roots = agent_roots(
+            h.path(),
+            Some(cfg.path().as_os_str()),
+            Some(codex.path().as_os_str()),
+        );
+        let own = write(cfg.path(), "projects/x/s.jsonl", "{}\n");
+        let rollout = write(codex.path(), "sessions/2026/rollout-a.jsonl", "{}\n");
+        let stray = write(cfg.path(), "s.jsonl", "{}\n");
+        let valid = |p: &Path| validate_in(&p.to_string_lossy(), &roots).is_some();
+        assert!(valid(&own) && valid(&rollout));
+        assert!(
+            !valid(&stray),
+            "the config folder itself is not a transcript folder"
+        );
+        // the defaults stay, a relative or empty value adds nothing
+        assert!(valid(&write(h.path(), ".claude/projects/s.jsonl", "{}\n")));
+        let relative = agent_roots(h.path(), Some(OsStr::new("rel")), Some(OsStr::new("")));
+        assert_eq!(relative.len(), 2);
+    }
+
+    #[test]
+    fn a_swapped_in_link_is_not_opened() {
+        let tmp = home();
+        // resolved, as `validate_path` hands the path over (the temp folder sits behind `/var`)
+        let h = std::fs::canonicalize(tmp.path()).unwrap();
+        let real = write(&h, ".claude/projects/x/s.jsonl", "{}\n");
+        let target = write(&h, "Documents/s.jsonl", "{}\n");
+        assert!(open_nofollow(&real).is_ok());
+        std::fs::remove_file(&real).unwrap();
+        symlink(&target, &real).unwrap();
+        assert!(
+            open_nofollow(&real).is_err(),
+            "validated, then swapped for a link"
+        );
+        // a link further up the path counts too (macOS: O_NOFOLLOW_ANY)
+        let dir_link = h.join("link");
+        symlink(h.join("Documents"), &dir_link).unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(open_nofollow(&dir_link.join("s.jsonl")).is_err());
+    }
+
+    #[test]
+    fn a_folder_link_into_the_agents_folder_is_followed() {
+        // Lotse's Codex mirror links its `sessions` to the real one
+        let (h, mirror) = (home(), home());
+        let real = write(
+            h.path(),
+            ".codex/sessions/2026/11/03/rollout-a.jsonl",
+            "{}\n",
+        );
+        symlink(
+            h.path().join(".codex/sessions"),
+            mirror.path().join("sessions"),
+        )
+        .unwrap();
+        let through = mirror.path().join("sessions/2026/11/03/rollout-a.jsonl");
+        assert_eq!(
+            validate_path(&through.to_string_lossy(), h.path()),
+            Some(std::fs::canonicalize(real).unwrap())
+        );
     }
 
     #[test]
@@ -712,7 +871,7 @@ not json at all
     #[test]
     fn claude_turns_keep_the_conversation_and_drop_the_noise() {
         let h = home();
-        let p = write(h.path(), "s.jsonl", CLAUDE);
+        let p = write(h.path(), ".claude/projects/s.jsonl", CLAUDE);
         let t = read_turns(&p, AgentKind::ClaudeCode, 50, h.path()).unwrap();
         assert!(t.available && !t.truncated);
         let got: Vec<_> = t
@@ -762,7 +921,7 @@ not json at all
             "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":\"{}\"}}}}\n",
             "x".repeat(10_000)
         );
-        let p = write(h.path(), "s.jsonl", &text);
+        let p = write(h.path(), ".claude/projects/s.jsonl", &text);
         let t = read_turns(&p, AgentKind::ClaudeCode, 5, h.path()).unwrap();
         assert_eq!(t.turns.len(), 5);
         assert!(t.truncated);
@@ -788,7 +947,7 @@ not json at all
         );
         let mut text = filler.repeat(3_000); // ~3 MB > TAIL_BYTES
         text += "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":\"the end\"}}\n";
-        let p = write(h.path(), "big.jsonl", &text);
+        let p = write(h.path(), ".claude/projects/big.jsonl", &text);
         let t = read_turns(&p, AgentKind::ClaudeCode, 3, h.path()).unwrap();
         assert!(t.truncated);
         assert_eq!(t.turns.last().unwrap().text, "the end");
@@ -810,7 +969,7 @@ not json at all
 {"timestamp":"2026-11-02T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Added."}]}}
 {"type":"event_msg","payload":{"type":"token_count"}}
 "#;
-        let p = write(h.path(), "rollout.jsonl", rollout);
+        let p = write(h.path(), ".codex/sessions/rollout.jsonl", rollout);
         let t = read_turns(&p, AgentKind::Codex, 50, h.path()).unwrap();
         let got: Vec<_> = t.turns.iter().map(|t| (t.role, t.text.as_str())).collect();
         use TranscriptRole::*;
@@ -824,7 +983,7 @@ not json at all
     #[test]
     fn opencode_and_terminal_have_nothing_to_parse() {
         let h = home();
-        let p = write(h.path(), "s.jsonl", CLAUDE);
+        let p = write(h.path(), ".claude/projects/s.jsonl", CLAUDE);
         for agent in [AgentKind::OpenCode, AgentKind::Terminal] {
             assert!(
                 read_turns(&p, agent, 50, h.path())

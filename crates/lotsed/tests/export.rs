@@ -225,6 +225,54 @@ fn export_redacts_secrets() {
     }
 }
 
+/// A 4096-bit-shaped RSA key at line 30 of a terminal's output (51 body lines, each `KEYBODY<nn>`):
+/// the chunks of the scrollback cut it, the export must still hold none of it.
+#[test]
+fn export_of_a_scrollback_never_holds_a_private_key_cut_by_chunks() {
+    let d = Daemon::start();
+    let mut c = d.client();
+    let project = c.add_project(&d.project_dir("proj"));
+    let mut lines: Vec<String> = (1..30).map(|i| format!("output line {i}")).collect();
+    lines.push("-----BEGIN RSA PRIVATE KEY-----".into());
+    lines.extend((0..51).map(|i| format!("KEYBODY{i:02}{}", "aB3x".repeat(14))));
+    lines.push("-----END RSA PRIVATE KEY-----".into());
+    lines.push("after the key".into());
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("out.txt"), lines.join("\n") + "\n").unwrap();
+    common::script(
+        dir.path(),
+        "pane.sh",
+        &format!(
+            "cat '{}'\nprintf 'all done\\n'\nsleep 5",
+            dir.path().join("out.txt").display()
+        ),
+    );
+    let s = match c.request(Request::CreateSession(NewSession {
+        project_id: project.id,
+        agent: AgentKind::Terminal,
+        command: Some(dir.path().join("pane.sh").to_string_lossy().into_owned()),
+        title: None,
+        worktree: None,
+        first_prompt: None,
+    })) {
+        Response::Session(s) => s,
+        other => panic!("create_session: {other:?}"),
+    };
+    c.attach(&s.id, 80, 24);
+    assert!(c.wait_output(&s.id, "all done"));
+    for format in FORMATS {
+        let e = export(&mut c, &s, format);
+        assert!(!e.content.contains("KEYBODY"), "{format:?}:\n{}", e.content);
+        assert!(
+            !e.content.contains("END RSA PRIVATE KEY"),
+            "{format:?}:\n{}",
+            e.content
+        );
+        assert!(e.content.contains("after the key"), "{format:?}");
+        assert!(e.redactions >= 1, "{format:?}: the key was counted");
+    }
+}
+
 #[test]
 fn export_of_an_unknown_session_is_not_found() {
     let d = Daemon::start();
@@ -354,6 +402,17 @@ fn redaction_table_masks_secrets() {
             "-----BEGIN PGP PRIVATE KEY BLOCK-----\nabc\n-----END PGP PRIVATE KEY BLOCK-----"
                 .into(),
             "[REDACTED]".into(),
+            1,
+        ),
+        // the rest of a key whose BEGIN line is gone (cut by a chunk, the ring buffer or a turn)
+        (
+            "KEYBODY00aB3xaB3xaB3xaB3x\nKEYBODY01aB3xaB3xaB3xaB3x\nZm9vYmFyYmF6\n-----END RSA PRIVATE KEY-----\nafter".into(),
+            "[REDACTED]\nafter".into(),
+            1,
+        ),
+        (
+            "and then:\n-----END OPENSSH PRIVATE KEY-----".into(),
+            "and then:\n[REDACTED]".into(),
             1,
         ),
         // vendor tokens

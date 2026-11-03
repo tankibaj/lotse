@@ -5,7 +5,8 @@
 //! towards masking, but a rule that would eat ordinary prose (`sk-learn`, `Bearer authentication`,
 //! `TOKEN_COUNT=5`, `ssh://git@host`) keeps the match unchanged.
 //!
-//! - private key blocks, whole or cut off before their END line (a clipped turn loses it);
+//! - private key blocks, whole, cut off before their END line (a clipped turn loses it), or cut off
+//!   after their BEGIN line (the base64 lines before an END line are masked with it);
 //! - vendor tokens: `sk-` / `sk-ant-`, `ghp_` `gho_` `ghu_` `ghs_` `ghr_` `github_pat_`, `glpat-`,
 //!   `AKIA` / `ASIA`, `xox?-`, JWTs;
 //! - `Bearer` / `Basic` credentials, URL userinfo (`scheme://user:password@`);
@@ -85,6 +86,13 @@ static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
         rule(
             r"(?s)-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----.*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----|\z)",
             &["-----BEGIN "],
+            whole,
+        ),
+        // what is left of a key whose BEGIN line was cut away (a chunk, the window, a turn of its
+        // own): the base64 lines before an END line go with it
+        rule(
+            r"(?m)(?:^[ \t]*[A-Za-z0-9+/=]{8,}[ \t]*\r?\n)*-----END (?:[A-Z0-9]+ )*PRIVATE KEY(?: BLOCK)?-----",
+            &["-----END "],
             whole,
         ),
         // `scheme://user:password@host`, or a token as the user name
