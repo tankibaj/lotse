@@ -8,8 +8,9 @@ import { StatusGlyph } from './StatusGlyph';
 
 // Session card, spec/research.html#sidebar. Line 1: status, title, unread dot, coarse time (Retry on
 // hover for failed sessions, same row). Line 2 (dim, 11 px): agent · branch icon · branch · ↑ahead · ±dirty.
-// Allow / Always / Deny are always visible on `perm` cards. Hover and focus never add rows. Always reads "Auto"
-// when it would switch the agent to auto mode, and is hidden when the prompt has no such option (`perm.always`).
+// Allow / Always / Deny are always visible on `perm` cards whose prompt the daemon can answer (`perm.always` is set
+// once it read the prompt; otherwise the card says "Answer in the terminal"). Hover and focus never add rows. Always
+// reads "Auto" when it would switch the agent to auto mode, and is hidden when the prompt has no such option.
 
 export interface SessionCardProps {
   session: Session;
@@ -165,7 +166,20 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
         </div>
       )}
 
-      {s.status === 'perm' && (
+      {/* No `perm.always`: the daemon has not read an answerable prompt off the screen (a folder-trust dialog, or the
+          prompt is still being drawn), and an answer would fail with "not waiting at a permission prompt that can be
+          answered". So no buttons: the one place to answer it is the terminal. */}
+      {s.status === 'perm' && s.perm?.always === undefined && (
+        <div
+          className="mt-1.5 flex h-[22px] items-center pl-[22px] text-[11px] italic text-dim"
+          role="group"
+          aria-label={`Permission: ${title}`}
+          title={s.perm ? `${s.perm.tool}: ${s.perm.summary}` : undefined}
+        >
+          Answer in the terminal
+        </div>
+      )}
+      {s.status === 'perm' && s.perm?.always !== undefined && (
         <div
           className="mt-1.5 flex flex-wrap gap-1 pl-[22px]"
           role="group"

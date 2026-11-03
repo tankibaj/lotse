@@ -4,7 +4,7 @@ import type { AppearanceSettings } from '../lib/client/types';
 import { getThemePref, setTheme } from '../theme';
 import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
 import { inTauri } from '../sheets/hostBridge';
-import { closeOverlay, openSettings, useOverlay } from '../sheets/overlay';
+import { closeSettings, openSettings, useOverlay } from '../sheets/overlay';
 import type { SettingsSection } from '../sheets/overlay';
 import { useDialogFocus } from '../sheets/ui';
 import { onMenuSettings } from './appMenu';
@@ -23,7 +23,7 @@ function SettingsView({ initial }: { initial: SettingsSection }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeOverlay();
+      if (e.key === 'Escape') closeSettings();
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
@@ -47,12 +47,20 @@ function SettingsView({ initial }: { initial: SettingsSection }) {
             </>
           )}
         </div>
-        <button type="button" onClick={closeOverlay} className="mx-2 mb-2 rounded-md px-3 py-1.5 text-left text-[13px] text-blue hover:bg-black/5 dark:hover:bg-white/5">
+        <button type="button" onClick={closeSettings} className="mx-2 mb-2 rounded-md px-3 py-1.5 text-left text-[13px] text-blue hover:bg-black/5 dark:hover:bg-white/5">
           ‹ Back to sessions <span className="text-[11px] text-dim">esc</span>
         </button>
         <nav className="space-y-0.5 px-2 text-[13px]" aria-label="Settings sections">
           {SECTIONS.map((s) => (
-            <button key={s} type="button" className="w-full rounded-md px-3 py-1.5 text-left" aria-pressed={s === section} onClick={() => setSection(s)}>
+            // `aria-current`, not `aria-pressed`: a section is where you are, not a toggle. The highlight is a plain class
+            // of the current render (no attribute selector, no transition), so it cannot linger on the section left behind.
+            <button
+              key={s}
+              type="button"
+              className={`w-full rounded-md px-3 py-1.5 text-left !transition-none ${s === section ? 'bg-sel text-blue' : 'hover:bg-black/5 dark:hover:bg-white/5'}`}
+              aria-current={s === section ? 'page' : undefined}
+              onClick={() => setSection(s)}
+            >
               {s}
             </button>
           ))}

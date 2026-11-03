@@ -1,6 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { DaemonClient } from '../lib/client';
 import { emitUiCommand } from '../lib/ui/commands';
 import { mountWp5 } from '../sheets/harness';
 import { FALLBACK_FONTS, loadInstalledFonts, setFontSource } from './fonts';
@@ -54,6 +55,62 @@ describe('font pickers', () => {
     expect((missing as HTMLOptionElement).value).toBe('SF Mono');
     expect(term).toHaveValue('SF Mono');
     expect(optionTexts(term)[0]).toBe('SF Mono (not installed)');
+  });
+
+  describe('"(not installed)" is only said about a list that was really read', () => {
+    const storeTerminalFont = async (client: DaemonClient, font: string) => {
+      const s = await client.getSettings();
+      s.appearance.terminal_font = font;
+      await client.updateSettings(s);
+    };
+
+    it('while the lookup is still running, the stored font is a plain option, then it is judged against the real list', async () => {
+      let answer: (f: InstalledFonts) => void = () => {};
+      setFontSource(() => new Promise<InstalledFonts>((r) => (answer = r)));
+      const { client } = mountWp5();
+      await storeTerminalFont(client, 'Fira Code'); // not in the short fallback list, but installed
+      const { term } = await openAppearance();
+      await waitFor(() => expect(term).toHaveValue('Fira Code'));
+      expect(optionTexts(term).join('|')).not.toContain('not installed');
+      act(() => answer(INSTALLED));
+      await waitFor(() => expect(optionTexts(term)).toContain('Zapfino'));
+      expect(optionTexts(term).join('|')).not.toContain('not installed'); // Fira Code is installed
+      expect(term).toHaveValue('Fira Code');
+    });
+
+    it('the same font flips to "(not installed)" only once the real list has answered and lacks it', async () => {
+      let answer: (f: InstalledFonts) => void = () => {};
+      setFontSource(() => new Promise<InstalledFonts>((r) => (answer = r)));
+      mountWp5();
+      const { term } = await openAppearance();
+      expect(within(term).queryByRole('option', { name: 'SF Mono (not installed)' })).toBeNull();
+      expect(term).toHaveValue('SF Mono');
+      act(() => answer(INSTALLED));
+      await screen.findByRole('option', { name: 'SF Mono (not installed)' });
+    });
+
+    it('a failed lookup says nothing about what is installed', async () => {
+      setFontSource(() => Promise.reject(new Error('no host')));
+      const { client } = mountWp5();
+      await storeTerminalFont(client, 'Fira Code');
+      const { term } = await openAppearance();
+      await waitFor(() => expect(term).toHaveValue('Fira Code'));
+      await new Promise((r) => setTimeout(r, 20)); // let the rejection settle
+      expect(optionTexts(term).join('|')).not.toContain('not installed');
+    });
+
+    it('switching the theme meanwhile changes nothing about the font option', async () => {
+      let answer: (f: InstalledFonts) => void = () => {};
+      setFontSource(() => new Promise<InstalledFonts>((r) => (answer = r)));
+      mountWp5();
+      const { term } = await openAppearance();
+      await userEvent.click(screen.getByRole('button', { name: 'Light' }));
+      expect(optionTexts(term)).not.toContain('SF Mono (not installed)');
+      expect(term).toHaveValue('SF Mono');
+      act(() => answer({ ...INSTALLED, monospace: [...INSTALLED.monospace, 'SF Mono'], families: [...INSTALLED.families, 'SF Mono'] }));
+      await waitFor(() => expect(optionTexts(term)).toContain('Zapfino'));
+      expect(optionTexts(term)).not.toContain('SF Mono (not installed)');
+    });
   });
 
   it('save a chosen installed family, and the preview uses it with SF Mono and Menlo behind it', async () => {

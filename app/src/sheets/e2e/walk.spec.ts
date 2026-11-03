@@ -103,7 +103,7 @@ test('Settings: every section', async ({ page }) => {
   for (const [name, text] of [
     ['Notifications', 'Per-project overrides'],
     ['Appearance', 'preview'],
-    ['Remote', 'Not available in Alpha'],
+    ['Remote', 'Not available yet'],
     ['Privacy', 'Zero telemetry'],
     ['Shortcuts', 'Command palette'],
   ]) {

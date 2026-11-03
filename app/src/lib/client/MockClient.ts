@@ -357,6 +357,7 @@ export class MockClient implements DaemonClient {
     }));
     for (const s of this.sessions) {
       if (s.perm && !s.perm.id) s.perm.id = this.newPromptId();
+      if (s.perm && !('always' in s.perm)) s.perm.always = 'remember'; // the usual prompt, already read
       if (s.agent === 'claude_code') {
         this.tasks.set(s.id, [{ pid: 4711, command: 'npm run dev', started_at: this.now() - 12 * 60_000 }]);
       }
@@ -385,7 +386,9 @@ export class MockClient implements DaemonClient {
     const at = this.now();
     const was = s.status;
     s.status = status;
-    s.perm = status === 'perm' && perm ? { ...perm, id: perm.id ?? this.newPromptId() } : null;
+    // Like the daemon once it read the prompt: `always` is set. A request that names `always` itself (even
+    // `undefined`: a prompt it could not read, e.g. a folder-trust dialog) is kept as given.
+    s.perm = status === 'perm' && perm ? { ...perm, id: perm.id ?? this.newPromptId(), ...('always' in perm ? {} : { always: 'remember' as const }) } : null;
     s.running_since = status === 'run' ? (was === 'run' ? s.running_since : at) : null;
     s.last_activity = at;
     const becameUnread = status === 'done' && !s.unread;
@@ -950,15 +953,20 @@ export class MockClient implements DaemonClient {
     }));
   }
 
-  /** Daemon-side notification decision: settings table, pause toggle, per-project override. */
+  /**
+   * Daemon-side notification decision (`detect_glue::resolve`): settings table, pause toggle, per-project override.
+   * Mute and a custom "off" silence the whole event, sound included; a custom "on" takes the sound from the global row;
+   * banner off with sound on (global mode) is sound only.
+   */
   private notify(s: Session, kind: NotificationKind, body: string | null): void {
     const n = this.settings.notifications;
     if (n.paused) return;
     const project = this.mustProject(s.project_id);
     const mode = project.notifications;
-    // banner off with sound on is sound only
-    const banner = mode.mode === 'custom' ? mode[kind] : n[kind].banner;
-    if (mode.mode === 'mute' || (!banner && !n[kind].sound)) return;
+    if (mode.mode === 'mute') return;
+    const custom = mode.mode === 'custom';
+    const banner = custom ? mode[kind] : n[kind].banner;
+    if ((custom && !banner) || (!banner && !n[kind].sound)) return;
     this.emit({
       event: 'notification',
       data: {
@@ -969,7 +977,7 @@ export class MockClient implements DaemonClient {
         body,
         banner,
         sound: n[kind].sound,
-        ...(n[kind].sound_name ? { sound_name: n[kind].sound_name } : {}),
+        ...(n[kind].sound && n[kind].sound_name ? { sound_name: n[kind].sound_name } : {}),
         ...(kind === 'perm' && s.perm?.id ? { prompt_id: s.perm.id } : {}),
         at: this.now(),
       },

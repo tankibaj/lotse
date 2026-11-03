@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient, useClient } from '../lib/client';
@@ -190,16 +190,29 @@ describe('Shell panels', () => {
     expect(panel()).toHaveAttribute('aria-label', 'Usage & time');
   });
 
-  it('openReview shows the full-window review; Esc closes it', () => {
+  it('openReview shows the full-window review with the session title (not its id); Esc closes it', async () => {
     mount();
     const review = () => document.querySelector('[data-slot="review"] [role="dialog"]');
     expect(review()).toBeNull();
     act(() => void emitUiCommand('openReview', 'a1', 'src/a.ts'));
     expect(review()).toHaveAttribute('aria-label', 'Review');
-    expect(review()).toHaveTextContent('a1');
-    expect(review()).toHaveTextContent('src/a.ts');
+    await waitFor(() => expect(review()).toHaveTextContent('Fix invoice rounding · src/a.ts'));
+    expect(review()).not.toHaveTextContent('a1');
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(review()).toBeNull();
+  });
+
+  it('the review takes focus when it opens and gives it back to the terminal when it closes', async () => {
+    mount();
+    const term = document.createElement('textarea'); // stands in for xterm's input
+    document.body.append(term);
+    term.focus();
+    act(() => void emitUiCommand('openReview', 'a1'));
+    const dialog = document.querySelector('[data-slot="review"] [role="dialog"]') as HTMLElement;
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    fireEvent.keyDown(term, { key: 'Escape' });
+    expect(term).toHaveFocus();
+    term.remove();
   });
 
   it('Back closes the review too', async () => {
@@ -209,13 +222,32 @@ describe('Shell panels', () => {
     expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toBeNull();
   });
 
-  it('⌥⌘D reviews the selected session, and does nothing without one', () => {
+  it('Esc closes the review even when the terminal swallows it (xterm stops the bubble)', () => {
     mount();
-    press('KeyD', { metaKey: true, altKey: true });
+    act(() => void emitUiCommand('openReview', 'a1'));
+    const term = document.createElement('textarea');
+    term.addEventListener('keydown', (e) => e.stopPropagation());
+    document.body.append(term);
+    fireEvent.keyDown(term, { key: 'Escape' });
+    expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toBeNull();
+    term.remove();
+  });
+
+  it('⇧⌘R reviews the selected session, and does nothing without one', async () => {
+    mount();
+    press('KeyR');
     expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toBeNull();
     act(() => selectSession('a2'));
+    press('KeyR');
+    await waitFor(() => expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toHaveTextContent('Flyway migration V42'));
+    act(() => selectSession(null));
+  });
+
+  it('⌥⌘D (macOS Show/Hide Dock) no longer opens the review', () => {
+    mount();
+    act(() => selectSession('a2'));
     press('KeyD', { metaKey: true, altKey: true });
-    expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toHaveTextContent('a2');
+    expect(document.querySelector('[data-slot="review"] [role="dialog"]')).toBeNull();
     act(() => selectSession(null));
   });
 

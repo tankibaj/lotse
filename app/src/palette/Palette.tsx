@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useClient } from '../lib/client';
-import { onUiCommand } from '../lib/ui/commands';
+import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
 import { openInSplit } from '../panes/splitBus';
 import { selectSession, getSelectedSessionId } from '../lib/ui/selection';
 import { openOverlay, openSettings, closeOverlay, toggleOverlay, useOverlay } from '../sheets/overlay';
@@ -28,6 +28,7 @@ function PaletteView() {
     if (!snap) return;
     closeOverlay();
     const a = item.action;
+    const selected = getSelectedSessionId();
     if (a.type === 'session') selectSession(a.sessionId);
     else if (a.type === 'project') {
       const latest = snap.sessions.filter((s) => s.project_id === a.projectId).sort((x, y) => y.last_activity - x.last_activity)[0];
@@ -44,6 +45,16 @@ function PaletteView() {
         case 'new-session': openOverlay({ name: 'newSession' }); break;
         case 'split-right': openInSplit(null, 'right'); break;
         case 'split-down': openInSplit(null, 'down'); break;
+        case 'panel-session': emitUiCommand('togglePanel', 'session'); break;
+        case 'panel-changes': emitUiCommand('togglePanel', 'changes'); break;
+        case 'panel-files': emitUiCommand('togglePanel', 'files'); break;
+        case 'panel-transcript': emitUiCommand('togglePanel', 'transcript'); break;
+        case 'panel-usage': emitUiCommand('togglePanel', 'usage'); break;
+        case 'open-composer': emitUiCommand('openComposer'); break;
+        // these act on the selected session: with none selected they do nothing
+        case 'open-review': if (selected) emitUiCommand('openReview', selected); break;
+        case 'show-transcript': if (selected) emitUiCommand('showTranscript', selected); break;
+        case 'show-changes': if (selected) emitUiCommand('showChanges', selected); break;
         case 'settings': openSettings(); break;
         case 'shortcuts': openOverlay({ name: 'shortcuts' }); break;
         case 'pause': {

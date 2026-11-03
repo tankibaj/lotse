@@ -479,6 +479,36 @@ describe('MockClient Beta data (proto 4, spec/mock.html panels)', () => {
     c.setStatus('a2', 'fail');
     expect(events.find((e) => e.event === 'notification')?.data).toMatchObject({ kind: 'fail', banner: true, sound: true });
   });
+
+  // The daemon's resolve(): a custom "off" silences the whole event, sound included; a custom "on" takes the sound from the global row.
+  it('a custom project mode with the event off notifies nothing, even when the global row has sound on', async () => {
+    const c = make();
+    const events = collect(c);
+    const s = await c.getSettings();
+    expect(s.notifications.perm.sound).toBe(true); // the seed: sound on
+    await c.updateProject('p1', { notifications: { mode: 'custom', perm: false, fail: true, done: true, sub_agent_done: true } });
+    events.length = 0;
+    c.setStatus('a1', 'perm', { tool: 'Bash', summary: 'ls' });
+    expect(events.some((e) => e.event === 'notification')).toBe(false);
+    c.setStatus('a2', 'fail'); // fail is on for this project: it still notifies, sound from the global row
+    expect(events.find((e) => e.event === 'notification')?.data).toMatchObject({ kind: 'fail', banner: true, sound: true });
+  });
+
+  it('a custom "on" plays the global row\'s sound name only while that row has sound on', async () => {
+    const c = make();
+    const events = collect(c);
+    const s = await c.getSettings();
+    await c.updateSettings({
+      ...s,
+      notifications: { ...s.notifications, done: { banner: false, sound: false, allow_deny: false, sound_name: 'Glass' } },
+    });
+    await c.updateProject('p1', { notifications: { mode: 'custom', perm: true, fail: true, done: true, sub_agent_done: true } });
+    events.length = 0;
+    c.setStatus('a1', 'done');
+    const note = events.find((e) => e.event === 'notification')?.data as Record<string, unknown>;
+    expect(note).toMatchObject({ kind: 'done', banner: true, sound: false });
+    expect(note).not.toHaveProperty('sound_name');
+  });
 });
 
 describe('DaemonClient mirrors the proto', () => {
