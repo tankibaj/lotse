@@ -1,7 +1,13 @@
 import type {
   AgentKind,
   AttachInfo,
+  Connector,
   DaemonEvent,
+  DiffBase,
+  Export,
+  ExportFormat,
+  FileContent,
+  FileTree,
   GitDiff,
   GitInfo,
   HelloOk,
@@ -9,14 +15,18 @@ import type {
   NewProject,
   NewSession,
   PermDecision,
+  PermVia,
   Project,
   ProjectId,
   ProjectPatch,
+  Review,
   Session,
   SessionId,
+  SessionInfo,
   Settings,
   Snapshot,
   Transcript,
+  Usage,
   Workspace,
   WorkspaceId,
 } from './types';
@@ -77,8 +87,11 @@ export interface DaemonClient {
   retrySession(sessionId: SessionId): Promise<void>;
   /** `mark_read` */
   markRead(sessionId: SessionId): Promise<void>;
-  /** `resolve_permission` */
-  resolvePermission(sessionId: SessionId, decision: PermDecision): Promise<void>;
+  /**
+   * `resolve_permission`. `promptId` (the `PermRequest.id` the answer is for) makes a stale answer a `conflict`
+   * instead of hitting a newer prompt; `via` is recorded with the decision.
+   */
+  resolvePermission(sessionId: SessionId, decision: PermDecision, opts?: { via?: PermVia; promptId?: string }): Promise<void>;
 
   /** `attach`: replay arrives through `onPtyData` first, then live output. */
   attach(sessionId: SessionId, cols: number, rows: number): Promise<AttachInfo>;
@@ -98,10 +111,30 @@ export interface DaemonClient {
 
   /** `get_git_info` */
   getGitInfo(projectId: ProjectId, sessionId?: SessionId): Promise<GitInfo>;
-  /** `get_diff`: Show Changes. */
-  getDiff(sessionId: SessionId): Promise<GitDiff>;
+  /** `get_diff`: Show Changes. `base` defaults to `head` (uncommitted); `merge_base` is everything the branch adds (review). */
+  getDiff(sessionId: SessionId, base?: DiffBase): Promise<GitDiff>;
   /** `get_transcript`: Show Transcript. Rejects with `unavailable` ("Not available for OpenCode") for agents without one. */
   getTranscript(sessionId: SessionId, limit?: number): Promise<Transcript>;
+  /** `get_review`: ahead, behind and the commits ahead of the base. */
+  getReview(sessionId: SessionId): Promise<Review>;
+  /** `list_files`: the session folder's files; only the changed ones with `changedOnly`. */
+  listFiles(sessionId: SessionId, changedOnly?: boolean): Promise<FileTree>;
+  /** `read_file`: at `rev` (a git revision) or as on disk. Paths are confined to the session folder. */
+  readFile(sessionId: SessionId, path: string, rev?: string): Promise<FileContent>;
+  /** `write_file`: rejects with `conflict` when `expectedSha` is not the file's current sha. */
+  writeFile(sessionId: SessionId, path: string, text: string, expectedSha?: string): Promise<FileContent>;
+  /** `get_usage`: time, tokens and spend of one session. */
+  getUsage(sessionId: SessionId): Promise<Usage>;
+  /** `export_transcript`: the transcript as a document, secrets masked. */
+  exportTranscript(sessionId: SessionId, format: ExportFormat): Promise<Export>;
+  /** `get_session_info`: Session panel data. */
+  getSessionInfo(sessionId: SessionId): Promise<SessionInfo>;
+  /** `stop_task`: SIGTERM to a background task `getSessionInfo` listed. */
+  stopTask(sessionId: SessionId, pid: number): Promise<void>;
+  /** `list_connectors`: MCP servers from the agents' config files (status `configured`). */
+  listConnectors(sessionId: SessionId): Promise<Connector[]>;
+  /** `check_connectors`: like `listConnectors`, with live status where `Settings.external.mcp_live` allows it. */
+  checkConnectors(sessionId: SessionId): Promise<Connector[]>;
   /** `hook_event` (sent by `lotse-hook`; exposed for completeness and tests) */
   hookEvent(agent: AgentKind, sessionId: SessionId | null, payload: unknown): Promise<void>;
   /** `shutdown` */

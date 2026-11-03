@@ -24,7 +24,7 @@
               { "id": "a1-s1", "name": "explore-repo", "status": "done" },
               { "id": "a1-s2", "name": "test-runner", "status": "run" }
             ],
-            "git": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding", "behind": 1, "added": 42, "removed": 7, "pr": { "number": 128, "url": "https://github.com/acme/billing-api/pull/128", "state": "open", "checks": "pass", "provider": "github" } },
+            "git": { "is_git": true, "branch": "lotse/fix-rounding", "ahead": 2, "dirty": 3, "worktree": true, "worktree_path": "/Users/naim/.lotse/worktrees/billing-api/fix-rounding", "behind": 1, "added": 42, "removed": 7, "pr": { "number": 184, "url": "https://github.com/acme/billing-api/pull/184", "state": "draft", "checks": null, "provider": "github" } },
             "created_at": 1793607240000, "last_activity": 1793610720000, "running_since": 1793610679000,
             "unread": false, "perm": null, "source": "hook"
           },
