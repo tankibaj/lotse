@@ -13,14 +13,27 @@
 //! applies what the daemon cannot know: the pause bell as the app last saw it and window focus.
 //! [`resolve`] / [`decide`] cover the full path for callers that start from a raw status change.
 
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lotse_proto::{Event, NotificationKind, NotificationMode, NotificationSettings, SessionId};
+use lotse_proto::{
+    Event, NotificationKind, NotificationMode, NotificationSettings, PermDecision, PermVia,
+    Request, SessionId, Status,
+};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tauri_plugin_notification::NotificationExt;
 
-/// macOS system sound used by the sound-only path (banner off, sound on).
+use crate::un;
+
+/// macOS system sound used by the sound-only path (banner off, sound on) when no name is set.
 const SOUND_FILE: &str = "/System/Library/Sounds/Ping.aiff";
+
+/// Category of a permission banner with buttons, and the ids of its actions (registered in [`un`]).
+pub const PERM_CATEGORY: &str = "perm";
+pub const ALLOW_ACTION: &str = "allow";
+pub const DENY_ACTION: &str = "deny";
+pub const ALWAYS_ACTION: &str = "always";
 
 // --- decision logic -------------------------------------------------------------------------
 
@@ -158,6 +171,51 @@ pub fn banner_body(subtitle: &str, body: Option<&str>) -> String {
     }
 }
 
+/// What a tapped banner button asks of the daemon. `None` for a body click, a dismissal, and a
+/// banner without the prompt id: the answer could hit a newer prompt, so it is never sent.
+pub fn action_request(
+    session: &SessionId,
+    prompt_id: Option<&str>,
+    action: &str,
+) -> Option<Request> {
+    let decision = match action {
+        ALLOW_ACTION => PermDecision::Allow,
+        DENY_ACTION => PermDecision::Deny,
+        ALWAYS_ACTION => PermDecision::Always,
+        _ => return None,
+    };
+    Some(Request::ResolvePermission {
+        session_id: session.clone(),
+        decision,
+        via: Some(PermVia::Notification),
+        prompt_id: Some(prompt_id?.to_owned()),
+    })
+}
+
+/// The banner's category: buttons only on a permission request that has a prompt id and whose
+/// "Allow/Deny in banner" is on.
+pub fn category_for(
+    kind: NotificationKind,
+    allow_deny: bool,
+    prompt_id: Option<&str>,
+) -> Option<&'static str> {
+    (kind == NotificationKind::Perm && allow_deny && prompt_id.is_some()).then_some(PERM_CATEGORY)
+}
+
+/// One banner per session: a newer notification for it replaces the older one.
+pub fn banner_id(session: &SessionId) -> String {
+    session.to_string()
+}
+
+/// The file of a macOS system sound; `None` for a name that is not a plain sound name.
+pub fn system_sound_path(name: &str) -> Option<PathBuf> {
+    let plain = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_'));
+    plain.then(|| PathBuf::from(format!("/System/Library/Sounds/{name}.aiff")))
+}
+
 // --- Tauri adapter ----------------------------------------------------------------------------
 
 /// What the app last learned from the daemon and the webview. Managed Tauri state.
@@ -170,11 +228,22 @@ pub struct NotifyState {
 struct Inner {
     settings: NotificationSettings,
     focused_session: Option<SessionId>,
+    /// Sessions with a permission banner on screen (native notifications only).
+    perm_banners: HashSet<SessionId>,
 }
 
 impl NotifyState {
     fn lock(&self) -> MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn mark_perm_banner(&self, session: SessionId) {
+        self.lock().perm_banners.insert(session);
+    }
+
+    /// Whether the session had a permission banner (and forget it).
+    fn take_perm_banner(&self, session: &SessionId) -> bool {
+        self.lock().perm_banners.remove(session)
     }
 
     /// Call with `Snapshot.settings.notifications` on connect and on every `SettingsChanged`.
@@ -207,12 +276,25 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: &Event) {
     };
     match event {
         Event::SettingsChanged(s) => state.set_settings(s.notifications.clone()),
+        // the banner of a permission request goes away when the session carries on
+        Event::StatusChanged {
+            session_id, status, ..
+        } if *status != Status::Perm => {
+            let had_banner = state.take_perm_banner(session_id);
+            if had_banner {
+                un::remove(&banner_id(session_id));
+            }
+        }
         Event::Notification {
             session_id,
+            kind,
             title,
             subtitle,
             body,
+            banner,
             sound,
+            sound_name,
+            prompt_id,
             ..
         } => {
             let (settings, focused_session) = state.snapshot();
@@ -222,9 +304,29 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: &Event) {
             };
             match decide_event(&settings, session_id, *sound, &focus) {
                 Decision::Deliver(d) => {
-                    if let Err(e) = deliver(app, d, title, &banner_body(subtitle, body.as_deref()))
-                    {
-                        tracing::warn!("notify: delivery failed: {e}");
+                    let d = Delivery {
+                        banner: *banner,
+                        ..d
+                    };
+                    let note = Note {
+                        session: session_id,
+                        title,
+                        subtitle,
+                        body: body.as_deref(),
+                        sound_name: sound_name.as_deref(),
+                        category: category_for(
+                            *kind,
+                            settings.perm.allow_deny,
+                            prompt_id.as_deref(),
+                        ),
+                        prompt_id: prompt_id.as_deref(),
+                    };
+                    match deliver(app, d, &note) {
+                        Ok(natively) if natively && *kind == NotificationKind::Perm => {
+                            state.mark_perm_banner(session_id.clone());
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("notify: delivery failed: {e}"),
                     }
                 }
                 Decision::Skip(why) => tracing::debug!("notify: skipped for {session_id}: {why:?}"),
@@ -234,32 +336,64 @@ pub fn on_event<R: Runtime>(app: &AppHandle<R>, event: &Event) {
     }
 }
 
-fn deliver<R: Runtime>(
-    app: &AppHandle<R>,
-    d: Delivery,
-    title: &str,
-    body: &str,
-) -> Result<(), String> {
-    if d.banner {
-        let mut n = app.notification().builder().title(title).body(body);
+/// One notification to show: the daemon event with the app's decisions applied.
+struct Note<'a> {
+    session: &'a SessionId,
+    title: &'a str,
+    subtitle: &'a str,
+    body: Option<&'a str>,
+    sound_name: Option<&'a str>,
+    category: Option<&'static str>,
+    prompt_id: Option<&'a str>,
+}
+
+/// Show and play what `d` says. `Ok(true)`: a native banner is up (it can be removed again).
+fn deliver<R: Runtime>(app: &AppHandle<R>, d: Delivery, note: &Note) -> Result<bool, String> {
+    if d.banner && un::is_active() {
+        let sound = match (d.sound, note.sound_name) {
+            (false, _) => un::Sound::Off,
+            (true, Some(name)) => un::Sound::Named(name.to_owned()),
+            (true, None) => un::Sound::Default,
+        };
+        un::show(&un::Banner {
+            id: banner_id(note.session),
+            title: note.title.to_owned(),
+            subtitle: note.subtitle.to_owned(),
+            body: note.body.unwrap_or_default().to_owned(),
+            sound,
+            category: note.category,
+            prompt_id: note.prompt_id.map(str::to_owned),
+        })?;
+        Ok(true)
+    } else if d.banner {
+        // `tauri dev` and tests run unbundled: no UNUserNotificationCenter, so no buttons either
+        let body = banner_body(note.subtitle, note.body);
+        let mut n = app.notification().builder().title(note.title).body(body);
         if d.sound {
-            // Unverified: "Default" is passed through to mac-notification-sys as the system default sound.
-            n = n.sound("Default");
+            n = n.sound(
+                note.sound_name
+                    .filter(|n| system_sound_path(n).is_some())
+                    .unwrap_or("Default"),
+            );
         }
-        n.show().map_err(|e| e.to_string())
+        n.show().map_err(|e| e.to_string())?;
+        Ok(false)
     } else if d.sound {
-        // Sound without banner: no plugin API for it. A missing file is harmless. Not reachable from
-        // `on_event` today (the daemon event always means a banner); kept for `decide` callers.
+        // Sound without banner: no notification API for it, so play the file. A missing file is harmless.
+        let file = note
+            .sound_name
+            .and_then(system_sound_path)
+            .unwrap_or_else(|| PathBuf::from(SOUND_FILE));
         let mut child = std::process::Command::new("afplay")
-            .arg(SOUND_FILE)
+            .arg(file)
             .spawn()
             .map_err(|e| e.to_string())?;
         std::thread::spawn(move || {
             let _ = child.wait(); // reap, no zombie
         });
-        Ok(())
+        Ok(false)
     } else {
-        Ok(())
+        Ok(false)
     }
 }
 
@@ -573,6 +707,95 @@ mod tests {
         );
         assert_eq!(banner_body("Done", None), "Done");
         assert_eq!(banner_body("Done", Some("")), "Done");
+    }
+
+    #[test]
+    fn action_maps_to_resolve_request() {
+        let s = sid("s-1");
+        let want = |decision| {
+            Some(Request::ResolvePermission {
+                session_id: s.clone(),
+                decision,
+                via: Some(PermVia::Notification),
+                prompt_id: Some("p-1".into()),
+            })
+        };
+        assert_eq!(
+            action_request(&s, Some("p-1"), ALLOW_ACTION),
+            want(PermDecision::Allow)
+        );
+        assert_eq!(
+            action_request(&s, Some("p-1"), DENY_ACTION),
+            want(PermDecision::Deny)
+        );
+        assert_eq!(
+            action_request(&s, Some("p-1"), ALWAYS_ACTION),
+            want(PermDecision::Always)
+        );
+        // a body click or a dismissal answers nothing
+        assert_eq!(
+            action_request(
+                &s,
+                Some("p-1"),
+                "com.apple.UNNotificationDefaultActionIdentifier"
+            ),
+            None
+        );
+        assert_eq!(
+            action_request(
+                &s,
+                Some("p-1"),
+                "com.apple.UNNotificationDismissActionIdentifier"
+            ),
+            None
+        );
+        // without the prompt id the answer could hit a newer prompt: never sent
+        assert_eq!(action_request(&s, None, ALLOW_ACTION), None);
+    }
+
+    #[test]
+    fn perm_category_only_when_allow_deny() {
+        let p = Some("p-1");
+        assert_eq!(
+            category_for(NotificationKind::Perm, true, p),
+            Some(PERM_CATEGORY)
+        );
+        assert_eq!(category_for(NotificationKind::Perm, false, p), None);
+        for k in [
+            NotificationKind::Fail,
+            NotificationKind::Done,
+            NotificationKind::SubAgentDone,
+        ] {
+            assert_eq!(category_for(k, true, p), None);
+        }
+        // no prompt id, no buttons: they could not say which prompt they answer
+        assert_eq!(category_for(NotificationKind::Perm, true, None), None);
+    }
+
+    #[test]
+    fn banner_id_is_session_id() {
+        assert_eq!(banner_id(&sid("s-7")), "s-7");
+    }
+
+    #[test]
+    fn a_perm_banner_is_remembered_until_the_session_leaves_perm() {
+        let st = NotifyState::default();
+        assert!(!st.take_perm_banner(&sid("a")));
+        st.mark_perm_banner(sid("a"));
+        assert!(!st.take_perm_banner(&sid("b")));
+        assert!(st.take_perm_banner(&sid("a")));
+        assert!(!st.take_perm_banner(&sid("a")), "removed once");
+    }
+
+    #[test]
+    fn sound_names_cannot_escape_the_sounds_folder() {
+        assert_eq!(
+            system_sound_path("Glass"),
+            Some("/System/Library/Sounds/Glass.aiff".into())
+        );
+        for bad in ["", "../Glass", "a/b", "Glass.aiff", "\u{0}", "G\"lass"] {
+            assert_eq!(system_sound_path(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

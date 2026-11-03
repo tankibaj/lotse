@@ -113,6 +113,29 @@ describe('Settings page', () => {
       expect(n.only_when_unfocused).toBe(false);
     });
 
+    it('a sound pick saves sound_name; Default clears it; None turns the sound off', async () => {
+      const { client } = mountWp5();
+      await open();
+      await nav('Notifications');
+      const pick = await screen.findByRole('combobox', { name: 'Done sound name' });
+      expect(pick).toHaveValue('none'); // done is silent by default
+      expect(screen.getByRole('combobox', { name: 'Needs permission sound name' })).toHaveValue('default');
+      const names = within(pick).getAllByRole('option').map((o) => o.textContent);
+      expect(names.slice(0, 2)).toEqual(['None', 'Default']);
+      expect(names).toContain('Glass');
+      await userEvent.selectOptions(pick, 'Glass');
+      expect((await client.getSettings()).notifications.done).toMatchObject({ sound: true, sound_name: 'Glass' });
+      expect(screen.getByRole('checkbox', { name: 'Done sound' })).toBeChecked();
+      await userEvent.selectOptions(pick, 'default');
+      const done = (await client.getSettings()).notifications.done as unknown as Record<string, unknown>;
+      expect(done.sound).toBe(true);
+      expect(done.sound_name ?? null).toBeNull();
+      await userEvent.selectOptions(pick, 'Glass');
+      await userEvent.selectOptions(pick, 'none');
+      expect((await client.getSettings()).notifications.done).toMatchObject({ sound: false });
+      expect(screen.getByRole('checkbox', { name: 'Done sound' })).not.toBeChecked();
+    });
+
     it('Allow/Deny exists for permission requests only', async () => {
       mountWp5();
       await open();
