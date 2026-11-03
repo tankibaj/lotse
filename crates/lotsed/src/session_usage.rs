@@ -7,30 +7,109 @@
 //! - **Tokens** are summed over the whole Claude Code transcript the session's hooks announced
 //!   (same rules as [`crate::usage`]: a message counts once, the latest line of it wins). Other
 //!   agents have no parseable transcript: tokens 0, `priced: false`, time still filled.
-//! - **Spend** is today's (local day) cost: this session, its project's live sessions, and every
-//!   transcript the daemon remembers. The lead lane's `cost_micros` is the session's whole cost;
-//!   sub-agent lanes carry 0 (the transcript does not say which sub-agent spent what).
+//! - **Spend** is today's (local day) cost: this session, its project's live sessions, and
+//!   everything (the status bar's total, from the incremental [`crate::usage::UsageTracker`]: the
+//!   panel and the bar agree, and no transcript is parsed twice). The lead lane's `cost_micros` is
+//!   the session's whole cost; sub-agent lanes carry 0 (the transcript does not say which
+//!   sub-agent spent what).
 //! - **Prices** come from [`crate::usage::price_for`]. A message of a model without a price makes
 //!   `priced` false; the spend then covers the priced messages only.
+//! - **Cost of a call:** the session's and its project siblings' transcripts are parsed whole, once
+//!   per change: [`ScanCache`] keeps each scan by (path, modification time, length, day).
 //!
-//! **Unverified:** each call reads the session's transcript from the start (and today's other
-//! transcripts), so a very large file costs a read per call; there is no cache yet.
+//! **Unverified:** a transcript that grows during a long session is re-parsed from the start on
+//! each change (the status bar's tracker reads only appended bytes); with a very large file that is
+//! one full read per change.
 
 use crate::db::SpanRow;
 use crate::session::now_ms;
 use crate::state::{State, unavailable};
-use crate::transcript::{parse_iso_utc_ms, validate_path};
+use crate::transcript::parse_iso_utc_ms;
 use crate::usage::{DayBounds, price_for};
 use lotse_proto::{
-    AgentKind, ErrorCode, LaneKind, ProtoError, Request, Response, Session, Status, Usage,
+    AgentKind, ErrorCode, LaneKind, ProtoError, Request, Response, Session, Status, UnixMs, Usage,
     UsageLane, UsageSpan, UsageSpend, UsageTokens,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Scans kept at most (a few transcripts per project; cleared when exceeded).
+const MAX_CACHED_SCANS: usize = 64;
+
+struct Cached {
+    mtime: SystemTime,
+    len: u64,
+    day: DayBounds,
+    scan: Arc<Scan>,
+}
+
+/// The whole-transcript scans, by file state: a file that did not change is not parsed again.
+#[derive(Default)]
+pub struct ScanCache {
+    entries: Mutex<HashMap<PathBuf, Cached>>,
+    reads: AtomicU64,
+}
+
+impl ScanCache {
+    /// How many files were actually parsed (not served from the cache) so far.
+    pub fn reads(&self) -> u64 {
+        self.reads.load(Ordering::Relaxed)
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Cached>> {
+        self.entries.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn get(&self, path: &Path, day: DayBounds) -> std::io::Result<Arc<Scan>> {
+        let meta = std::fs::metadata(path)?;
+        let (len, mtime) = (meta.len(), meta.modified().ok());
+        if let Some(mtime) = mtime
+            && let Some(c) = self.entries().get(path)
+            && c.mtime == mtime
+            && c.len == len
+            && c.day == day
+        {
+            return Ok(c.scan.clone());
+        }
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        let scan = Arc::new(scan(path, day)?);
+        // a file changed while it was read is cached under its older state: the next call sees the
+        // newer one and reads again
+        if let Some(mtime) = mtime {
+            let mut entries = self.entries();
+            if entries.len() >= MAX_CACHED_SCANS && !entries.contains_key(path) {
+                entries.clear();
+            }
+            entries.insert(
+                path.to_path_buf(),
+                Cached {
+                    mtime,
+                    len,
+                    day,
+                    scan: scan.clone(),
+                },
+            );
+        }
+        Ok(scan)
+    }
+
+    /// Today's priced cost of a transcript; a file last written before today (or unreadable) is 0.
+    fn today_of(&self, path: &Path, day: DayBounds) -> u64 {
+        let day_start = UNIX_EPOCH + Duration::from_millis(day.start_ms);
+        let written_today = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .is_ok_and(|m| m >= day_start);
+        if !written_today {
+            return 0;
+        }
+        self.get(path, day).map_or(0, |s| s.today.micros_priced())
+    }
+}
 
 fn error(code: ErrorCode, message: &str) -> Response {
     Response::Error(ProtoError {
@@ -52,8 +131,10 @@ pub async fn handle(state: &Arc<State>, req: Request) -> Response {
         .filter(|(agent, _)| *agent == AgentKind::ClaudeCode)
         .map(|(_, path)| path);
     let state = state.clone();
-    match tokio::task::spawn_blocking(move || compute(&state, &session, transcript.as_deref()))
-        .await
+    match tokio::task::spawn_blocking(move || {
+        usage_at(&state, &session, transcript.as_deref(), now_ms())
+    })
+    .await
     {
         Ok(usage) => Response::Usage(usage),
         Err(e) => {
@@ -63,9 +144,11 @@ pub async fn handle(state: &Arc<State>, req: Request) -> Response {
     }
 }
 
-fn compute(state: &State, session: &Session, transcript: Option<&Path>) -> Usage {
-    let now = now_ms();
+/// The usage of `session` as of `now` (what `get_usage` answers with the clock; a pinned `now` makes
+/// the local-day figures testable). `transcript` is the Claude Code file its hooks announced.
+pub fn usage_at(state: &State, session: &Session, transcript: Option<&Path>, now: UnixMs) -> Usage {
     let day = DayBounds::local(now);
+    let scans = state.usage_scans();
     let db = state.db();
 
     let rows = db.list_spans(&session.id).unwrap_or_else(|e| {
@@ -80,7 +163,7 @@ fn compute(state: &State, session: &Session, transcript: Option<&Path>) -> Usage
     let mut lanes = lanes(&rows, session.agent.label(), &names, now);
     let (working_ms, waiting_ms) = lanes.first().map_or((0, 0), |l| time_split(&l.spans));
 
-    let own = transcript.and_then(|p| match scan(p, day) {
+    let own = transcript.and_then(|p| match scans.get(p, day) {
         Ok(s) => Some(s),
         Err(e) => {
             tracing::debug!("get_usage: transcript of {}: {e}", session.id);
@@ -93,7 +176,7 @@ fn compute(state: &State, session: &Session, transcript: Option<&Path>) -> Usage
         tracing::warn!("get_usage: tagging a transcript: {e}");
     }
 
-    // today's spend: the session, its project (live sessions), everything the daemon remembers
+    // today's spend: the session, its project (live sessions), everything (the status bar's total)
     let mut seen: HashSet<PathBuf> = transcript.map(Path::to_path_buf).into_iter().collect();
     let session_today = own.as_ref().map_or(0, |s| s.today.micros_priced());
     let mut project_today = session_today;
@@ -109,19 +192,11 @@ fn compute(state: &State, session: &Session, transcript: Option<&Path>) -> Usage
             continue;
         };
         if seen.insert(path.clone()) {
-            project_today += today_of(&path, day);
+            project_today += scans.today_of(&path, day);
         }
     }
-    let mut all_today = project_today;
-    if let Some(home) = state.config().home.as_deref() {
-        for raw in db.all_transcripts().unwrap_or_default() {
-            if let Some(path) = validate_path(&raw, home)
-                && seen.insert(path.clone())
-            {
-                all_today += today_of(&path, day);
-            }
-        }
-    }
+    // The tracker lags the files by up to one refresh (5 s): never show less than the project.
+    let all_today = state.usage_tracker().priced_micros().max(project_today);
 
     if let Some(lead) = lanes.first_mut() {
         lead.cost_micros = own.as_ref().map_or(0, |s| s.all.micros_priced());
@@ -253,18 +328,6 @@ impl Message {
             },
         }
     }
-}
-
-/// Today's priced cost of a transcript; a file last written before today (or unreadable) is 0.
-fn today_of(path: &Path, day: DayBounds) -> u64 {
-    let day_start = UNIX_EPOCH + Duration::from_millis(day.start_ms);
-    let written_today = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .is_ok_and(|m| m >= day_start);
-    if !written_today {
-        return 0;
-    }
-    scan(path, day).map_or(0, |s| s.today.micros_priced())
 }
 
 /// Sum a whole transcript; `today` counts the messages of `day` only.

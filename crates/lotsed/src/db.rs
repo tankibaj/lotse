@@ -11,6 +11,7 @@ use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
 pub const DEFAULT_WORKSPACE: &str = "w1";
@@ -137,6 +138,10 @@ pub struct PermEventRow {
 
 pub struct Db {
     conn: Mutex<Connection>,
+    /// Set by the first [`Db::claim_history_recorder`].
+    recorder_claimed: AtomicBool,
+    /// Set by [`Db::close_all_open`] when the daemon stops.
+    history_stopped: AtomicBool,
 }
 
 impl Db {
@@ -162,6 +167,8 @@ impl Db {
         migrate(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            recorder_claimed: AtomicBool::new(false),
+            history_stopped: AtomicBool::new(false),
         })
     }
 
@@ -371,19 +378,63 @@ impl Db {
         Ok(closed)
     }
 
-    /// The daemon (re)started: whatever was open stays open no longer. Open permission questions
-    /// end undecided at the same time. `(spans, questions)` closed.
-    pub fn close_all_open(&self, at: UnixMs) -> DbResult<(usize, usize)> {
-        let conn = self.conn();
-        let spans = conn.execute(
+    /// The daemon is stopping: every open span ends at `at`, and the recorder writes nothing more
+    /// (the sessions' exit events must not open spans again or "answer" a prompt). Open permission
+    /// questions stay as they are: undecided, `decided_at` `None`.
+    pub fn close_all_open(&self, at: UnixMs) -> DbResult<usize> {
+        self.history_stopped.store(true, Ordering::Release);
+        Ok(self.conn().execute(
             "UPDATE status_spans SET to_ms = max(?1, from_ms) WHERE to_ms IS NULL",
             [at as i64],
-        )?;
-        let asked = conn.execute(
-            "UPDATE perm_events SET decided_at = max(?1, asked_at) WHERE decided_at IS NULL",
-            [at as i64],
-        )?;
-        Ok((spans, asked))
+        )?)
+    }
+
+    /// The daemon starts and finds spans the previous run never closed (it crashed, or the machine
+    /// went down): each ends at the last time its session recorded anything (a span or a question
+    /// begun or ended), not at this start, so the dead time is not counted. Open questions stay
+    /// undecided. Returns the spans closed.
+    pub fn close_leftover_spans(&self) -> DbResult<usize> {
+        let conn = self.conn();
+        let tx = conn.unchecked_transaction()?;
+        let sessions: Vec<String> = {
+            let mut stmt =
+                tx.prepare("SELECT DISTINCT session_id FROM status_spans WHERE to_ms IS NULL")?;
+            stmt.query_map([], |r| r.get(0))?
+                .collect::<Result<_, _>>()?
+        };
+        let mut closed = 0;
+        for session in sessions {
+            let latest = |sql: &str| -> rusqlite::Result<i64> {
+                tx.query_row(sql, [&session], |r| r.get::<_, Option<i64>>(0))
+                    .map(|v| v.unwrap_or(0))
+            };
+            let last = [
+                latest("SELECT max(from_ms) FROM status_spans WHERE session_id = ?1")?,
+                latest("SELECT max(to_ms) FROM status_spans WHERE session_id = ?1")?,
+                latest("SELECT max(asked_at) FROM perm_events WHERE session_id = ?1")?,
+                latest("SELECT max(decided_at) FROM perm_events WHERE session_id = ?1")?,
+            ]
+            .into_iter()
+            .max()
+            .unwrap_or(0);
+            closed += tx.execute(
+                "UPDATE status_spans SET to_ms = max(?2, from_ms)
+                 WHERE session_id = ?1 AND to_ms IS NULL",
+                params![session, last],
+            )?;
+        }
+        tx.commit()?;
+        Ok(closed)
+    }
+
+    /// After [`Self::close_all_open`]: the history is final for this run.
+    pub fn history_stopped(&self) -> bool {
+        self.history_stopped.load(Ordering::Acquire)
+    }
+
+    /// `true` once per database object: the caller is the one that installs the history recorder.
+    pub fn claim_history_recorder(&self) -> bool {
+        !self.recorder_claimed.swap(true, Ordering::AcqRel)
     }
 
     /// The session's spans in time order, every lane.

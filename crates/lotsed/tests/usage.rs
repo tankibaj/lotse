@@ -1,5 +1,8 @@
 //! Beta wp06: `get_usage` (time, tokens, spend of one session) on an in-process `State` with the
-//! recorder installed. Transcript fixtures live in a temp HOME: never the real `~/.claude`.
+//! recorder. Transcript fixtures live in a temp HOME: never the real `~/.claude`.
+//!
+//! What depends on the day (today's spend) runs through `usage_at` with a pinned clock: noon of the
+//! local day, never near a midnight whatever the time zone or the time the suite runs.
 
 use lotse_proto::{
     AgentKind, ErrorCode, LaneKind, NewProject, NewSession, Project, Request, Response, Session,
@@ -7,8 +10,9 @@ use lotse_proto::{
 };
 use lotsed::config::Config;
 use lotsed::db::Db;
-use lotsed::history;
+use lotsed::session_usage::usage_at;
 use lotsed::state::State;
+use lotsed::usage::DayBounds;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,6 +61,19 @@ fn line(id: &str, model: &str, at: u64, usage: (u64, u64, u64, u64)) -> String {
     )
 }
 
+/// Noon of the local day the suite runs on: the pinned "now". Fixtures hang off it, so nothing
+/// crosses the day boundary when the suite runs just after midnight.
+fn noon() -> u64 {
+    DayBounds::local(now_ms()).start_ms + 12 * 3_600_000
+}
+
+/// Set the file's modification time (a transcript last written before today is not read).
+fn stamp(path: &Path, at: u64) {
+    let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+    f.set_modified(UNIX_EPOCH + Duration::from_millis(at))
+        .unwrap();
+}
+
 struct Local {
     state: Arc<State>,
     client: Arc<lotsed::hub::ClientTx>,
@@ -74,7 +91,6 @@ impl Local {
         let mut cfg = Config::new(tmp.path().join("data"), false);
         cfg.home = Some(home.clone());
         let state = State::new(cfg, Db::open_in_memory().unwrap()).unwrap();
-        history::install(&state.hub, state.db().clone());
         let (client, _rx) = state.hub.register("test".into());
         Self {
             state,
@@ -122,13 +138,15 @@ impl Local {
         }
     }
 
-    /// A transcript file under the temp HOME.
-    fn transcript(&self, name: &str, text: &str) -> PathBuf {
+    /// A transcript file under the temp HOME, last written at `written` (the pinned clock).
+    fn transcript(&self, name: &str, text: &str, written: u64) -> PathBuf {
         let dir = self.home.join(".claude/projects/p");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(name);
         std::fs::write(&path, text).unwrap();
-        path
+        stamp(&path, written);
+        // the daemon keeps the resolved path (/var is /private/var on macOS)
+        std::fs::canonicalize(path).unwrap()
     }
 
     fn hook(&mut self, s: &Session, payload: serde_json::Value) {
@@ -182,7 +200,7 @@ impl Drop for Local {
 #[test]
 fn usage_splits_tokens_and_time() {
     let mut l = Local::new();
-    let now = now_ms();
+    let now = noon();
     let (a, b) = (l.project("praxis-web"), l.project("other"));
 
     // Opus 4.5: $5 in, $25 out, cache read $0.50, cache write $6.25 per million = $11.00; Sonnet 4.5
@@ -207,8 +225,8 @@ fn usage_splits_tokens_and_time() {
         now - 30 * SECOND,
         (1000, 500, 0, 0),
     );
-    let mine = l.transcript("mine.jsonl", &text);
-    let s = l.claude_with(&a, &mine);
+    let mine = l.transcript("mine.jsonl", &text, now);
+    l.claude_with(&a, &mine);
 
     // a second session of the same project, one of another project
     let sibling = l.transcript(
@@ -219,16 +237,47 @@ fn usage_splits_tokens_and_time() {
             now - 10 * SECOND,
             (1000, 0, 0, 0),
         ),
+        now,
     );
     l.claude_with(&a, &sibling);
     let stranger = l.transcript(
         "stranger.jsonl",
         &line("t1", "claude-haiku-4-5", now - 10 * SECOND, (0, 1000, 0, 0)),
+        now,
     );
     l.claude_with(&b, &stranger);
+    l.state.refresh_usage_at(now); // the status bar's total, as the 5 s tick makes it
 
-    l.hook(&s, json!({"hook_event_name": "UserPromptSubmit"}));
-    let u = l.usage_until(&s.id, |u| u.working_ms >= 30);
+    // The session asked about: ten minutes old, 3 min running, 3 min waiting for a permission, then
+    // running again until `now`. Its history is recorded from events at pinned times.
+    let mut s = l.session(&a, AgentKind::ClaudeCode);
+    s.id = SessionId::new("pinned");
+    s.created_at = now - 600 * SECOND;
+    let ev = |status, at, perm| lotse_proto::Event::StatusChanged {
+        session_id: s.id.clone(),
+        status,
+        source: lotse_proto::DetectSource::Hook,
+        perm,
+        running_since: None,
+        at,
+    };
+    let ask = lotse_proto::PermRequest {
+        tool: "Bash".into(),
+        summary: "ls".into(),
+        always: None,
+        id: Some("pr1".into()),
+    };
+    l.state
+        .hub
+        .broadcast(ev(Status::Run, now - 540 * SECOND, None));
+    l.state
+        .hub
+        .broadcast(ev(Status::Perm, now - 360 * SECOND, Some(ask)));
+    l.state
+        .hub
+        .broadcast(ev(Status::Run, now - 180 * SECOND, None));
+
+    let u = usage_at(&l.state, &s, Some(&mine), now);
     assert_eq!(
         (
             u.tokens.input,
@@ -251,7 +300,44 @@ fn usage_splits_tokens_and_time() {
     assert_eq!(u.spend.all, 11_010_500 + 3_000 + 5_000);
     assert_eq!(u.lanes[0].cost_micros, 11_010_800);
 
-    // time: `run` is working, `perm` is waiting; the split never exceeds the lifetime
+    // the panel's all-projects spend is the status bar's total, not a second count
+    let Response::Snapshot(snapshot) = l.request(Request::GetSnapshot) else {
+        panic!("get_snapshot")
+    };
+    assert_eq!(snapshot.usage.cost_micros, Some(u.spend.all));
+
+    // time: `run` is working, `perm` is waiting; the open span runs to now
+    assert_eq!(u.started_at, s.created_at);
+    assert_eq!(u.total_ms, 600 * SECOND);
+    assert_eq!(u.working_ms, (180 + 180) * SECOND);
+    assert_eq!(u.waiting_ms, 180 * SECOND);
+    let lane = &u.lanes[0];
+    assert_eq!(
+        (lane.name.as_str(), lane.kind),
+        ("Claude Code", LaneKind::Lead)
+    );
+    let shape: Vec<_> = lane
+        .spans
+        .iter()
+        .map(|x| (x.status, x.from, x.to))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (Status::Run, now - 540 * SECOND, now - 360 * SECOND),
+            (Status::Perm, now - 360 * SECOND, now - 180 * SECOND),
+            (Status::Run, now - 180 * SECOND, now),
+        ]
+    );
+}
+
+#[test]
+fn time_follows_the_hooks_of_a_live_session() {
+    let mut l = Local::new();
+    let p = l.project("praxis-web");
+    let s = l.session(&p, AgentKind::ClaudeCode);
+    l.hook(&s, json!({"hook_event_name": "UserPromptSubmit"}));
+    let u = l.usage_until(&s.id, |u| u.working_ms >= 30);
     assert_eq!(u.started_at, s.created_at);
     assert_eq!(u.waiting_ms, 0);
     l.hook(
@@ -260,37 +346,78 @@ fn usage_splits_tokens_and_time() {
             "tool_input": {"command": "ls"}}),
     );
     let u = l.usage_until(&s.id, |u| u.waiting_ms >= 30);
-    assert!(u.working_ms >= 30);
     assert!(u.working_ms + u.waiting_ms <= u.total_ms, "{u:?}");
     let working = u.working_ms;
     assert_eq!(l.usage(&s.id).working_ms, working, "the run span is closed");
-
-    let lane = &u.lanes[0];
-    assert_eq!(
-        (lane.name.as_str(), lane.kind),
-        ("Claude Code", LaneKind::Lead)
-    );
-    let statuses: Vec<_> = lane.spans.iter().map(|x| x.status).collect();
+    let statuses: Vec<_> = u.lanes[0].spans.iter().map(|x| x.status).collect();
     assert_eq!(statuses[statuses.len() - 2..], [Status::Run, Status::Perm]);
-    assert!(lane.spans.windows(2).all(|w| w[0].to <= w[1].from));
+}
+
+#[test]
+fn a_repeated_get_usage_does_not_read_unchanged_transcripts_again() {
+    let mut l = Local::new();
+    let now = now_ms();
+    let (a, b) = (l.project("praxis-web"), l.project("other"));
+    let mine = l.transcript(
+        "mine.jsonl",
+        &line("m1", "claude-sonnet-4-5", now - SECOND, (1000, 0, 0, 0)),
+        now,
+    );
+    let s = l.claude_with(&a, &mine);
+    let sibling = l.transcript(
+        "sibling.jsonl",
+        &line("s1", "claude-sonnet-4-5", now - SECOND, (10, 0, 0, 0)),
+        now,
+    );
+    l.claude_with(&a, &sibling);
+    let stranger = l.transcript(
+        "stranger.jsonl",
+        &line("t1", "claude-haiku-4-5", now - SECOND, (0, 10, 0, 0)),
+        now,
+    );
+    l.claude_with(&b, &stranger);
+
+    let start = l.state.usage_scan_reads();
+    let first = l.usage(&s.id);
+    assert_eq!(first.tokens.input, 1000);
+    let reads = l.state.usage_scan_reads() - start;
+    assert_eq!(
+        reads, 2,
+        "this session and its sibling; the other project comes from the status bar's tracker"
+    );
+
+    let second = l.usage(&s.id);
+    assert_eq!(l.state.usage_scan_reads() - start, reads, "nothing re-read");
+    assert_eq!(second.tokens, first.tokens);
+    assert_eq!(second.spend, first.spend);
+
+    // a changed file is read again, only that one
+    let mut text = std::fs::read_to_string(&mine).unwrap();
+    text += &line("m2", "claude-sonnet-4-5", now, (500, 0, 0, 0));
+    std::fs::write(&mine, text).unwrap();
+    let third = l.usage(&s.id);
+    assert_eq!(third.tokens.input, 1500);
+    assert_eq!(l.state.usage_scan_reads() - start, reads + 1);
 }
 
 #[test]
 fn an_unknown_model_leaves_the_price_open() {
     let mut l = Local::new();
-    let now = now_ms();
+    let now = noon();
     let a = l.project("praxis-web");
     let mut text = line("a", "claude-sonnet-4-5", now - SECOND, (1_000_000, 0, 0, 0));
     text += &line("b", "claude-fable-9-9", now - SECOND, (500, 0, 0, 0));
-    let path = l.transcript("mixed.jsonl", &text);
+    let path = l.transcript("mixed.jsonl", &text, now);
     let s = l.claude_with(&a, &path);
-    let u = l.usage(&s.id);
+    l.state.refresh_usage_at(now);
+    let u = usage_at(&l.state, &s, Some(&path), now);
     assert!(!u.priced);
     assert_eq!(u.tokens.input, 1_000_500, "the tokens are all counted");
     assert_eq!(
         u.spend.session, 3_000_000,
         "the spend covers the priced part"
     );
+    assert_eq!(u.spend.all, 3_000_000, "the status bar's priced part, too");
 }
 
 #[test]

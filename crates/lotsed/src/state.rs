@@ -111,6 +111,8 @@ pub struct State {
     inject: Injection,
     /// Today's tokens and cost, from the Claude Code transcripts hooks announce.
     usage: Arc<UsageTracker>,
+    /// Whole-transcript scans of `get_usage`, kept while the files do not change.
+    usage_scans: session_usage::ScanCache,
 }
 
 impl State {
@@ -146,7 +148,21 @@ impl State {
             env: OnceCell::new(),
             inject: Injection::prepare(&data_dir),
             usage,
+            usage_scans: session_usage::ScanCache::default(),
         }))
+    }
+
+    pub(crate) fn usage_tracker(&self) -> &UsageTracker {
+        &self.usage
+    }
+
+    pub(crate) fn usage_scans(&self) -> &session_usage::ScanCache {
+        &self.usage_scans
+    }
+
+    /// How many transcript files `get_usage` parsed so far (the rest came from its cache).
+    pub fn usage_scan_reads(&self) -> u64 {
+        self.usage_scans.reads()
     }
 
     pub fn config(&self) -> &Config {
@@ -244,6 +260,10 @@ impl State {
 
     /// Graceful shutdown: hang up every session, wait for them (SIGKILL after the grace period).
     pub fn kill_all_sessions(&self) {
+        // History ends here: open spans close now, and the exits that follow record nothing.
+        if let Err(e) = self.db.close_all_open(now_ms()) {
+            tracing::warn!("closing the history at shutdown: {e}");
+        }
         let handles: Vec<_> = {
             let mut map = self.sessions.write().unwrap_or_else(|e| e.into_inner());
             self.closing.store(true, Ordering::Release);
@@ -610,7 +630,12 @@ impl State {
 
     /// Read what changed in the followed transcripts; push the total when it moved.
     fn refresh_usage(&self) {
-        if let Some(usage) = self.usage.refresh(DayBounds::local(now_ms())) {
+        self.refresh_usage_at(now_ms());
+    }
+
+    /// [`Self::refresh_usage`] as of `now` (a pinned clock for tests).
+    pub fn refresh_usage_at(&self, now: u64) {
+        if let Some(usage) = self.usage.refresh(DayBounds::local(now)) {
             self.hub.broadcast(Event::UsageChanged(usage));
         }
     }

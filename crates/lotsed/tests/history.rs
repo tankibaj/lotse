@@ -27,13 +27,6 @@ fn state_on(db: Db, root: &Path) -> Arc<State> {
     State::new(cfg, db).unwrap()
 }
 
-/// A state with the recorder installed on its hub.
-fn recording_state(db: Db, root: &Path) -> Arc<State> {
-    let state = state_on(db, root);
-    history::install(&state.hub, state.db().clone());
-    state
-}
-
 fn status_event(session: &str, status: Status, at: u64) -> Event {
     Event::StatusChanged {
         session_id: SessionId::new(session),
@@ -178,7 +171,7 @@ fn a_fresh_database_needs_no_backup() {
 #[test]
 fn status_spans_close_on_change() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     let hub = &state.hub;
     let s = SessionId::new("s1");
 
@@ -232,22 +225,43 @@ fn status_spans_close_on_change() {
 
 #[test]
 fn installing_twice_records_once() {
-    // State::new will install the recorder itself; an install on top must not double anything
+    // State::new installs the recorder; a second install, even with events in between, is a no-op:
+    // it records nothing twice and does not close what is open now
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
-    history::install(&state.hub, state.db().clone());
-    state.hub.broadcast(status_event("s1", Status::Run, 1_000));
-    state.hub.broadcast(perm_event("s1", "pr1", 2_000));
-    state.hub.broadcast(status_event("s1", Status::Run, 3_000));
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
+    let t0 = common_now() - 60_000;
     let s = SessionId::new("s1");
+    state.hub.broadcast(status_event("s1", Status::Run, t0));
+    history::install(&state.hub, state.db().clone());
+    assert_eq!(
+        lead(&state.db().list_spans(&s).unwrap()),
+        [(Status::Run, t0, None)],
+        "a late install leaves the open span open"
+    );
+    state.hub.broadcast(perm_event("s1", "pr1", t0 + 2_000));
+    state
+        .hub
+        .broadcast(status_event("s1", Status::Run, t0 + 3_000));
     assert_eq!(state.db().list_spans(&s).unwrap().len(), 3);
     assert_eq!(perm_rows(&state, "s1").len(), 1);
+    state
+        .hub
+        .publish_decision(&lotsed::hub::PermDecisionRecord {
+            session_id: s,
+            prompt_id: Some("pr1".into()),
+            decision: PermDecision::Allow,
+            via: Some(PermVia::Sidebar),
+        });
+    assert_eq!(
+        perm_rows(&state, "s1")[0].decision,
+        Some(PermDecision::Allow)
+    );
 }
 
 #[test]
 fn a_late_event_never_makes_a_span_end_before_it_began() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     state.hub.broadcast(status_event("s1", Status::Run, 5_000));
     state.hub.broadcast(status_event("s1", Status::Idle, 4_000));
     let spans = state.db().list_spans(&SessionId::new("s1")).unwrap();
@@ -259,7 +273,7 @@ fn a_late_event_never_makes_a_span_end_before_it_began() {
 #[test]
 fn sub_agents_get_their_own_lane() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     let s = SessionId::new("s1");
     state.hub.broadcast(status_event("s1", Status::Run, 1_000));
     let sub = |id: &str, status| SubAgent {
@@ -301,7 +315,7 @@ fn perm_rows(state: &State, s: &str) -> Vec<PermEventRow> {
 #[test]
 fn perm_events_are_stamped_by_a_decision_or_by_the_terminal() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     let hub = &state.hub;
 
     hub.broadcast(perm_event("s1", "pr1", 1_000));
@@ -373,7 +387,7 @@ fn prompt_script(dir: &Path) -> String {
 #[test]
 fn perm_event_records_decision_and_source() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (client, _rx) = state.hub.register("test".into());
     let mut req_id = 0;
@@ -464,33 +478,91 @@ fn restart_keeps_history() {
     let path = tmp.path().join("lotse.db");
     let s = SessionId::new("s1");
     let t0 = common_now() - 3_600_000; // an hour ago: inside the retention
+    let before = common_now();
     {
-        let state = recording_state(Db::open(&path).unwrap(), tmp.path());
+        let state = state_on(Db::open(&path).unwrap(), tmp.path());
         state.hub.broadcast(status_event("s1", Status::Run, t0));
         state.hub.broadcast(perm_event("s1", "pr1", t0 + 2_000));
-        // the daemon stops here: the perm span and the question are still open
+        // a graceful stop closes what is open, now
+        state.kill_all_sessions();
+        // the exits of the killed sessions report on the way out: that is not history
+        state
+            .hub
+            .broadcast(status_event("s1", Status::Done, common_now()));
     }
+    let after = common_now();
 
     let db = Db::open(&path).unwrap();
+    let spans = db.list_spans(&s).unwrap();
+    assert_eq!(spans.len(), 2, "nothing is recorded after the shutdown");
     assert_eq!(
-        lead(&db.list_spans(&s).unwrap())[..1],
+        lead(&spans)[..1],
         [(Status::Run, t0, Some(t0 + 2_000))],
         "closed history is kept as it was"
     );
-    assert_eq!(db.list_perm_events(&s).unwrap().len(), 1);
-
-    let before = common_now();
-    let state = recording_state(db, tmp.path());
-    let spans = state.db().list_spans(&s).unwrap();
-    assert_eq!(spans.len(), 2);
-    let to = spans[1]
-        .to_ms
-        .expect("the open span was closed at the restart");
-    assert!(to >= before, "closed at the restart, not at its start");
+    let to = spans[1].to_ms.expect("the shutdown closed the open span");
+    assert!(
+        (before..=after).contains(&to),
+        "closed at the shutdown, not at a later start: {to}"
+    );
+    let asked = db.list_perm_events(&s).unwrap();
+    assert_eq!(asked.len(), 1);
     assert_eq!(
-        state.db().list_perm_events(&s).unwrap()[0].decided_at,
-        Some(to),
-        "an unanswered question ends with the daemon too"
+        (asked[0].decided_at, asked[0].decision),
+        (None, None),
+        "a prompt open at the shutdown was not decided"
+    );
+
+    // the next start finds nothing left over and changes nothing
+    let state = state_on(db, tmp.path());
+    assert_eq!(state.db().list_spans(&s).unwrap(), spans);
+    assert_eq!(state.db().list_perm_events(&s).unwrap(), asked);
+}
+
+#[test]
+fn closing_a_session_ends_its_spans_but_does_not_decide_its_prompt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
+    let t0 = common_now() - 60_000;
+    state.hub.broadcast(perm_event("s1", "pr1", t0));
+    state.hub.broadcast(Event::SessionClosed {
+        session_id: SessionId::new("s1"),
+    });
+    let s = SessionId::new("s1");
+    assert!(state.db().list_spans(&s).unwrap()[0].to_ms.is_some());
+    let asked = &perm_rows(&state, "s1")[0];
+    assert_eq!((asked.decided_at, asked.decision), (None, None));
+}
+
+#[test]
+fn a_crash_leaves_spans_that_close_at_the_last_recorded_time() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = tmp.path().join("lotse.db");
+    let s = SessionId::new("s1");
+    let t0 = common_now() - 15 * 3_600_000; // the prompt waited here all night
+    {
+        let state = state_on(Db::open(&path).unwrap(), tmp.path());
+        state.hub.broadcast(status_event("s1", Status::Run, t0));
+        state.hub.broadcast(perm_event("s1", "pr1", t0 + 2_000));
+        // no shutdown: the process is gone with the span and the question open
+        // (a reboot, a kill -9)
+    }
+
+    let state = state_on(Db::open(&path).unwrap(), tmp.path());
+    let spans = state.db().list_spans(&s).unwrap();
+    assert_eq!(
+        lead(&spans),
+        [
+            (Status::Run, t0, Some(t0 + 2_000)),
+            (Status::Perm, t0 + 2_000, Some(t0 + 2_000)),
+        ],
+        "the dead time is not counted: the open span ends where the history does"
+    );
+    let asked = state.db().list_perm_events(&s).unwrap();
+    assert_eq!(
+        (asked[0].decided_at, asked[0].decision, asked[0].via),
+        (None, None, None),
+        "unknown, not answered in the terminal"
     );
 }
 
@@ -521,7 +593,7 @@ fn history_older_than_thirty_days_is_dropped() {
     db.insert_perm_event(&new, "pr", "Bash", "ls", now - DAY_MS)
         .unwrap();
 
-    let _state = recording_state(db, tmp.path());
+    let _state = state_on(db, tmp.path());
     let db = _state.db();
     assert!(db.list_spans(&old).unwrap().is_empty());
     assert!(db.list_perm_events(&old).unwrap().is_empty());
@@ -532,7 +604,7 @@ fn history_older_than_thirty_days_is_dropped() {
 #[test]
 fn a_new_session_opens_its_first_span_at_its_creation() {
     let tmp = tempfile::tempdir().unwrap();
-    let state = recording_state(Db::open_in_memory().unwrap(), tmp.path());
+    let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     let session = Session {
         id: SessionId::new("s1"),
         project_id: lotse_proto::ProjectId::new("p1"),
