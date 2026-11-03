@@ -1,13 +1,13 @@
-//! Beta wave 0 on the real daemon: every new request is answered (`unavailable` until its WP lands),
-//! a stale `prompt_id` is a `conflict` that types nothing, and the hub observer sees events.
+//! Beta wave 0 on the real daemon: every new request is answered, a stale `prompt_id` is a
+//! `conflict` that types nothing, and the hub observer sees events.
 //! Temp data dir, temp HOME: nothing of the real `~/.claude` or Lotse data is touched.
 
 mod common;
 
 use common::{Client, Daemon};
 use lotse_proto::{
-    AgentKind, DiffBase, ErrorCode, Event, ExportFormat, NewProject, NewSession, PermDecision,
-    PermVia, Request, Response, Session, SessionId, Status,
+    AgentKind, DiffBase, ErrorCode, Event, NewProject, NewSession, PermDecision, PermVia, Request,
+    Response, Session, SessionId, Status,
 };
 use lotsed::config::Config;
 use lotsed::db::Db;
@@ -17,30 +17,18 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
 
-fn unavailable(r: &Response) -> bool {
-    matches!(r, Response::Error(e) if e.code == ErrorCode::Unavailable)
-}
-
 fn conflict(r: &Response) -> bool {
     matches!(r, Response::Error(e) if e.code == ErrorCode::Conflict)
 }
 
 #[test]
-fn every_new_request_answers_unavailable_until_its_wp_lands() {
+fn get_diff_answers_for_both_bases() {
     let d = Daemon::start();
     let mut c = d.client();
     let session_id = SessionId::new("nope");
     let s = || session_id.clone();
-    let requests = [Request::ExportTranscript {
-        session_id: s(),
-        format: ExportFormat::Markdown,
-    }];
-    for req in requests {
-        let method = req.method();
-        let resp = c.request(req);
-        assert!(unavailable(&resp), "{method}: {resp:?}");
-    }
-    // get_diff answers for both bases now that wp04 landed: an unknown session is not_found
+    // every wave-1 request has landed (the last, export_transcript, with wp07), so none answers
+    // `unavailable` any more: an unknown session is not_found
     let diff = |c: &mut Client, base| {
         c.request(Request::GetDiff {
             session_id: s(),

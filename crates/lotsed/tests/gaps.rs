@@ -378,14 +378,11 @@ fn a_hook_cannot_point_the_daemon_at_files_outside_home() {
 }
 
 #[test]
-fn agents_without_a_transcript_say_so() {
+fn agents_without_a_transcript_show_their_scrollback() {
     let d = Daemon::start();
     let mut c = d.client();
     let project = c.add_project(&d.project_dir("proj"));
-    for (agent, label) in [
-        (AgentKind::OpenCode, "OpenCode"),
-        (AgentKind::Terminal, "Terminal"),
-    ] {
+    for agent in [AgentKind::OpenCode, AgentKind::Terminal] {
         let session = agent_session(&mut c, &project, agent);
         // OpenCode's plugin payload has no transcript path
         c.expect_ok(Request::HookEvent {
@@ -393,10 +390,11 @@ fn agents_without_a_transcript_say_so() {
             session_id: Some(session.id.clone()),
             payload: serde_json::json!({"hook_event_name": "SessionIdle", "session_id": "x"}),
         });
+        // since Beta (wp07) the terminal's own scrollback stands in for the transcript
         match transcript(&mut c, &session) {
-            Response::Error(e) => {
-                assert_eq!(e.code, ErrorCode::Unavailable);
-                assert_eq!(e.message, format!("Not available for {label}"));
+            Response::Transcript(t) => {
+                assert!(t.available, "{agent:?}");
+                assert_eq!(t.source, TranscriptSource::Scrollback, "{agent:?}");
             }
             other => panic!("{other:?}"),
         }
