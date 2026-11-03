@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-mod review;
+pub mod review;
 mod tree;
 
 pub use lotse_proto::{DiffFile, DiffStatus, GitDiff, GitInfo};
@@ -190,6 +190,13 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         .filter(|l| !l.is_empty())
         .count() as u32;
     let worktree = l.git_dir != l.common_dir;
+    // the extras are best effort: a failure leaves the line as it was before they existed
+    let behind = review::default_branch(dir)
+        .ok()
+        .flatten()
+        .and_then(|base| review::ahead_behind(dir, &base).ok())
+        .map_or(0, |(_, behind)| behind);
+    let (added, removed) = review::numstat(dir).unwrap_or((0, 0));
     Ok(GitInfo {
         is_git: true,
         branch,
@@ -197,10 +204,10 @@ pub fn git_info(dir: &Path) -> Result<GitInfo, GitError> {
         dirty,
         worktree,
         worktree_path: worktree.then(|| l.toplevel.to_string_lossy().into_owned()),
-        // TODO(beta-wp04): behind and +/- from `review`; `pr` is filled by lotsed (opt-in)
-        behind: 0,
-        added: 0,
-        removed: 0,
+        behind,
+        added,
+        removed,
+        // filled by lotsed (opt-in, `gh` / `glab`)
         pr: None,
     })
 }
@@ -234,14 +241,27 @@ pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitD
             truncated: false,
         });
     }
-    // a repository without a commit has no HEAD: compare with the empty tree
-    let base = if out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some() {
-        "HEAD".to_string()
-    } else {
-        out_ok(dir, ["hash-object", "-t", "tree", "/dev/null"])?
-            .filter(|h| !h.is_empty())
-            .unwrap_or_else(|| EMPTY_TREE.to_string())
-    };
+    let base = head_or_empty_tree(dir)?;
+    diff_against(dir, &base, max_total, max_file)
+}
+
+/// `HEAD`; a repository without a commit has no HEAD: the empty tree.
+fn head_or_empty_tree(dir: &Path) -> Result<String, GitError> {
+    if out_ok(dir, ["rev-parse", "--verify", "--quiet", "HEAD"])?.is_some() {
+        return Ok("HEAD".to_string());
+    }
+    Ok(out_ok(dir, ["hash-object", "-t", "tree", "/dev/null"])?
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| EMPTY_TREE.to_string()))
+}
+
+/// The working tree against the commit or tree `base` (never user input), plus untracked names.
+fn diff_against(
+    dir: &Path,
+    base: &str,
+    max_total: usize,
+    max_file: usize,
+) -> Result<GitDiff, GitError> {
     let (raw, cut) = run_capped(
         dir,
         [
@@ -255,7 +275,7 @@ pub fn diff_capped(dir: &Path, max_total: usize, max_file: usize) -> Result<GitD
             "--find-renames",
             "--src-prefix=a/",
             "--dst-prefix=b/",
-            base.as_str(),
+            base,
             "--",
         ],
         max_total,
@@ -371,6 +391,7 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
     } else {
         cut_text(section, max_file).to_string()
     };
+    let (added, removed) = if binary { (0, 0) } else { count_lines(section) };
     DiffFile {
         path,
         old_path: rename_from,
@@ -378,10 +399,23 @@ fn parse_section(section: &str, max_file: usize) -> DiffFile {
         binary,
         truncated: !binary && diff.len() < section.len(),
         diff,
-        // TODO(beta-wp04): count the +/- lines of the section
-        added: 0,
-        removed: 0,
+        added,
+        removed,
     }
+}
+
+/// Added and removed lines of one file's patch: the `+` / `-` lines after the first hunk header
+/// (the `---` / `+++` header lines come before it).
+fn count_lines(section: &str) -> (u32, u32) {
+    let (mut added, mut removed) = (0u32, 0u32);
+    for line in section.lines().skip_while(|l| !l.starts_with("@@")).skip(1) {
+        match line.as_bytes().first() {
+            Some(b'+') => added = added.saturating_add(1),
+            Some(b'-') => removed = removed.saturating_add(1),
+            _ => {}
+        }
+    }
+    (added, removed)
 }
 
 /// `~/.lotse/worktrees`, or `None` without a home directory.

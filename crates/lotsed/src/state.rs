@@ -946,6 +946,14 @@ impl State {
             .map_or_else(LaunchEnv::from_process, |e| (**e).clone())
     }
 
+    /// The environment `gh` / `glab` run in while Settings › External › PR status is on.
+    fn pr_env(&self) -> Option<LaunchEnv> {
+        self.settings()
+            .external
+            .pr_status
+            .then(|| self.launch_env_now())
+    }
+
     async fn git_info(&self, project_id: &ProjectId, session_id: Option<&SessionId>) -> Response {
         let project = match self.db.get_project(project_id) {
             Ok(Some(p)) => p,
@@ -960,7 +968,10 @@ impl State {
                 _ => return not_found("session"),
             }
         }
-        match tokio::task::spawn_blocking(move || git_glue::info(&dir)).await {
+        let pr_env = self.pr_env();
+        match tokio::task::spawn_blocking(move || git_glue::info_with_pr(&dir, pr_env.as_ref()))
+            .await
+        {
             Ok(info) => Response::GitInfo(info),
             Err(e) => internal(e),
         }
@@ -1015,11 +1026,12 @@ impl State {
                 let due = h.git_due();
                 folders.entry(h.cwd()).or_default().push((h, due));
             }
+            let pr_env = s.pr_env();
             for (dir, sessions) in folders {
                 if sessions.iter().all(|(_, due)| due.is_none()) {
                     continue;
                 }
-                let git = git_glue::info(&dir);
+                let git = git_glue::info_with_pr(&dir, pr_env.as_ref());
                 for (h, due) in sessions {
                     h.apply_git(git.clone());
                     if let Some(token) = due {
