@@ -1,10 +1,12 @@
 //! Connected clients and their outbound queues. Everything a client receives (responses, events,
 //! PTY frames) goes through one ordered queue, so an `attached` response always precedes the replay.
 
+use crate::quiet::{HOLD, Quiet};
 use lotse_proto::{Event, Frame, Message, PermDecision, PermVia, SessionId};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
+use std::time::Instant;
 use tokio::sync::{Notify, mpsc};
 
 /// Encoded frame, shared between clients.
@@ -85,8 +87,16 @@ pub struct PermDecisionRecord {
 /// Same rules as [`Observer`].
 pub type DecisionObserver = Box<dyn Fn(&PermDecisionRecord) + Send + Sync>;
 
+/// The daemon's one [`Quiet`] and whether a `lotse-quiet` thread is waiting on it.
+#[derive(Default)]
+struct QuietState {
+    quiet: Quiet,
+    timer: bool,
+}
+
 #[derive(Default)]
 pub struct Hub {
+    quiet: Mutex<QuietState>,
     clients: Mutex<HashMap<u64, Arc<ClientTx>>>,
     next_id: AtomicU64,
     observers: RwLock<Vec<Observer>>,
@@ -139,8 +149,71 @@ impl Hub {
         }
     }
 
+    /// Send a `Event::Notification` once the quiet window is over ([`Quiet`]): dropped when the
+    /// session left the status that caused it, collapsed with a repeat. Other events go out at once.
+    pub fn notify(self: &Arc<Self>, event: Event) {
+        let now = Instant::now();
+        let start_timer = {
+            let mut q = self.quiet();
+            q.quiet.hold(now, event);
+            q.quiet.next_due().is_some() && !std::mem::replace(&mut q.timer, true)
+        };
+        if start_timer {
+            let hub = Arc::downgrade(self);
+            let built = std::thread::Builder::new()
+                .name("lotse-quiet".into())
+                .spawn(move || Hub::release_loop(&hub));
+            if let Err(e) = built {
+                tracing::error!("cannot start the notification timer: {e}");
+                // nothing will release them: let them go now rather than never
+                self.quiet().timer = false;
+                self.release_due(Instant::now() + HOLD);
+            }
+        }
+    }
+
+    /// Sleep until the next held notification is due, send it, until none is held.
+    fn release_loop(weak: &Weak<Hub>) {
+        loop {
+            // not kept alive while asleep
+            let Some(hub) = weak.upgrade() else { return };
+            let wait = {
+                let mut q = hub.quiet();
+                match q.quiet.next_due() {
+                    Some(due) => due.saturating_duration_since(Instant::now()),
+                    None => {
+                        q.timer = false;
+                        return;
+                    }
+                }
+            };
+            drop(hub);
+            std::thread::sleep(wait);
+            let Some(hub) = weak.upgrade() else { return };
+            hub.release_due(Instant::now());
+        }
+    }
+
+    fn release_due(&self, now: Instant) {
+        let due = self.quiet().quiet.release(now);
+        for event in due {
+            self.broadcast(event);
+        }
+    }
+
+    fn quiet(&self) -> std::sync::MutexGuard<'_, QuietState> {
+        self.quiet.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Push an event to every connected client (and every observer, in registration order).
     pub fn broadcast(&self, event: Event) {
+        match &event {
+            Event::StatusChanged {
+                session_id, status, ..
+            } => self.quiet().quiet.status_changed(session_id, *status),
+            Event::SessionClosed { session_id } => self.quiet().quiet.forget(session_id),
+            _ => {}
+        }
         for observer in self
             .observers
             .read()
