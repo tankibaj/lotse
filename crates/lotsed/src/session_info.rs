@@ -15,10 +15,11 @@ use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, SystemTime};
 
 /// A child younger than this is a command that just started, not a background task.
 const MIN_TASK_AGE: Duration = Duration::from_secs(10);
@@ -28,6 +29,28 @@ const MACHINE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Bytes read from the end of the transcript to find the model of its last entry.
 const MODEL_TAIL_BYTES: u64 = 512 * 1024;
 const MAX_COMMAND: usize = 200;
+
+/// Agent versions by binary and its modification time: `--version` of a real agent takes about a
+/// second, and the Session panel asks on every open. Only answers are kept, a timeout is retried.
+static VERSIONS: OnceLock<Mutex<HashMap<(PathBuf, SystemTime), String>>> = OnceLock::new();
+
+fn cached_version(agent: AgentKind, path: &Path, env: &HashMap<String, String>) -> Option<String> {
+    let key = (
+        path.to_path_buf(),
+        std::fs::metadata(path).ok()?.modified().ok()?,
+    );
+    let cache = VERSIONS.get_or_init(Mutex::default);
+    if let Some(v) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Some(v.clone());
+    }
+    let v = launch::detect_version(agent, path, env)?;
+    let mut g = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() >= 64 {
+        g.clear();
+    }
+    g.insert(key, v.clone());
+    Some(v)
+}
 const MAX_MODEL: usize = 100;
 const SHELLS: [&str; 8] = ["sh", "bash", "zsh", "fish", "dash", "ksh", "csh", "tcsh"];
 
@@ -87,7 +110,7 @@ async fn get_info(state: &Arc<State>, session_id: &SessionId) -> Response {
             .tokenize(&configured)
             .ok()
             .and_then(|argv| env.resolve(&argv, &cwd))
-            .and_then(|p| launch::detect_version(agent, &p, env.vars()));
+            .and_then(|p| cached_version(agent, &p, env.vars()));
         let model = transcript
             .zip(home)
             .and_then(|((_, path), home)| latest_model(&path, &home));

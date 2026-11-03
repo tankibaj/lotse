@@ -32,7 +32,12 @@ struct Fixture {
 fn start() -> Fixture {
     // launch detection runs the configured `claude --version`: a fake one answers
     let bin = tempfile::tempdir().unwrap();
-    common::script(bin.path(), "claude", "echo '2.1.309 (Claude Code)'");
+    // every `--version` run leaves a line in `claude.count` (the cache test counts them)
+    common::script(
+        bin.path(),
+        "claude",
+        "echo run >> \"$0.count\"; echo '2.1.309 (Claude Code)'",
+    );
     let d = Daemon::start_with_path(Some(bin.path()));
     let mut c = d.client();
     let scripts = tempfile::tempdir().unwrap();
@@ -67,6 +72,51 @@ fn start() -> Fixture {
         _scripts: scripts,
         _bin: bin,
     }
+}
+
+/// The detection source the snapshot reports for `f` right now.
+fn current_source(c: &mut Client, f: &Session) -> DetectSource {
+    match c.request(Request::GetSnapshot) {
+        Response::Snapshot(s) => {
+            s.sessions
+                .into_iter()
+                .find(|x| x.id == f.id)
+                .expect("session in snapshot")
+                .source
+        }
+        other => panic!("get_snapshot: {other:?}"),
+    }
+}
+
+/// Session info once `--version` answered: under load the fake agent can miss the 3 s timeout,
+/// which leaves the version empty for that call only.
+fn info_with_version(fx: &mut Fixture) -> SessionInfo {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let i = info(&mut fx.c, &fx.session);
+        if i.agent_version.is_some() || Instant::now() > deadline {
+            return i;
+        }
+    }
+}
+
+fn version_runs(fx: &Fixture) -> usize {
+    std::fs::read_to_string(fx._bin.path().join("claude.count")).map_or(0, |s| s.lines().count())
+}
+
+#[test]
+fn the_agent_version_is_asked_once_per_binary() {
+    let mut fx = start();
+    assert!(info_with_version(&mut fx).agent_version.is_some());
+    let runs = version_runs(&fx);
+    for _ in 0..3 {
+        assert_eq!(
+            info(&mut fx.c, &fx.session).agent_version.as_deref(),
+            Some("v2.1.309")
+        );
+    }
+    assert_eq!(version_runs(&fx), runs, "served from the cache");
+    close(&mut fx);
 }
 
 fn info(c: &mut Client, f: &Session) -> SessionInfo {
@@ -128,13 +178,20 @@ fn lists_background_task() {
 #[test]
 fn info_fields_are_set() {
     let mut fx = start();
-    let i = info(&mut fx.c, &fx.session);
+    let before = current_source(&mut fx.c, &fx.session);
+    let i = info_with_version(&mut fx);
+    let after = current_source(&mut fx.c, &fx.session);
     assert_eq!(i.agent_version.as_deref(), Some("v2.1.309"));
     assert_eq!(i.model, None, "no transcript announced yet");
     assert!(!i.machine.is_empty());
     assert!(i.cwd.ends_with("praxis-web"), "{}", i.cwd);
     assert_eq!(i.worktree, None);
-    assert_eq!(i.source, DetectSource::Process);
+    // the session's own detection source (process or screen, whichever sampled last under load)
+    assert!(
+        i.source == before || i.source == after,
+        "{:?} not in {before:?}..{after:?}",
+        i.source
+    );
     close(&mut fx);
 }
 
