@@ -10,6 +10,7 @@
     { "event": "PostToolUse", "matcher": "*" },
     { "event": "PostToolUseFailure", "matcher": "*" },
     { "event": "PermissionRequest", "matcher": "*" },
+    { "event": "Notification", "matcher": "permission_prompt" },
     { "event": "Stop" },
     { "event": "StopFailure" },
     { "event": "SubagentStart" },

@@ -406,7 +406,7 @@ fn an_unknown_model_leaves_the_price_open() {
     let now = noon();
     let a = l.project("praxis-web");
     let mut text = line("a", "claude-sonnet-4-5", now - SECOND, (1_000_000, 0, 0, 0));
-    text += &line("b", "claude-fable-9-9", now - SECOND, (500, 0, 0, 0));
+    text += &line("b", "claude-zephyr-9-9", now - SECOND, (500, 0, 0, 0));
     let path = l.transcript("mixed.jsonl", &text, now);
     let s = l.claude_with(&a, &path);
     l.state.refresh_usage_at(now);

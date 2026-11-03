@@ -48,6 +48,7 @@ pub mod session;
 pub mod session_info;
 pub mod session_usage;
 pub mod state;
+pub mod task_watch;
 pub mod title;
 pub mod transcript;
 pub mod transcript_sources;

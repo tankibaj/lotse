@@ -40,6 +40,21 @@ const ROWS: &[&str] = &[
     "derived.fail_over_running_sub",
     "ignored",
     "late.unknown_sub",
+    // Agent tool, background agents, task notifications, permission notifications
+    "agent_tool.pre",
+    "agent_tool.post_foreground",
+    "agent_tool.post_async",
+    "agent_tool.post_failure",
+    "subagent_start.adopts_tool_row",
+    "stop.sub",
+    "stop.background_tasks",
+    "derived.background_keeps_run",
+    "task_notification.prompt",
+    "task_notification.transcript",
+    "task_notification.failure",
+    "task_notification.unknown",
+    "notification.permission_prompt",
+    "notification.cleared_by_tool",
 ];
 
 fn fixtures_dir() -> PathBuf {
@@ -162,6 +177,8 @@ fn fixture_payloads_use_only_documented_event_names() {
         "PreCompact",
         "PostCompact",
         "TeammateIdle",
+        // built by the daemon from a transcript line, never sent by Claude Code
+        "TaskNotification",
     ];
     for (name, scenario) in load_all() {
         for step in scenario["steps"].as_array().unwrap() {

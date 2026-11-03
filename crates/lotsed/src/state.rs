@@ -7,6 +7,7 @@ use crate::git;
 use crate::git_glue;
 use crate::hub::{ClientTx, Hub, PermDecisionRecord};
 use crate::launch::{self, LaunchEnv};
+use crate::pr;
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
 use crate::transcript::{self, AgentDirs};
@@ -19,7 +20,7 @@ use lotse_proto::{
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{Notify, OnceCell};
@@ -42,6 +43,10 @@ const DETECT_TICK: Duration = Duration::from_millis(100);
 const GIT_REFRESH: Duration = Duration::from_secs(5);
 /// How often today's token usage is re-read (changed transcripts only) and pushed if it moved.
 const USAGE_REFRESH: Duration = Duration::from_secs(5);
+/// After a hook nudged the usage read: wait this long for its transcript lines to land, read, and
+/// read again after [`USAGE_NUDGE_AGAIN`].
+const USAGE_NUDGE_SETTLE: Duration = Duration::from_millis(300);
+const USAGE_NUDGE_AGAIN: Duration = Duration::from_millis(1200);
 /// Transcripts last announced longer ago than this are not followed after a restart.
 const TRANSCRIPT_MEMORY_MS: u64 = 3 * 24 * 3_600_000;
 const MAX_WORKSPACE_NAME: usize = 100;
@@ -113,6 +118,8 @@ pub struct State {
     usage: Arc<UsageTracker>,
     /// Whole-transcript scans of `get_usage`, kept while the files do not change.
     usage_scans: session_usage::ScanCache,
+    /// `pr::generation()` at the last git refresh round.
+    pr_seen: AtomicU64,
 }
 
 impl State {
@@ -150,6 +157,7 @@ impl State {
             inject: Injection::prepare(&data_dir),
             usage,
             usage_scans: session_usage::ScanCache::default(),
+            pr_seen: AtomicU64::new(0),
         }))
     }
 
@@ -996,18 +1004,35 @@ impl State {
                 tracing::error!("cannot start thread {name}: {e}");
             }
         };
-        spawn("lotse-usage", USAGE_REFRESH, State::refresh_usage);
-        // the first total should not wait for a period
-        let first = Arc::downgrade(self);
+        // Every period, and at once when a hook says a turn ended (`UsageTracker::nudge`): the first
+        // read at start, then a second a moment after a nudge (the transcript may lag its hook).
+        let usage_state = Arc::downgrade(self);
+        let tracker = self.usage.clone();
         let built = std::thread::Builder::new()
-            .name("lotse-usage-first".into())
+            .name("lotse-usage".into())
             .spawn(move || {
-                if let Some(state) = first.upgrade() {
+                let mut nudged = false;
+                loop {
+                    let Some(state) = usage_state.upgrade() else {
+                        return;
+                    };
+                    if state.closing.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if nudged {
+                        std::thread::sleep(USAGE_NUDGE_SETTLE);
+                    }
                     state.refresh_usage();
+                    if nudged {
+                        std::thread::sleep(USAGE_NUDGE_AGAIN);
+                        state.refresh_usage();
+                    }
+                    drop(state);
+                    nudged = tracker.wait_nudge(USAGE_REFRESH);
                 }
             });
         if let Err(e) = built {
-            tracing::error!("cannot start the first usage read: {e}");
+            tracing::error!("cannot start the usage thread: {e}");
         }
         spawn("lotse-detect-tick", DETECT_TICK, |s| {
             for h in s.handles() {
@@ -1024,11 +1049,14 @@ impl State {
                 folders.entry(h.cwd()).or_default().push((h, due));
             }
             let pr_env = s.pr_env();
+            // a PR lookup that finished since the last round: every folder reads again, so the
+            // answer reaches the clients without waiting for activity
+            let pr_moved = pr::generation() != s.pr_seen.swap(pr::generation(), Ordering::AcqRel);
             for (dir, sessions) in folders {
-                if sessions.iter().all(|(_, due)| due.is_none()) {
+                if !pr_moved && sessions.iter().all(|(_, due)| due.is_none()) {
                     continue;
                 }
-                let git = git_glue::info_with_pr(&dir, pr_env.as_ref());
+                let git = git_glue::info_with_pr_refresh(&dir, pr_env.as_ref());
                 for (h, due) in sessions {
                     h.apply_git(git.clone());
                     if let Some(token) = due {

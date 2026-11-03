@@ -23,6 +23,9 @@
 //!   scrollback.
 
 use crate::redact::redact;
+use lotse_detect::claude::{
+    parse_task_notifications, strip_task_notifications, summary_agent_name,
+};
 use lotse_proto::{
     AgentKind, ToolStatus, Transcript, TranscriptRole, TranscriptSource, TranscriptTool,
     TranscriptTurn, UnixMs,
@@ -472,39 +475,90 @@ fn claude_lines(v: &Value) -> Vec<Line> {
         lines.push(Line::Model(model.to_owned()));
     }
     match message.and_then(|m| m.get("content")) {
-        Some(Value::String(s)) => {
-            lines.extend(turn(role, s, at).map(|t| Line::Turn(t, None)));
+        Some(Value::String(s)) => lines.extend(claude_text(role, s, at)),
+        Some(Value::Array(blocks)) => {
+            lines.extend(blocks.iter().flat_map(|b| claude_block(role, b, at)));
         }
-        Some(Value::Array(blocks)) => lines.extend(blocks.iter().filter_map(|b| {
-            match b.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    turn(role, b.get("text")?.as_str()?, at).map(|t| Line::Turn(t, None))
-                }
-                Some("tool_use") if role == TranscriptRole::Assistant => {
-                    let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
-                    let input = b.get("input");
-                    let mut t =
-                        tool_turn(name, &input.map(summarize_input).unwrap_or_default(), at);
-                    if SUB_AGENT_TOOLS.contains(&name) {
-                        t.sub_agent = input
-                            .and_then(|i| i.get("subagent_type"))
-                            .and_then(Value::as_str)
-                            .map(|s| clip(s, 60));
-                    }
-                    let id = b.get("id").and_then(Value::as_str).map(str::to_owned);
-                    Some(Line::Turn(t, id))
-                }
-                Some("tool_result") if role == TranscriptRole::User => Some(Line::Result {
-                    call: b.get("tool_use_id")?.as_str()?.to_owned(),
-                    failed: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
-                    text: b.get("content").map(result_text).unwrap_or_default(),
-                }),
-                _ => None, // thinking, images
-            }
-        })),
         _ => {}
     }
     lines
+}
+
+/// What one content block of a Claude Code message says.
+fn claude_block(role: TranscriptRole, b: &Value, at: Option<UnixMs>) -> Vec<Line> {
+    match b.get("type").and_then(Value::as_str) {
+        Some("text") => b
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|s| claude_text(role, s, at))
+            .unwrap_or_default(),
+        Some("tool_use") if role == TranscriptRole::Assistant => {
+            let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
+            let input = b.get("input");
+            let mut t = tool_turn(name, &input.map(summarize_input).unwrap_or_default(), at);
+            if SUB_AGENT_TOOLS.contains(&name) {
+                t.sub_agent = input
+                    .and_then(|i| i.get("subagent_type"))
+                    .and_then(Value::as_str)
+                    .map(|s| clip(s, 60));
+            }
+            let id = b.get("id").and_then(Value::as_str).map(str::to_owned);
+            vec![Line::Turn(t, id)]
+        }
+        Some("tool_result") if role == TranscriptRole::User => {
+            let call = b.get("tool_use_id").and_then(Value::as_str);
+            call.map(|call| Line::Result {
+                call: call.to_owned(),
+                failed: b.get("is_error").and_then(Value::as_bool).unwrap_or(false),
+                text: b.get("content").map(result_text).unwrap_or_default(),
+            })
+            .into_iter()
+            .collect()
+        }
+        _ => Vec::new(), // thinking, images
+    }
+}
+
+/// The turns of one text of a Claude Code message. A user turn that holds `<task-notification>`
+/// blocks is not the user's words: Claude Code hands the lead the report of a background sub-agent
+/// that way. Each block becomes a turn of that sub-agent (agent name, status, one line of its
+/// result); whatever text surrounds the blocks stays a turn of the role.
+fn claude_text(role: TranscriptRole, text: &str, at: Option<UnixMs>) -> Vec<Line> {
+    if role != TranscriptRole::User || !text.contains("<task-notification>") {
+        return turn(role, text, at)
+            .map(|t| Line::Turn(t, None))
+            .into_iter()
+            .collect();
+    }
+    let reports = parse_task_notifications(text).into_iter().map(|n| {
+        let name = summary_agent_name(&n.summary).unwrap_or("sub-agent");
+        let result = n
+            .result
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .map(|l| clip(l, 200));
+        let status = if n.status.is_empty() {
+            "reported".to_owned()
+        } else {
+            clip(&n.status, 40)
+        };
+        TranscriptTurn {
+            role: TranscriptRole::Assistant,
+            text: match result {
+                Some(r) => format!("{status}: {r}"),
+                None => status,
+            },
+            tool: None,
+            at,
+            approval: None,
+            sub_agent: Some(clip(name, 60)),
+        }
+    });
+    reports
+        .map(|t| Line::Turn(t, None))
+        .chain(turn(role, &strip_task_notifications(text), at).map(|t| Line::Turn(t, None)))
+        .collect()
 }
 
 /// A tool result's `content`: a string, or blocks of which the text ones count.
@@ -944,6 +998,58 @@ mod tests {
 not json at all
 {"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/a/b.rs","old_string":"x","new_string":"y"}},{"type":"text","text":"Done."}]}}
 "#;
+
+    /// A background sub-agent's report-back, as Claude Code writes it into the lead's transcript.
+    #[test]
+    fn a_task_notification_is_the_sub_agents_report_not_the_users_words() {
+        let blocks = "<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>completed</status>\n<summary>Agent \"Count files\" finished</summary>\n<result>\n12 files in src/\nand more detail</result>\n<usage>total_tokens: 9</usage>\n</task-notification>\n<task-notification>\n<task-id>b2</task-id>\n<status>failed</status>\n<summary>Agent \"Lint\" failed</summary>\n</task-notification>";
+        let user = |content: serde_json::Value| {
+            serde_json::json!({"type": "user", "timestamp": "2026-11-02T10:00:00.000Z",
+                               "message": {"role": "user", "content": content}})
+            .to_string()
+        };
+        let text = [
+            user(serde_json::json!("Count the files")),
+            user(serde_json::json!(blocks)),
+            user(
+                serde_json::json!([{"type": "text", "text": format!("{blocks}\nplease continue")}]),
+            ),
+        ]
+        .join("\n");
+        let h = home();
+        let p = write(h.path(), ".claude/projects/n.jsonl", &text);
+        let t = read_turns(&p, AgentKind::ClaudeCode, 50, h.path()).unwrap();
+        let got: Vec<_> = t
+            .turns
+            .iter()
+            .map(|t| (t.role, t.text.as_str(), t.sub_agent.as_deref()))
+            .collect();
+        use TranscriptRole::*;
+        assert_eq!(
+            got,
+            [
+                (User, "Count the files", None),
+                (
+                    Assistant,
+                    "completed: 12 files in src/",
+                    Some("Count files")
+                ),
+                (Assistant, "failed", Some("Lint")),
+                (
+                    Assistant,
+                    "completed: 12 files in src/",
+                    Some("Count files")
+                ),
+                (Assistant, "failed", Some("Lint")),
+                (User, "please continue", None),
+            ]
+        );
+        assert!(
+            !serde_json::to_string(&t)
+                .unwrap()
+                .contains("task-notification")
+        );
+    }
 
     #[test]
     fn claude_turns_keep_the_conversation_and_drop_the_noise() {

@@ -58,6 +58,11 @@ pub const EVENTS: [(&str, &str); 9] = [
     ("Interrupt", "interrupt"),
 ];
 
+/// The Codex release whose `hooks/list` `currentHash` values the golden test pins. A newer Codex may
+/// hash a hook differently (it then asks to review Lotse's hooks): re-verify the table in the tests
+/// against its `hooks/list` before trusting the scheme for it.
+pub const VERIFIED_CODEX_VERSION: &str = "0.162.1";
+
 /// Codex hashes the normalized timeout: at least 1, and `Interrupt` is clamped to 3.
 fn timeout_seconds(label: &str) -> u64 {
     if label == "interrupt" { 3 } else { 10 }
@@ -512,6 +517,28 @@ mod tests {
             "sha256:0d76a2153cb8bdca51b1a62a228bc7a5e5ba75a459f74de8b57830d5b18bb05a",
         ),
     ];
+
+    /// The golden table is the one of exactly the events Lotse hooks: adding or dropping an event
+    /// without re-verifying its hash against `VERIFIED_CODEX_VERSION` fails here, and the hashes of
+    /// the mirror's `config.toml` are those of the table, not recomputed text.
+    #[test]
+    fn the_pinned_codex_version_covers_exactly_the_hooked_events() {
+        assert_eq!(VERIFIED_CODEX_VERSION, "0.162.1");
+        let mut golden: Vec<&str> = CODEX_0_162_1_HASHES.iter().map(|(l, _)| *l).collect();
+        let mut hooked: Vec<&str> = EVENTS.iter().map(|(_, l)| *l).collect();
+        golden.sort_unstable();
+        hooked.sort_unstable();
+        assert_eq!(golden, hooked);
+        let h = homes();
+        let mirror = mirror(&h.root, &h.source).unwrap();
+        let config = read(&mirror.join("config.toml"));
+        for (label, hash) in CODEX_0_162_1_HASHES {
+            assert!(
+                config.contains(&format!("trusted_hash = \"{hash}\"")),
+                "{label}: the mirror's config lacks the hash Codex {VERIFIED_CODEX_VERSION} reports"
+            );
+        }
+    }
 
     #[test]
     fn trusted_hash_is_the_hash_codex_reports_for_the_hook() {

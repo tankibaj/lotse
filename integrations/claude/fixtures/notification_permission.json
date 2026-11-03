@@ -1,0 +1,15 @@
+{
+  "description": "A permission prompt reported only by a Notification (notification_type permission_prompt), as a background agent's prompt is: perm with a placeholder request; a PermissionRequest for the same prompt replaces the request; the tool going ahead ends a prompt only a notification knew of; other notification types change nothing.",
+  "provenance": "authored from the research input (Notification permission_prompt) and the hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "go"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "notification.permission_prompt", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"}, "update": true, "status": "perm", "perm": {"tool": "Bash", "summary": "Waiting for your input"}},
+    {"row": "perm_request.lead", "at": 2100, "payload": {"session_id": "c0ffee", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_use_id": "toolu_b1", "tool_input": {"command": "ls"}}, "update": true, "status": "perm", "perm": {"tool": "Bash", "summary": "ls"}},
+    {"row": "notification.permission_prompt", "at": 2150, "payload": {"session_id": "c0ffee", "hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Claude needs your permission to use Bash"}, "update": false, "status": "perm"},
+    {"row": "perm.cleared_by_post_tool", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_use_id": "toolu_b1", "tool_input": {"command": "ls"}}, "update": true, "status": "run", "running_since": 3000},
+    {"row": "notification.permission_prompt", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "Notification", "notification_type": "permission_prompt", "message": "Claude needs your permission to use Write"}, "update": true, "status": "perm", "perm": {"tool": "Write", "summary": "Waiting for your input"}},
+    {"row": "notification.cleared_by_tool", "at": 4500, "payload": {"session_id": "c0ffee", "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_use_id": "toolu_w1", "tool_input": {"file_path": "/a.txt"}}, "update": true, "status": "run"},
+    {"row": "ignored", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "Notification", "notification_type": "idle_prompt", "message": "Claude is waiting for your input"}, "update": false, "status": "run"},
+    {"row": "stop", "at": 6000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": true, "status": "done"}
+  ]
+}

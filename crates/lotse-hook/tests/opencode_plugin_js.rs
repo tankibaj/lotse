@@ -91,6 +91,80 @@ fn two_copies_of_the_plugin_in_one_process_report_once_per_directory() {
     assert_eq!(got.len(), 2, "{got:?}");
 }
 
+/// Both OpenCode plugin API shapes are served by one module: 1.x loads every *function* export (so
+/// there must be exactly one, or events would be reported twice), 2.x loads `default.server` (the
+/// same function). Driven through the V2 entry, the status event still reaches `lotse-hook`. Only
+/// the module shape is checked here: OpenCode itself is never started (Unverified: the loaders'
+/// exact rules are Orca's, from its status plugin sources).
+#[test]
+fn the_module_serves_the_v1_and_the_v2_plugin_loader_once() {
+    let Some(node) = node() else {
+        eprintln!("skipped: node is not installed");
+        return;
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path().join("received.jsonl");
+    let fake = tmp.path().join("lotse-hook");
+    std::fs::write(
+        &fake,
+        "#!/bin/sh\npayload=$(cat)\nprintf '%s\\n' \"$payload\" >> \"$OUT\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(tmp.path().join("plugin.mjs"), PLUGIN_SOURCE).unwrap();
+    std::fs::write(
+        tmp.path().join("driver.mjs"),
+        "import * as ns from './plugin.mjs';\n\
+         const fns = Object.entries(ns).filter(([, v]) => typeof v === 'function');\n\
+         const shape = { functionExports: fns.map(([k]) => k), defaultIsObject: typeof ns.default === 'object' && ns.default !== null,\n\
+           serverIsTheFunctionExport: ns.default.server === fns[0]?.[1], id: ns.default.id };\n\
+         console.log(JSON.stringify(shape));\n\
+         const hooks = await ns.default.server({ directory: '/v2' });\n\
+         await hooks.event({ event: { type: 'session.status', properties: { sessionID: 'ses_2', status: { type: 'busy' } } } });\n",
+    )
+    .unwrap();
+    let run = Command::new(node)
+        .arg("driver.mjs")
+        .current_dir(tmp.path())
+        .env_clear()
+        .env("LOTSE_SESSION_ID", "s1")
+        .env("LOTSE_HOOK_BIN", &fake)
+        .env("OUT", &out)
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let shape: serde_json::Value =
+        serde_json::from_slice(&run.stdout).expect("the driver prints the module shape");
+    assert_eq!(
+        shape,
+        serde_json::json!({
+            "functionExports": ["LotseStatusPlugin"],
+            "defaultIsObject": true,
+            "serverIsTheFunctionExport": true,
+            "id": "lotse-status",
+        })
+    );
+    let text = std::fs::read_to_string(&out).unwrap_or_default();
+    let got: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(
+        got,
+        [serde_json::json!({
+            "hook_event_name": "SessionStatus",
+            "session_id": "ses_2",
+            "status": "busy",
+        })]
+    );
+}
+
 #[test]
 fn the_plugin_source_is_valid_javascript_for_node() {
     let Some(node) = node() else { return };
