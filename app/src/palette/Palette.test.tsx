@@ -20,6 +20,8 @@ const open = async () => {
 };
 const labels = () => screen.getAllByRole('option').map((o) => o.textContent ?? '');
 
+afterEach(() => closePanel());
+
 describe('Command palette', () => {
   it('opens on the command and ⌘K (which also closes it), focused, with sessions most urgent first', async () => {
     mountWp5();
@@ -84,35 +86,49 @@ describe('Command palette', () => {
     mountWp5();
     selectSession('a2');
     const got: unknown[] = [];
-    const offs = (['togglePanel', 'openComposer', 'openReview', 'showTranscript', 'showChanges'] as const).map((c) =>
-      onUiCommand(c, (arg) => got.push([c, arg])),
-    );
+    const offs = (['togglePanel', 'openComposer', 'openReview'] as const).map((c) => onUiCommand(c, (arg) => got.push([c, arg])));
     for (const [query, want] of [
       ['changes panel', ['togglePanel', 'changes']],
       ['usage', ['togglePanel', 'usage']],
       ['open composer', ['openComposer', undefined]],
       ['open review', ['openReview', 'a2']],
-      ['show transcript', ['showTranscript', 'a2']],
-      ['show changes', ['showChanges', 'a2']],
     ] as const) {
       got.length = 0;
       act(() => void emitUiCommand('openPalette'));
       await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
       expect(got, query).toEqual([want]);
-      if (!query.startsWith('show')) expect(getOverlay()).toBeNull(); // the sheets open themselves on showChanges / showTranscript
+      expect(getOverlay()).toBeNull();
     }
+    offs.forEach((off) => off());
+  });
+
+  it('Show transcript / Show changes open the panel for the selected session, once, and no sheet', async () => {
+    mountWp5();
+    selectSession('a2');
+    const got: unknown[] = [];
+    const offs = (['showTranscript', 'showChanges'] as const).map((c) => onUiCommand(c, () => got.push(c)));
+    for (const [query, panel] of [['show transcript', 'transcript'], ['show changes', 'changes']] as const) {
+      closePanel();
+      act(() => void emitUiCommand('openPalette'));
+      await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
+      expect(getOpenPanel(), query).toBe(panel);
+      expect(getOverlay(), query).toBeNull(); // Sheets.tsx opens its sheet on the showX events: the palette must not raise them
+    }
+    expect(got).toEqual([]);
     offs.forEach((off) => off());
   });
 
   it('review, transcript and changes commands do nothing without a selected session', async () => {
     mountWp5();
     const got: unknown[] = [];
-    const offs = (['openReview', 'showTranscript', 'showChanges'] as const).map((c) => onUiCommand(c, () => got.push(c)));
+    const offs = (['openReview'] as const).map((c) => onUiCommand(c, () => got.push(c)));
     for (const query of ['open review', 'show transcript', 'show changes']) {
       act(() => void emitUiCommand('openPalette'));
       await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
     }
     expect(got).toEqual([]);
+    expect(getOpenPanel()).toBeNull();
+    expect(getOverlay()).toBeNull();
     offs.forEach((off) => off());
   });
 
@@ -249,13 +265,6 @@ describe('Beta actions in the palette (WP20)', () => {
     act(() => void emitUiCommand('openPalette'));
     await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
   };
-  const keys = () => {
-    const got: string[] = [];
-    const on = (e: KeyboardEvent) => e.metaKey && got.push(`${e.metaKey ? '⌘' : ''}${e.shiftKey ? '⇧' : ''}${e.altKey ? '⌥' : ''}${e.key}`);
-    addEventListener('keydown', on);
-    return { got, off: () => removeEventListener('keydown', on) };
-  };
-
   afterEach(() => closePanel());
 
   it('lists focus, close, new session, sidebar, project style and export with their shortcuts', async () => {
@@ -272,14 +281,31 @@ describe('Beta actions in the palette (WP20)', () => {
     expect(row('Project colour & icon')).toBeDefined();
   });
 
-  it('focus and close replay the pane shortcut the panes already handle', async () => {
+  it('focus and close raise UiCommands for Panes, not synthetic key events', async () => {
     mountWp5();
-    const { got, off } = keys();
+    const pressed: string[] = [];
+    const on = (e: KeyboardEvent) => e.metaKey && pressed.push(e.key);
+    addEventListener('keydown', on);
+    const got: unknown[] = [];
+    const offs = (['focusPane', 'closePane'] as const).map((c) => onUiCommand(c, (arg) => got.push([c, arg])));
     await run('focus previous');
     await run('focus next');
     await run('close pane');
-    off();
-    expect(got).toEqual(['⌘[', '⌘]', '⌘w']);
+    removeEventListener('keydown', on);
+    offs.forEach((off) => off());
+    expect(got).toEqual([['focusPane', 'prev'], ['focusPane', 'next'], ['closePane', undefined]]);
+    expect(pressed).toEqual([]);
+  });
+
+  it('hints: only real chords; show / export have none, the panels carry ⇧⌘G / ⇧⌘T', () => {
+    const hint = (id: string) => COMMANDS.find((c) => c.id === id)?.hint;
+    expect(hint('show-changes')).toBe('');
+    expect(hint('show-transcript')).toBe('');
+    expect(hint('export-transcript')).toBe('');
+    expect(hint('panel-changes')).toBe('⇧⌘G');
+    expect(hint('panel-transcript')).toBe('⇧⌘T');
+    expect(UI_COMMAND_ITEM.showChanges).toBe('panel-changes');
+    expect(UI_COMMAND_ITEM.showTranscript).toBe('panel-transcript');
   });
 
   it('new terminal and new Claude Code session start a session in the selected project', async () => {
@@ -325,7 +351,7 @@ describe('Shortcuts sheet = mock #keys (WP20)', () => {
   const sheet = (what: string) => SHORTCUTS.find(([w]) => w === what)?.[1];
 
   it('uses the mock wording, with Review on ⇧⌘R and the panels on ⇧⌘G F T U I', () => {
-    expect(sheet('New session (Terminal by default)')).toBe('⌘T');
+    expect(sheet('New terminal')).toBe('⌘T'); // ⌘T always starts a terminal (shortcuts.ts)
     expect(sheet('Full diff review')).toBe('⇧⌘R');
     expect(sheet('Changes · Files · Transcript · Usage · Session')).toBe('⇧⌘G · ⇧⌘F · ⇧⌘T · ⇧⌘U · ⇧⌘I');
     expect(SHORTCUTS.map(([, k]) => k).join(' ')).not.toContain('⌥⌘D');

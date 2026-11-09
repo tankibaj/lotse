@@ -13,8 +13,6 @@ import { StatusGlyph } from './StatusGlyph';
 import { nextNeedingYou, paletteItems } from './items';
 import type { PaletteItem } from './items';
 
-const pressMeta = (key: string) => dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true, cancelable: true }));
-
 /** Open `name` and leave it open (`togglePanel` would close it when it is already the open one). */
 const openPanel = (name: PanelName) => getOpenPanel() !== name && togglePanel(name);
 
@@ -58,10 +56,9 @@ function PaletteView() {
         case 'new-session': openOverlay({ name: 'newSession' }); break;
         case 'new-terminal': void startSession(client, snap, 'terminal').catch(() => {}); break;
         case 'new-claude': void startSession(client, snap, 'claude_code').catch(() => {}); break;
-        // the pane shortcuts live in `panes/`: replay the key so there is one implementation
-        case 'focus-prev': pressMeta('['); break;
-        case 'focus-next': pressMeta(']'); break;
-        case 'close-pane': pressMeta('w'); break;
+        case 'focus-prev': emitUiCommand('focusPane', 'prev'); break;
+        case 'focus-next': emitUiCommand('focusPane', 'next'); break;
+        case 'close-pane': emitUiCommand('closePane'); break;
         case 'toggle-sidebar': emitUiCommand('toggleSidebar'); break;
         case 'project-style': {
           const projectId = snap.sessions.find((s) => s.id === selected)?.project_id;
@@ -79,8 +76,9 @@ function PaletteView() {
         case 'open-composer': emitUiCommand('openComposer'); break;
         // these act on the selected session: with none selected they do nothing
         case 'open-review': if (selected) emitUiCommand('openReview', selected); break;
-        case 'show-transcript': if (selected) emitUiCommand('showTranscript', selected); break;
-        case 'show-changes': if (selected) emitUiCommand('showChanges', selected); break;
+        // the panels, directly: `showTranscript` / `showChanges` are still answered by the read-only sheets (Sheets.tsx)
+        case 'show-transcript': if (selected) openPanel('transcript'); break;
+        case 'show-changes': if (selected) openPanel('changes'); break;
         case 'settings': openSettings(); break;
         case 'shortcuts': openOverlay({ name: 'shortcuts' }); break;
         case 'pause': {

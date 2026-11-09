@@ -13,6 +13,8 @@
 //   openReview (session id, optional file)       -> shell: the full-window review (`review/`)
 //   openFile (session id, path)                  -> editor pane (no listener until it lands)
 //   openComposer                                 -> composer: the prompt box over the focused pane
+//   focusPane ('prev' | 'next')                  -> panes: move the focus, like ⌘[ / ⌘]
+//   closePane                                    -> panes: close the focused pane, like ⌘W
 
 export type UiCommand =
   | 'showChanges'
@@ -28,7 +30,9 @@ export type UiCommand =
   | 'togglePanel'
   | 'openReview'
   | 'openFile'
-  | 'openComposer';
+  | 'openComposer'
+  | 'focusPane'
+  | 'closePane';
 
 /** Optional payload: a project id, a session id or a panel name, depending on the command; `extra` is a file path. */
 export type UiCommandHandler = (arg?: string, extra?: string) => void;

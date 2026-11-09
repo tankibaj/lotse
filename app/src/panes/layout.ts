@@ -234,9 +234,11 @@ export function closePane(l: PaneLayout, index: number): PaneLayout {
   return build(columns, Math.min(focus, l.panes.length - 2), carryWidths(l, columns), l.heights, carryCollapsed(l, columns));
 }
 
+/** Focus pane `index`; its column reopens when it was collapsed or hidden, so the focused pane is always visible. */
 export function focusPane(l: PaneLayout, index: number): PaneLayout {
-  if (index < 0 || index >= l.panes.length || index === l.focus) return l;
-  return { ...l, focus: index };
+  if (index < 0 || index >= l.panes.length) return l;
+  if (columnMode(l, index) !== 'open') return restoreColumn(l, index);
+  return index === l.focus ? l : { ...l, focus: index };
 }
 
 /** ⌘[ (delta -1) and ⌘] (delta +1): move focus through the panes of open columns, wrapping around the ends. */
@@ -284,14 +286,29 @@ export function restoreColumn(l: PaneLayout, index: number): PaneLayout {
   return build(columns, index, l.weights, l.heights, collapsed);
 }
 
-/** Drop panes beyond `max` from the end (a layout saved for a wider display, say); the focused pane stays. */
-export function limitPanes(l: PaneLayout, max: number): PaneLayout {
+/** The panes of the column holding flat pane `index`, top to bottom. */
+export function paneColumn(l: PaneLayout, index: number): PaneRef[] {
+  const columns = columnsOf(l);
+  return columns[locate(columns, index).col] ?? [];
+}
+
+/** Drop panes beyond `max` from the end (a layout saved for a wider display, say); the focused pane and the `keep` keys stay. */
+export function limitPanes(l: PaneLayout, max: number, keep: ReadonlySet<string> = new Set()): PaneLayout {
   let out = l;
   for (let i = out.panes.length - 1; i >= 0 && out.panes.length > max; i--) {
-    if (i === out.focus) continue;
+    if (i === out.focus || keep.has(paneKey(out.panes[i] as PaneRef))) continue;
     out = closePane(out, i);
   }
   return out;
+}
+
+/** `restored` plus the panes of `current` named in `keep` (editors with unsaved edits), each as a column at the end; the focus stays where `restored` had it. */
+export function keepPanes(restored: PaneLayout, current: PaneLayout, keep: ReadonlySet<string>): PaneLayout {
+  const have = new Set(restored.panes.map(paneKey));
+  const extra = current.panes.filter((p) => keep.has(paneKey(p)) && !have.has(paneKey(p)));
+  if (extra.length === 0) return restored;
+  const columns = [...columnsOf(restored), ...extra.map((p) => [p])];
+  return build(columns, restored.focus, restored.weights, restored.heights, carryCollapsed(restored, columns));
 }
 
 /** The top panes of the two columns around the divider left of pane `index` (which must start a column after the first), or null. */
@@ -383,15 +400,28 @@ export function syncLayout(l: PaneLayout, selected: SessionId | null, exists: (i
   return build(columns, focus, carryWidths(l, columns), l.heights, carryCollapsed(l, columns));
 }
 
-/** A display, as the window sees it: its name and size in logical points. */
+/** Name of a display the window could not name (no monitor lookup, or a monitor without a name). */
+export const DISPLAY_FALLBACK_NAME = 'display';
+
+/** A display, as the window sees it: its name and size in logical points, plus scale and position when known. */
 export interface Display {
   name: string;
   width: number;
   height: number;
+  scale?: number;
+  x?: number;
+  y?: number;
 }
 
-/** Storage key of the layout for a display. */
-export const layoutKey = (d: Display): string => `lotse-panes:${d.name}:${d.width}x${d.height}`;
+/**
+ * Storage key of the layout for a display: name and size, the scale when it is not 1 (one monitor at two scales), and the
+ * position when the display has no name of its own (two unnamed monitors).
+ */
+export function layoutKey(d: Display): string {
+  const scale = d.scale !== undefined && d.scale !== 1 ? `@${d.scale}x` : '';
+  const at = d.name === DISPLAY_FALLBACK_NAME && d.x !== undefined && d.y !== undefined ? `+${d.x},${d.y}` : '';
+  return `lotse-panes:${d.name}:${d.width}x${d.height}${scale}${at}`;
+}
 
 /** The layout as stored: terminals only (an editor's file is not worth reopening on its own). */
 function withoutEditors(l: PaneLayout): PaneLayout {

@@ -13,12 +13,20 @@ vi.mock('@xterm/addon-web-links', async () => (await import('../terminal/fakeXte
 vi.mock('@xterm/addon-webgl', async () => (await import('../terminal/fakeXterm')).webglModule);
 
 /** The display the (faked) Tauri window is on; logical points. */
-const monitor = vi.hoisted(() => ({ now: { name: 'Built-in Retina Display', width: 1512, height: 982 } }));
+const monitor = vi.hoisted(() => ({ now: { name: 'Built-in Retina Display', width: 1512, height: 982 }, lookups: 0 }));
 vi.mock('@tauri-apps/api/window', () => ({
-  currentMonitor: async () => ({ name: monitor.now.name, scaleFactor: 2, size: { toLogical: () => ({ width: monitor.now.width, height: monitor.now.height }) } }),
+  currentMonitor: async () => {
+    monitor.lookups += 1;
+    return {
+      name: monitor.now.name,
+      scaleFactor: 2,
+      size: { toLogical: () => ({ width: monitor.now.width, height: monitor.now.height }) },
+      position: { toLogical: () => ({ x: 0, y: 0 }) },
+    };
+  },
 }));
-const LAPTOP = { name: 'Built-in Retina Display', width: 1512, height: 982 };
-const WIDE = { name: 'Studio Display', width: 3440, height: 1440 };
+const LAPTOP = { name: 'Built-in Retina Display', width: 1512, height: 982, scale: 2 };
+const WIDE = { name: 'Studio Display', width: 3440, height: 1440, scale: 2 };
 
 // jsdom lacks layout rects; CodeMirror measures selections through Range.
 Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
@@ -40,9 +48,10 @@ const shown = (id: string) => pane(id).closest<HTMLElement>('[data-column]')!.st
 const cmdD = () => fireEvent.keyDown(window, { code: 'KeyD', key: 'd', metaKey: true });
 const useDisplay = async (d: typeof LAPTOP) => {
   monitor.now = d;
-  await act(async () => {
-    window.dispatchEvent(new Event('resize'));
-  });
+  const before = monitor.lookups;
+  window.dispatchEvent(new Event('resize'));
+  await waitFor(() => expect(monitor.lookups).toBeGreaterThan(before)); // the lookup is debounced
+  await act(async () => {});
 };
 
 beforeEach(() => {

@@ -1,3 +1,4 @@
+import { FileText } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { Project, Session, SessionId } from '../lib/client';
@@ -26,12 +27,14 @@ import {
   heightOf,
   hideColumn,
   isEditor,
+  keepPanes,
   layoutKey,
   leftShare,
   limitPanes,
   loadLayout,
   maxPanesFor,
   nextSessionToOpen,
+  paneColumn,
   paneKey,
   resizePair,
   resizeStack,
@@ -50,6 +53,8 @@ import { useSessions } from './useSessions';
 /** Drag type the sidebar card sets (spec/mock.html: `text/lotse-session`). */
 export const SESSION_DRAG_TYPE = 'text/lotse-session';
 
+/** The layout is written this long after the last change (a divider drag changes it on every pointer move). */
+const SAVE_DEBOUNCE_MS = 300;
 /** Arrow keys on a focused divider move it by this many px. */
 const KEY_RESIZE_PX = 24;
 /** The drop zone sits this far inside the half of the pane it covers. */
@@ -117,28 +122,35 @@ const sameZone = (a: Zone | null, b: Zone | null) =>
 
 const ZONE_LABEL: Record<SplitDirection, string> = { right: 'Open side by side', down: 'Open below' };
 
-/** A column collapsed to a 28 px strip: the project tile and status of each terminal in it; a click opens the column again. */
-function Rail({ column, projects, sessions, onRestore }: { column: PaneRef[]; projects: Project[]; sessions: Session[]; onRestore: () => void }) {
-  const shown = column.flatMap((p) => {
-    const s = isEditor(p) ? undefined : sessions.find((x) => x.id === p);
-    return s ? [s] : [];
+/** A column collapsed to a 28 px strip: the project tile and status of each terminal in it, a file icon for each editor; a click opens the column again. */
+export function Rail({ column, projects, sessions, onRestore }: { column: PaneRef[]; projects: Project[]; sessions: Session[]; onRestore: () => void }) {
+  const items = column.flatMap((p): { key: string; name: string; session?: Session }[] => {
+    if (isEditor(p)) return [{ key: paneKey(p), name: p.path.split('/').pop() ?? p.path }];
+    const session = sessions.find((x) => x.id === p);
+    return session ? [{ key: p, name: session.title, session }] : [];
   });
-  const titles = shown.map((s) => s.title).join(', ');
+  const names = items.map((i) => i.name).join(', ');
   return (
     <button
       className="flex shrink-0 flex-col items-center gap-2 border-r border-line bg-side py-2 hover:bg-sel"
       style={{ width: RAIL_PX }}
-      aria-label={`Restore ${titles}`}
-      title={`Restore ${titles}`}
+      aria-label={`Restore ${names}`}
+      title={`Restore ${names}`}
       data-testid="pane-rail"
       onClick={onRestore}
     >
-      {shown.map((s) => {
-        const project = projects.find((p) => p.id === s.project_id);
+      {items.map(({ key, session }) => {
+        const project = session && projects.find((p) => p.id === session.project_id);
         return (
-          <span key={s.id} className="flex flex-col items-center gap-1.5">
-            {project && <ProjectTile project={project} />}
-            <StatusGlyph status={s.status} />
+          <span key={key} className="flex flex-col items-center gap-1.5">
+            {session ? (
+              <>
+                {project && <ProjectTile project={project} />}
+                <StatusGlyph status={session.status} />
+              </>
+            ) : (
+              <FileText size={14} className="text-dim" aria-hidden="true" />
+            )}
           </span>
         );
       })}
@@ -174,21 +186,54 @@ export function Panes() {
   const max = display === null ? MAX_PANES : maxPanesFor(display.width);
   const storeKey = display === null ? null : layoutKey(display);
 
-  // On a display (first read, or the window moved): bring back the layout stored for it; none stored: keep this one.
+  /** What the callbacks below need and must not capture stale: the current layout, unsaved editors and the loaded sessions. */
+  const live = useRef({ dirty, sessions, loaded });
+  useEffect(() => {
+    live.current = { dirty, sessions, loaded };
+  });
+
+  // On a display (first read, or the window moved): bring back the layout stored for it, else fit the current one to it.
+  // Editors with unsaved edits stay open either way.
   const onDisplay = useCallback((d: Display) => {
     setDisplay(d);
-    const saved = loadLayout(localStorage, layoutKey(d));
-    if (saved === null) return;
-    const restored = limitPanes(saved, maxPanesFor(d.width));
-    setLayout(restored);
-    const focused = restored.panes[restored.focus];
+    const fit = maxPanesFor(d.width);
+    const { dirty: unsaved, sessions: all, loaded: ready } = live.current;
+    let restored = loadLayout(localStorage, layoutKey(d));
+    if (restored !== null) {
+      restored = limitPanes(restored, fit);
+      if (ready) restored = syncLayout(restored, null, (id) => all.some((s) => s.id === id));
+      if (restored.panes.length === 0) restored = null;
+    }
+    if (restored === null) {
+      setLayout((l) => limitPanes(l, fit, live.current.dirty));
+      return;
+    }
+    const next = restored;
+    setLayout((l) => keepPanes(next, l, unsaved));
+    const focused = next.panes[next.focus];
     if (focused !== undefined) selectSession(sessionOf(focused)); // else the old selection would replace a pane of the restored layout
   }, []);
   useDisplayChange(onDisplay);
 
+  const pendingSave = useRef<{ key: string; layout: PaneLayout } | null>(null);
   useEffect(() => {
-    if (storeKey !== null && loaded) saveLayout(localStorage, storeKey, layout);
+    if (storeKey === null || !loaded) return;
+    const stale = pendingSave.current;
+    if (stale !== null && stale.key !== storeKey) saveLayout(localStorage, stale.key, stale.layout); // the window moved before the write
+    const job = { key: storeKey, layout };
+    pendingSave.current = job;
+    const timer = window.setTimeout(() => {
+      saveLayout(localStorage, job.key, job.layout);
+      if (pendingSave.current === job) pendingSave.current = null;
+    }, SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
   }, [layout, storeKey, loaded]);
+  useEffect(
+    () => () => {
+      if (pendingSave.current !== null) saveLayout(localStorage, pendingSave.current.key, pendingSave.current.layout);
+    },
+    [],
+  );
 
   // Keep panes in step with the sessions that exist and the selection (derived while rendering).
   if (loaded) {
@@ -322,6 +367,11 @@ export function Panes() {
   /** Collapse to a rail or hide the column of pane `index`, or restore it; the session that gets focus becomes the selection. */
   const changeColumn = useCallback(
     (change: (l: PaneLayout, index: number) => PaneLayout, index: number) => {
+      if (change !== restoreColumn) {
+        // A rail (or a hidden column) shows no unsaved mark and offers no discard prompt: keep the edit in sight.
+        const unsaved = paneColumn(layout, index).find((p): p is Extract<PaneRef, object> => isEditor(p) && dirty.has(paneKey(p)));
+        if (unsaved !== undefined) return say(`Unsaved changes in ${unsaved.path.split('/').pop()}: save or close it first`);
+      }
       const next = change(layout, index);
       if (next === layout) return;
       setLayout(next);
@@ -329,7 +379,7 @@ export function Panes() {
       const ref = next.panes[next.focus];
       if (ref !== undefined) selectSession(sessionOf(ref));
     },
-    [layout],
+    [layout, dirty, say],
   );
 
   /** The drop zone for a pointer at `x`,`y` over pane element `el` (null: not over a pane). */
@@ -359,6 +409,8 @@ export function Panes() {
 
   // Other WPs ask for a split through the bus (card context menu, palette).
   useEffect(() => onSplitRequest(split), [split]);
+  useEffect(() => onUiCommand('focusPane', (dir) => step(dir === 'prev' ? -1 : 1)), [step]);
+  useEffect(() => onUiCommand('closePane', () => void close(layout.focus)), [close, layout.focus]);
   useEffect(() => onUiCommand('splitSession', (id) => split(id ?? null, 'right')), [split]);
   useEffect(() => onUiCommand('splitSessionDown', (id) => split(id ?? null, 'down')), [split]);
   useEffect(() => onUiCommand('openFile', (id, path) => (id && path ? openFile(id, path) : undefined)), [openFile]);
