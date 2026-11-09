@@ -529,6 +529,10 @@ pub enum Event {
     },
     /// To the connection that sent `mod_attach` for `session_id`: something for the mod to do.
     /// Since proto 5.
+    ///
+    /// Unlike every other event this is NOT broadcast: the daemon delivers it only to the
+    /// connection that sent `mod_attach` for that session. That needs a targeted-event path in the
+    /// hub, with a test that another client never sees it (obligation for M2).
     ModCommand {
         session_id: SessionId,
         command: ModCommand,

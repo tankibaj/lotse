@@ -2,7 +2,7 @@
 //!
 //! The daemon turns raw signals into an [`Observation`] and hands it to the [`crate::Engine`], which
 //! offers it to the registered adapters. An adapter answers with zero or more [`Detection`]s; the
-//! engine merges them by source precedence ([`DetectSource`]: hook > osc7501 > screen > process).
+//! engine merges them by source precedence ([`DetectSource`]: mod > hook > osc7501 > screen > process).
 
 use lotse_proto::{AgentKind, DetectSource, PermRequest, Status, SubAgent, UnixMs};
 

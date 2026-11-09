@@ -114,6 +114,7 @@ pub struct SubAgent {
     pub activity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tokens: Option<u64>,
+    /// Display only: the daemon's totals (`Usage`, `UsageToday`) sum `cost_micros`, never this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -871,6 +872,10 @@ pub struct UsageToday {
     /// Millionths of a US dollar; `None` when a model without a known price took part ("tokens only").
     pub cost_micros: Option<u64>,
     /// Empty until the mod reports them. Since proto 5.
+    ///
+    /// The transcript tracker rebuilds the token and cost fields on every refresh; it must carry
+    /// the last reported `rate_limits` over into each new `UsageToday`, or every refresh wipes them
+    /// (obligation for M2).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rate_limits: Vec<RateLimit>,
 }

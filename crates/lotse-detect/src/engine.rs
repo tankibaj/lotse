@@ -5,13 +5,13 @@
 //! request actually change.
 //!
 //! Merge rule: the engine remembers the last opinion of every [`DetectSource`]. The merged status is
-//! the opinion of the strongest source (`Hook` > `Osc7501` > `Screen` > `Process`) that has one;
+//! the opinion of the strongest source (`Mod` > `Hook` > `Osc7501` > `Screen` > `Process`) that has one;
 //! `Status::Unknown` is "no signal" and never wins. A weaker source therefore cannot override a
 //! stronger one: a hook `perm` stays until the hook adapter clears it. Sub-agents and the permission
 //! request come from the strongest source that reported them / is the winning source.
 //!
 //! One exception, upwards: a permission dialog the screen adapter shows (`Perm`) counts even when a
-//! stronger source (the hooks) says something else, because hooks do not report every prompt (a
+//! stronger source (the mod, the hooks) says something else, because hooks do not report every prompt (a
 //! background sub-agent's, a folder-trust dialog). It ends when the screen adapter's `Perm` does,
 //! and a hook `perm` takes the request over (the same prompt, better described).
 
@@ -391,6 +391,34 @@ mod tests {
         let up = e.observe(tick(3)).unwrap();
         assert_eq!(up.status, Status::Run);
         assert_eq!(up.perm, None);
+    }
+
+    #[test]
+    fn the_mod_beats_the_hooks_and_a_fresh_screen_dialog_still_overrides_it() {
+        let mut e = engine_with(vec![
+            (
+                DetectSource::Mod,
+                vec![vec![det(DetectSource::Mod, Status::Run, 1)], vec![]],
+            ),
+            (
+                DetectSource::Hook,
+                vec![vec![perm_det(DetectSource::Hook, 1)], vec![]],
+            ),
+            (
+                DetectSource::Screen,
+                vec![vec![], vec![perm_det(DetectSource::Screen, 2)]],
+            ),
+        ]);
+        let up = e.observe(tick(1)).unwrap();
+        assert_eq!((up.status, up.source), (Status::Run, DetectSource::Mod));
+        assert_eq!(
+            up.perm, None,
+            "the hook's perm does not outrank the mod's run"
+        );
+
+        let up = e.observe(tick(2)).unwrap();
+        assert_eq!((up.status, up.source), (Status::Perm, DetectSource::Screen));
+        assert!(up.perm.is_some());
     }
 
     #[test]

@@ -456,6 +456,8 @@ export class MockClient implements DaemonClient {
 
   /** Simulate the link dropping and coming back (`disconnected`, then `reconnected`). */
   setConnection(state: ConnectionState): void {
+    // a mod bridge attached on the old link is gone; it attaches again
+    if (state !== 'connected') this.modAttached.clear();
     for (const l of [...this.connListeners]) l(state);
   }
 
@@ -626,6 +628,7 @@ export class MockClient implements DaemonClient {
     this.must(sessionId);
     this.sessions = this.sessions.filter((s) => s.id !== sessionId);
     this.pty.delete(sessionId);
+    this.modAttached.delete(sessionId);
     this.emit({ event: 'session_closed', data: { session_id: sessionId } });
   }
 
@@ -890,8 +893,11 @@ export class MockClient implements DaemonClient {
   async resolveSessionStart(id: string, approve: boolean): Promise<void> {
     const req = this.startRequests.get(id);
     if (!req) throw new DaemonError({ code: 'not_found', message: `no session start request ${id}` });
-    this.startRequests.delete(id);
-    if (!approve) return;
+    if (!approve) {
+      this.startRequests.delete(id);
+      return;
+    }
+    // keep the request open when the start fails (e.g. the parent was closed meanwhile), like the daemon's card
     await this.createSession({
       project_id: req.project_id,
       agent: req.agent,
@@ -902,12 +908,17 @@ export class MockClient implements DaemonClient {
       parent_session: req.parent_session,
       requested_by_agent: true,
     });
+    this.startRequests.delete(id);
   }
 
   /** Set what the mod reports about a session (context %, source layer, todo, parent): emits `session_updated`. */
   setSessionMeta(sessionId: SessionId, meta: Partial<Pick<Session, 'context_pct' | 'source_layer' | 'todo' | 'parent_session'>>): void {
     const s = this.must(sessionId);
-    Object.assign(s, clone(meta));
+    // `undefined` clears a field (the wire omits absent fields); it is never stored as a key
+    for (const key of Object.keys(meta) as (keyof typeof meta)[]) {
+      if (meta[key] === undefined) delete s[key];
+      else Object.assign(s, clone({ [key]: meta[key] }));
+    }
     this.emit({ event: 'session_updated', data: clone(s) });
   }
 

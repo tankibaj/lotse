@@ -628,6 +628,44 @@ describe('proto 5: mod data and child sessions', () => {
     await expect(c.resolveSessionStart('nope', false)).rejects.toMatchObject({ code: 'not_found' });
   });
 
+  it('modAttached is cleared when the session closes and when the link drops or returns', async () => {
+    const c = make();
+    const events = collect(c);
+    await c.modAttach('a1');
+    await c.closeSession('a1');
+    expect(c.sendModCommand('a1', { cmd: 'ping' })).toBe(false);
+
+    await c.modAttach('a2');
+    c.setConnection('disconnected');
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(false);
+    await c.modAttach('a2');
+    c.setConnection('reconnected');
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(false);
+    await c.modAttach('a2');
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(true);
+    expect(events.filter((e) => e.event === 'mod_command')).toHaveLength(1);
+  });
+
+  it('a failed approve keeps the request open: it can be answered again', async () => {
+    const c = make();
+    const id = c.requestSessionStart({ parent_session: 'a1', project_id: 'p1', agent: 'codex', title: null, prompt: 'x', worktree: null });
+    await c.closeSession('a1'); // the parent goes away: the start fails
+    await expect(c.resolveSessionStart(id, true)).rejects.toMatchObject({ code: 'not_found' });
+    await c.resolveSessionStart(id, false); // still open, so a denial is accepted
+    await expect(c.resolveSessionStart(id, false)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('setSessionMeta with undefined removes the key instead of storing undefined', async () => {
+    const c = make();
+    c.setSessionMeta('a1', { context_pct: 50, todo: { done: 1, total: 2 } });
+    const events = collect(c);
+    c.setSessionMeta('a1', { context_pct: undefined });
+    const data = (events[0] as { data: Record<string, unknown> }).data;
+    expect('context_pct' in data).toBe(false);
+    expect(data.todo).toEqual({ done: 1, total: 2 });
+    expect('context_pct' in ((await c.listSessions()).find((s) => s.id === 'a1') ?? {})).toBe(false);
+  });
+
   it('createSession keeps parent_session; an unknown parent is not_found', async () => {
     const c = make();
     const base = { project_id: 'p1', agent: 'codex' as const, command: null, title: null, worktree: null, first_prompt: null };

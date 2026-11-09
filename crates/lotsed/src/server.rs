@@ -97,20 +97,21 @@ pub async fn handle_conn(state: Arc<State>, stream: UnixStream, token: Arc<str>)
         _ => return,
     };
     let rejection = if !ct_eq(hello.token.as_bytes(), token.as_bytes()) {
-        Some((ErrorCode::Unauthorized, "bad token"))
+        Some((ErrorCode::Unauthorized, "bad token".to_owned()))
     } else if hello.proto_version != PROTO_VERSION {
-        Some((ErrorCode::VersionMismatch, "protocol version mismatch"))
+        // Exact equality on purpose: the app, the hooks and the daemon ship in one bundle (lockstep).
+        Some((
+            ErrorCode::VersionMismatch,
+            format!(
+                "protocol version mismatch: daemon speaks proto {PROTO_VERSION}, client sent {}",
+                hello.proto_version
+            ),
+        ))
     } else {
         None
     };
     if let Some((code, message)) = rejection {
-        let frame = response_frame(
-            0,
-            Response::Error(ProtoError {
-                code,
-                message: message.into(),
-            }),
-        );
+        let frame = response_frame(0, Response::Error(ProtoError { code, message }));
         write_frame(&mut wr, &frame).await;
         let _ = wr.shutdown().await;
         return;
