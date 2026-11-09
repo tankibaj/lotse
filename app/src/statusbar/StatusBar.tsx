@@ -10,9 +10,12 @@ import {
   useUiState,
   useWorkspace,
 } from '../lib/state';
+import { useCoarseNow } from '../lib/state/clock';
 import { useSelectedSessionId } from '../lib/ui/selection';
 import { lanState } from '../settings/remote';
+import { clampPct, COMPACT_AT } from '../sidebar/modData';
 import { NoGitIcon } from '../sidebar/NoGit';
+import { rateLevel, rateTitle, windowLabel } from './rate';
 
 // Alpha status bar (spec/mock.html footer): need-you filter chip, git of the current session, daemon
 // state and session count, pause-notifications bell, LAN state (`settings/remote`), today's tokens and cost (`—` until the first snapshot).
@@ -43,6 +46,9 @@ export function StatusBar() {
   const paused = settings?.notifications.paused ?? false;
   const up = connection === 'connected';
   const lan = lanState();
+  const rates = usageToday?.rate_limits ?? [];
+  // the reset countdown in a rate tooltip moves by the minute
+  const now = useCoarseNow((t) => String(Math.floor(t / 60_000)), () => false, 30_000);
 
   // Why the daemon is down: the `daemon_connect` error. The client dedups `connect()` and keeps its own
   // retry timer, so asking while down costs nothing; the text only shows while down.
@@ -107,6 +113,12 @@ export function StatusBar() {
         </span>
       )}
 
+      {current?.context_pct !== undefined && (
+        <span data-testid="status-context" className={`tabular-nums ${current.context_pct >= COMPACT_AT ? 'text-orange' : ''}`} title={`Context window ${clampPct(current.context_pct)}% used`}>
+          ctx {clampPct(current.context_pct)}%
+        </span>
+      )}
+
       <span className={`flex min-w-0 ${up ? '' : 'text-red'}`} data-testid="status-daemon" title={up ? undefined : (connectError ?? undefined)}>
         <span className="shrink-0 whitespace-pre">{up ? '● lotsed running' : '● lotsed not running'}</span>
         {!up && connectError && <span className="max-w-[360px] truncate whitespace-pre">{` · ${connectError}`}</span>}
@@ -125,6 +137,29 @@ export function StatusBar() {
         {paused && ' Paused'}
       </button>
       <span title={lan.tooltip}>{lan.label}</span>
+      {rates.length > 0 && (
+        <span data-testid="status-rate" className="flex items-center gap-2">
+          {rates.map((r) => {
+            const level = rateLevel(r.pct);
+            return (
+              <span
+                key={r.kind}
+                data-window={r.kind}
+                data-level={level}
+                title={rateTitle(r, now)}
+                className={`inline-flex items-center gap-1 tabular-nums ${level === 'crit' ? 'text-red' : level === 'warn' ? 'text-orange' : ''}`}
+              >
+                <span>
+                  {windowLabel(r.kind)} {clampPct(r.pct)}%
+                </span>
+                <span aria-hidden="true" className="h-1 w-8 overflow-hidden rounded-full bg-line">
+                  <span className="block h-full bg-current" style={{ width: `${clampPct(r.pct)}%` }} />
+                </span>
+              </span>
+            );
+          })}
+        </span>
+      )}
       <span data-testid="status-usage" title={usage.title}>
         {usage.text}
       </span>

@@ -8,6 +8,7 @@ import { useSessions } from '../panes/useSessions';
 import { diffCounts } from '../sheets/diffLines';
 import { inTauri } from '../sheets/hostBridge';
 import { useDialogFocus } from '../sheets/ui';
+import { agentEdits } from './agentEdits';
 import { buildReviewPrompt, clearComments, dropEmptyComments, useComments, written } from './comments';
 import { BADGE, FileDiff } from './FileDiff';
 import type { Layout } from './FileDiff';
@@ -80,6 +81,22 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
       alive = false;
     };
   }, [client, sessionId]);
+
+  // Which sub-agent changed which file. Best effort: without a transcript there is no label.
+  const [edits, setEdits] = useState<Map<string, string[]>>(new Map());
+  const loadedPaths = load.status === 'ready' ? load.diff.files.map((f) => f.path) : null;
+  const pathKey = loadedPaths?.join('\n');
+  useEffect(() => {
+    if (pathKey === undefined) return;
+    let alive = true;
+    client.getTranscript(sessionId).then(
+      (t) => alive && setEdits(agentEdits(t.turns, pathKey.split('\n'))),
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [client, sessionId, pathKey]);
 
   // Boxes opened and left empty are not comments.
   useEffect(() => () => dropEmptyComments(sessionId), [sessionId]);
@@ -222,6 +239,7 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
                 {files.map((f) => {
                   const { added, removed } = counts(f);
                   const badge = BADGE[f.status];
+                  const by = edits.get(f.path);
                   return (
                     <button
                       key={f.path}
@@ -235,6 +253,12 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
                         {badge.letter}
                       </span>
                       <span className="flex-1 truncate font-mono">{f.path.split('/').pop()}</span>
+                      {by && (
+                        <span data-part="by-agent" className="max-w-[72px] shrink-0 truncate rounded bg-line px-1 text-[10px] text-dim" title={`Changed by ${by.join(', ')}`}>
+                          {by[0]}
+                          {by.length > 1 && ` +${by.length - 1}`}
+                        </span>
+                      )}
                       {(added > 0 || removed === 0) && !f.binary && <span className="text-green tabular-nums">+{added}</span>}
                       {removed > 0 && <span className="text-red tabular-nums">−{removed}</span>}
                     </button>
