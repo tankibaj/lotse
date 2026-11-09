@@ -66,6 +66,18 @@ describe('StatusBar', () => {
     expect(await screen.findByText(/lotsed running/)).toBeInTheDocument();
   });
 
+  it('shows why the daemon is not running: the daemon_connect error text, gone again once connected', async () => {
+    const { client } = await ready();
+    vi.spyOn(client, 'connect').mockRejectedValue(new Error('connecting to lotsed.sock: No such file or directory'));
+    act(() => client.setConnection('disconnected'));
+    const state = await screen.findByTestId('status-daemon');
+    await waitFor(() => expect(state).toHaveTextContent('● lotsed not running · connecting to lotsed.sock: No such file or directory'));
+    expect(state).toHaveAttribute('title', expect.stringContaining('No such file or directory'));
+    act(() => client.setConnection('reconnected'));
+    await waitFor(() => expect(screen.getByTestId('status-daemon')).toHaveTextContent('● lotsed running'));
+    expect(screen.getByTestId('status-daemon')).not.toHaveTextContent('No such file');
+  });
+
   it('bell pauses and resumes notifications through the daemon settings', async () => {
     const { client } = await ready();
     const bell = screen.getByRole('button', { name: 'Pause notifications' });

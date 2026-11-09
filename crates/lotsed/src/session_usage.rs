@@ -5,7 +5,8 @@
 //!   run to now. Lanes: the session's own agent first, then one per sub-agent (named from the
 //!   session's current sub-agent list, else by id).
 //! - **Tokens** are summed over the whole Claude Code transcript the session's hooks announced
-//!   (same rules as [`crate::usage`]: a message counts once, the latest line of it wins). Other
+//!   plus its `<session>/subagents/*.jsonl` (same rules as [`crate::usage`]: a message counts once,
+//!   the latest line of it wins). Other
 //!   agents have no parseable transcript: tokens 0, `priced: false`, time still filled.
 //! - **Spend** is today's (local day) cost: this session, its project's live sessions, and
 //!   everything (the status bar's total, from the incremental [`crate::usage::UsageTracker`]: the
@@ -41,9 +42,37 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// Scans kept at most (a few transcripts per project; cleared when exceeded).
 const MAX_CACHED_SCANS: usize = 64;
 
-struct Cached {
+/// State of a transcript and its sub-agent files: newest write, bytes, file count.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Stamp {
     mtime: SystemTime,
     len: u64,
+    files: usize,
+}
+
+/// `None` when the transcript is unreadable or has no modification time (never cached then).
+fn stamp(path: &Path) -> std::io::Result<Option<Stamp>> {
+    let meta = std::fs::metadata(path)?;
+    let mut out = meta.modified().ok().map(|mtime| Stamp {
+        mtime,
+        len: meta.len(),
+        files: 1,
+    });
+    for sub in crate::usage::subagent_files(path) {
+        let Ok(meta) = std::fs::metadata(&sub) else {
+            continue;
+        };
+        out = out.zip(meta.modified().ok()).map(|(s, mtime)| Stamp {
+            mtime: s.mtime.max(mtime),
+            len: s.len + meta.len(),
+            files: s.files + 1,
+        });
+    }
+    Ok(out)
+}
+
+struct Cached {
+    stamp: Stamp,
     day: DayBounds,
     scan: Arc<Scan>,
 }
@@ -66,12 +95,10 @@ impl ScanCache {
     }
 
     fn get(&self, path: &Path, day: DayBounds) -> std::io::Result<Arc<Scan>> {
-        let meta = std::fs::metadata(path)?;
-        let (len, mtime) = (meta.len(), meta.modified().ok());
-        if let Some(mtime) = mtime
+        let stamp = stamp(path)?;
+        if let Some(stamp) = stamp
             && let Some(c) = self.entries().get(path)
-            && c.mtime == mtime
-            && c.len == len
+            && c.stamp == stamp
             && c.day == day
         {
             return Ok(c.scan.clone());
@@ -80,7 +107,7 @@ impl ScanCache {
         let scan = Arc::new(scan(path, day)?);
         // a file changed while it was read is cached under its older state: the next call sees the
         // newer one and reads again
-        if let Some(mtime) = mtime {
+        if let Some(stamp) = stamp {
             let mut entries = self.entries();
             if entries.len() >= MAX_CACHED_SCANS && !entries.contains_key(path) {
                 entries.clear();
@@ -88,8 +115,7 @@ impl ScanCache {
             entries.insert(
                 path.to_path_buf(),
                 Cached {
-                    mtime,
-                    len,
+                    stamp,
                     day,
                     scan: scan.clone(),
                 },
@@ -101,9 +127,10 @@ impl ScanCache {
     /// Today's priced cost of a transcript; a file last written before today (or unreadable) is 0.
     fn today_of(&self, path: &Path, day: DayBounds) -> u64 {
         let day_start = UNIX_EPOCH + Duration::from_millis(day.start_ms);
-        let written_today = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .is_ok_and(|m| m >= day_start);
+        let written_today = stamp(path)
+            .ok()
+            .flatten()
+            .is_some_and(|s| s.mtime >= day_start);
         if !written_today {
             return 0;
         }
@@ -334,18 +361,15 @@ impl Message {
     }
 }
 
-/// Sum a whole transcript; `today` counts the messages of `day` only.
+/// Sum a whole transcript and its sub-agent transcripts (`<session>/subagents/*.jsonl`, like
+/// [`crate::usage`]); a message in two files counts once. `today` counts the messages of `day` only.
 fn scan(path: &Path, day: DayBounds) -> std::io::Result<Scan> {
-    let mut reader = BufReader::new(crate::transcript::open_nofollow(path)?);
     let mut messages: HashMap<String, Message> = HashMap::new();
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if reader.read_until(b'\n', &mut line)? == 0 {
-            break;
-        }
-        if let Some((key, message)) = parse_line(&line) {
-            messages.insert(key, message);
+    read_messages(path, &mut messages)?;
+    for sub in crate::usage::subagent_files(path) {
+        // a sub-agent file that vanished or cannot be opened must not hide the session's own cost
+        if let Err(e) = read_messages(&sub, &mut messages) {
+            tracing::debug!("get_usage: sub-agent transcript {}: {e}", sub.display());
         }
     }
     let mut out = Scan::default();
@@ -368,6 +392,20 @@ fn scan(path: &Path, day: DayBounds) -> std::io::Result<Scan> {
         }
     }
     Ok(out)
+}
+
+fn read_messages(path: &Path, messages: &mut HashMap<String, Message>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(crate::transcript::open_nofollow(path)?);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            return Ok(());
+        }
+        if let Some((key, message)) = parse_line(&line) {
+            messages.insert(key, message);
+        }
+    }
 }
 
 /// `(message key, message)` of an assistant line that carries token counts. One message is written
@@ -466,6 +504,67 @@ mod tests {
         std::fs::remove_file(&real).unwrap();
         std::os::unix::fs::symlink(&other, &real).unwrap();
         assert!(scan(&real, DAY).is_err(), "the link was followed");
+    }
+
+    #[test]
+    fn sub_agent_transcripts_beside_the_session_transcript_count_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let path = dir.join("s.jsonl");
+        let ts = "2026-11-02T10:00:00.000Z";
+        std::fs::write(
+            &path,
+            line("lead", "claude-haiku-4-5", ts, (1_000_000, 0, 0, 0)),
+        )
+        .unwrap();
+        let subs = dir.join("s/subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        // one message of the lead is also in a sub-agent file (a copy): it counts once
+        std::fs::write(
+            subs.join("agent-a1.jsonl"),
+            line("s1", "claude-sonnet-4-5", ts, (1_000_000, 0, 0, 0))
+                + &line("lead", "claude-haiku-4-5", ts, (1_000_000, 0, 0, 0)),
+        )
+        .unwrap();
+        std::fs::write(
+            subs.join("agent-b2.jsonl"),
+            line("s2", "claude-sonnet-4-5", ts, (0, 100_000, 0, 0)),
+        )
+        .unwrap();
+        std::fs::write(subs.join("notes.txt"), "x").unwrap(); // not a transcript
+
+        let s = scan(&path, DAY).unwrap();
+        assert_eq!((s.tokens.input, s.tokens.output), (2_000_000, 100_000));
+        // haiku $1 + sonnet $3 + sonnet 0.1M out $1.5
+        assert_eq!(s.all.micros(), Some(5_500_000));
+        assert_eq!(s.today.micros(), Some(5_500_000));
+    }
+
+    #[test]
+    fn a_sub_agent_that_writes_later_invalidates_the_cached_scan() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let path = dir.join("s.jsonl");
+        let ts = "2026-11-02T10:00:00.000Z";
+        std::fs::write(
+            &path,
+            line("lead", "claude-sonnet-4-5", ts, (1_000, 0, 0, 0)),
+        )
+        .unwrap();
+        let cache = ScanCache::default();
+        assert_eq!(cache.get(&path, DAY).unwrap().tokens.input, 1_000);
+        assert_eq!(cache.get(&path, DAY).unwrap().tokens.input, 1_000);
+        assert_eq!(cache.reads(), 1, "an unchanged set of files is parsed once");
+
+        let subs = dir.join("s/subagents");
+        std::fs::create_dir_all(&subs).unwrap();
+        std::fs::write(
+            subs.join("agent-a1.jsonl"),
+            line("s1", "claude-sonnet-4-5", ts, (500, 0, 0, 0)),
+        )
+        .unwrap();
+        assert_eq!(cache.get(&path, DAY).unwrap().tokens.input, 1_500);
+        assert_eq!(cache.reads(), 2);
     }
 
     #[test]
