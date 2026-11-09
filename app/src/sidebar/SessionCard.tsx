@@ -3,11 +3,13 @@ import { memo } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { PermDecision, Project, Session, SessionId } from '../lib/client/types';
 import { AGENT_LABEL, displayStatus, noLiveStatus, sessionAge, shortBranch } from '../lib/state/selectors';
+import { prLabel, prTitle } from '../panels/changes/pr';
 import { InlineEdit } from './InlineEdit';
 import { StatusGlyph } from './StatusGlyph';
 
 // Session card, spec/research.html#sidebar. Line 1: status, title, unread dot, coarse time (Retry on
-// hover for failed sessions, same row). Line 2 (dim, 11 px): agent · branch icon · branch · ↑ahead · ±dirty.
+// hover for failed sessions, same row). Line 2 (dim, 11 px): agent · branch icon · branch · ↑ahead ↓behind ±dirty.
+// Line 3, only with uncommitted lines or a PR: +added −removed · PR pill.
 // Allow / Always / Deny are always visible on `perm` cards whose prompt the daemon can answer (`perm.always` is set
 // once it read the prompt; otherwise the card says "Answer in the terminal"). Hover and focus never add rows. Always
 // reads "Auto" when it would switch the agent to auto mode, and is hidden when the prompt has no such option.
@@ -42,6 +44,7 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
   const agent = AGENT_LABEL[s.agent];
   const age = sessionAge(s, now);
   const isGit = project.is_git && s.git.is_git;
+  const hasDiffstat = (s.git.added ?? 0) > 0 || (s.git.removed ?? 0) > 0;
   const needsSub = s.sub_agents.some((x) => x.status === 'perm' || x.status === 'fail');
   const showSubs = selected || needsSub;
   const running = s.sub_agents.filter((x) => x.status === 'run').length;
@@ -152,6 +155,11 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
               ↑{s.git.ahead}
             </span>
           )}
+          {(s.git.behind ?? 0) > 0 && (
+            <span data-part="behind" className="shrink-0 tabular-nums" title={`${s.git.behind} commit${s.git.behind === 1 ? '' : 's'} behind the base`}>
+              ↓{s.git.behind}
+            </span>
+          )}
           {s.git.dirty > 0 && (
             <span data-part="dirty" className="shrink-0 tabular-nums" title={`${s.git.dirty} uncommitted change${s.git.dirty === 1 ? '' : 's'}`}>
               ±{s.git.dirty}
@@ -163,6 +171,22 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
         <div className="truncate pl-[22px] text-[11px] text-dim">
           {agent}
           {hint}
+        </div>
+      )}
+
+      {/* Own row: with the branch, the counts and these together the line would not fit the sidebar's default width. */}
+      {isGit && (hasDiffstat || s.git.pr) && (
+        <div data-line="diff" className="flex min-w-0 items-center gap-1.5 pl-[22px] text-[11px] text-dim">
+          {hasDiffstat && (
+            <span data-part="diffstat" className="shrink-0 tabular-nums" title="Lines added and removed by the uncommitted changes">
+              <span className="text-green">+{s.git.added ?? 0}</span> <span className="text-red">−{s.git.removed ?? 0}</span>
+            </span>
+          )}
+          {s.git.pr && (
+            <span data-part="pr" className="min-w-0 truncate rounded bg-black/5 px-1 text-[10px] dark:bg-white/10" title={prTitle(s.git.pr)}>
+              {prLabel(s.git.pr)}
+            </span>
+          )}
         </div>
       )}
 
