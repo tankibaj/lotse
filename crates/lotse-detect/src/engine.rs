@@ -16,7 +16,8 @@
 //! and a hook `perm` takes the request over (the same prompt, better described).
 
 use crate::adapter::{Adapter, Detection, Observation};
-use crate::{claude, codex, opencode, osc7501, screen};
+use crate::claude_mod::Pricing;
+use crate::{claude, claude_mod, codex, opencode, osc7501, screen};
 use lotse_proto::{AgentKind, DetectSource, PermRequest, SessionId, Status, SubAgent, UnixMs};
 use std::collections::BTreeMap;
 
@@ -88,6 +89,7 @@ impl Engine {
     pub fn with_default_adapters(session_id: SessionId, agent: AgentKind) -> Self {
         let mut engine = Self::new(session_id.clone(), agent);
         let adapters = [
+            claude_mod::default_adapter(&session_id, agent),
             claude::default_adapter(&session_id, agent),
             codex::default_adapter(&session_id, agent),
             osc7501::default_adapter(&session_id, agent),
@@ -129,7 +131,27 @@ impl Engine {
             at = Some(detection.at);
             self.apply(detection);
         }
+        // A source whose signal ran out (the mod's heartbeat) is forgotten: the weaker ones speak again.
+        let tick = batch.iter().rev().find_map(|obs| match obs {
+            Observation::Tick { now } => Some(*now),
+            _ => None,
+        });
+        if let Some(now) = tick {
+            for adapter in &mut self.adapters {
+                if adapter.expired(now) {
+                    self.sources.remove(&adapter.source());
+                    at = Some(now);
+                }
+            }
+        }
         self.merge(at?)
+    }
+
+    /// Hand the daemon's price table to the adapters that show a cost.
+    pub fn set_pricing(&mut self, pricing: &Pricing) {
+        for adapter in &mut self.adapters {
+            adapter.set_pricing(pricing.clone());
+        }
     }
 
     /// Current merged status.

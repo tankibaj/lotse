@@ -36,6 +36,7 @@ pub mod hub;
 pub mod launch;
 pub mod lifecycle;
 pub mod mcp;
+pub mod mod_source;
 pub mod perm_answer;
 pub mod pr;
 pub mod quiet;

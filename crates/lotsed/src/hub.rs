@@ -207,6 +207,11 @@ impl Hub {
 
     /// Push an event to every connected client (and every observer, in registration order).
     pub fn broadcast(&self, event: Event) {
+        // for the connection that attached the mod only (`ModAttachments::send`), never for everyone
+        if matches!(event, Event::ModCommand { .. }) {
+            tracing::error!("a mod command must not be broadcast");
+            return;
+        }
         match &event {
             Event::StatusChanged {
                 session_id, status, ..
@@ -273,6 +278,20 @@ mod tests {
                 ("a", "settings_changed"),
                 ("b", "settings_changed")
             ]
+        );
+    }
+
+    #[test]
+    fn a_mod_command_is_never_broadcast() {
+        let hub = Hub::default();
+        let (_client, mut rx) = hub.register("app".into());
+        hub.broadcast(Event::ModCommand {
+            session_id: SessionId::new("s1"),
+            command: lotse_proto::ModCommand::Ping,
+        });
+        assert!(
+            rx.try_recv().is_err(),
+            "it goes to the attached connection only"
         );
     }
 

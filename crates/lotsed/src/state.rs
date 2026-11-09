@@ -7,6 +7,7 @@ use crate::git;
 use crate::git_glue;
 use crate::hub::{ClientTx, Hub, PermDecisionRecord};
 use crate::launch::{self, LaunchEnv};
+use crate::mod_source::{self, ModAttachments};
 use crate::pr;
 use crate::session::{Ctx, SessionError, SessionHandle, SpawnSpec, initial_status, now_ms};
 use crate::title::{PLACEHOLDER_TITLE, derive_title};
@@ -120,6 +121,8 @@ pub struct State {
     usage_scans: session_usage::ScanCache,
     /// `pr::generation()` at the last git refresh round.
     pr_seen: AtomicU64,
+    /// The connection of each session's Claude mod (`Event::ModCommand` goes to it only).
+    mods: ModAttachments,
 }
 
 impl State {
@@ -158,7 +161,12 @@ impl State {
             usage,
             usage_scans: session_usage::ScanCache::default(),
             pr_seen: AtomicU64::new(0),
+            mods: ModAttachments::default(),
         }))
+    }
+
+    pub(crate) fn mods(&self) -> &ModAttachments {
+        &self.mods
     }
 
     pub(crate) fn usage_tracker(&self) -> &UsageTracker {
@@ -255,6 +263,7 @@ impl State {
     /// A client connection ended: stop streaming to it.
     pub fn client_gone(&self, client_id: u64) {
         self.hub.remove(client_id);
+        self.mods.forget_client(client_id);
         for h in self.handles() {
             h.detach(client_id);
         }
@@ -436,9 +445,17 @@ impl State {
             req @ (Request::ListConnectors { .. } | Request::CheckConnectors { .. }) => {
                 mcp::handle(self, req).await
             }
-            // proto 5: the mod and child-session handlers land with M2 / C1
-            req @ (Request::ModAttach { .. } | Request::ResolveSessionStart { .. }) => {
-                unavailable(req.method())
+            // proto 5: the child-session handler lands with C1
+            Request::ModAttach { session_id } => mod_source::attach(self, client, session_id),
+            req @ Request::ResolveSessionStart { .. } => unavailable(req.method()),
+            Request::HookEvent { payload, .. }
+                if lotse_detect::claude_mod::is_mod_line(&payload)
+                    && client.name != mod_source::MOD_CLIENT =>
+            {
+                err(
+                    ErrorCode::InvalidRequest,
+                    "only the Claude mod sends mod status",
+                )
             }
             Request::HookEvent {
                 agent,
@@ -900,6 +917,7 @@ impl State {
         let Some(h) = removed else {
             return not_found("session");
         };
+        self.mods.forget_session(id);
         if let Some(ticket) = h.kill() {
             std::thread::spawn(move || ticket.finish(KILL_GRACE));
         }

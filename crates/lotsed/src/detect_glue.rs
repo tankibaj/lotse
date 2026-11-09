@@ -14,6 +14,7 @@
 //! The merged result ([`StatusUpdate`]) is applied to the session by the handle, which also decides
 //! about notifications ([`notification`]).
 
+use crate::mod_source::{features, pricing};
 use alacritty_terminal::event::VoidListener;
 use alacritty_terminal::grid::Dimensions;
 use alacritty_terminal::index::{Column, Line};
@@ -23,13 +24,14 @@ use alacritty_terminal::vte::ansi::Processor;
 use lotse_detect::adapter::{
     HookObservation, Observation, OscObservation, ProcessObservation, ScreenObservation,
 };
+use lotse_detect::claude_mod::{LOST_AFTER_MS, is_mod_line};
 use lotse_detect::engine::{Engine, StatusUpdate};
 use lotse_detect::osc7501::{Osc7501Scanner, is_query};
 use lotse_detect::screen::{identify_agent, is_shell};
 use lotse_hook::forward::{SOURCE_FIELD, SOURCE_INJECTED};
 use lotse_proto::{
     AgentKind, DetectSource, Event, NotificationKind, NotificationMode, NotificationSettings,
-    PermRequest, Session, SessionId, Status, UnixMs,
+    PermRequest, RateLimit, Session, SessionId, SourceLayer, Status, Todo, UnixMs,
 };
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -102,6 +104,27 @@ pub struct Detector {
     /// Foreground process group seen last (`None`: not looked at yet).
     pub fg_pgid: Option<i32>,
     exited: bool,
+    /// What the Claude mod reported besides status (see [`ModData`]).
+    mod_seen: Option<UnixMs>,
+    hook_seen: bool,
+    context_pct: Option<u8>,
+    todo: Option<Todo>,
+    rate_limits: Option<Vec<RateLimit>>,
+}
+
+/// The session-level data of the mod and which layer feeds the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModData {
+    pub layer: Option<SourceLayer>,
+    pub context_pct: Option<u8>,
+    pub todo: Option<Todo>,
+}
+
+/// The engine with the bundled adapters, and the daemon's price table for the mod's sub-agent costs.
+fn new_engine(id: SessionId, agent: AgentKind) -> Engine {
+    let mut engine = Engine::with_default_adapters(id, agent);
+    engine.set_pricing(&pricing());
+    engine
 }
 
 impl Detector {
@@ -117,7 +140,7 @@ impl Detector {
         };
         Self {
             twins: VecDeque::new(),
-            engine: Engine::with_default_adapters(id.clone(), agent),
+            engine: new_engine(id.clone(), agent),
             id,
             base_agent: agent,
             scanner: Osc7501Scanner::new(),
@@ -130,6 +153,11 @@ impl Detector {
             last_tick: None,
             fg_pgid: None,
             exited: false,
+            mod_seen: None,
+            hook_seen: false,
+            context_pct: None,
+            todo: None,
+            rate_limits: None,
         }
     }
 
@@ -140,8 +168,57 @@ impl Detector {
 
     fn set_agent(&mut self, agent: AgentKind) {
         if agent != self.engine.agent() {
-            self.engine = Engine::with_default_adapters(self.id.clone(), agent);
+            self.engine = new_engine(self.id.clone(), agent);
         }
+    }
+
+    /// A status line of the mod: its session-level data (the engine's mod adapter reads the rest).
+    fn ingest_mod(&mut self, line: &serde_json::Value, at: UnixMs) {
+        let f = features(line);
+        self.mod_seen = Some(at);
+        self.context_pct = f.context_pct.or(self.context_pct);
+        self.todo = f.todo.or(self.todo);
+        if f.rate_limits.is_some() {
+            self.rate_limits = f.rate_limits;
+        }
+    }
+
+    /// Context share, todo progress and the layer that feeds the session, as of `at`. A mod silent
+    /// for [`LOST_AFTER_MS`] is gone: its data is dropped and the hooks (or the screen) are the layer.
+    pub fn mod_data(&mut self, at: UnixMs) -> ModData {
+        if self
+            .mod_seen
+            .is_some_and(|seen| at.saturating_sub(seen) > LOST_AFTER_MS)
+        {
+            self.mod_seen = None;
+            self.context_pct = None;
+            self.todo = None;
+        }
+        let layer = if self.mod_seen.is_some() {
+            Some(SourceLayer::Mod)
+        } else if self.hook_seen {
+            Some(SourceLayer::Hooks)
+        } else {
+            (self.engine.agent() != AgentKind::Terminal).then_some(SourceLayer::Screen)
+        };
+        ModData {
+            layer,
+            context_pct: self.context_pct,
+            todo: self.todo,
+        }
+    }
+
+    /// The rate limits the last mod line carried, once.
+    pub fn take_rate_limits(&mut self) -> Option<Vec<RateLimit>> {
+        self.rate_limits.take()
+    }
+
+    /// The agent left: nothing the mod or the hooks said holds any more.
+    fn forget_layers(&mut self) {
+        self.mod_seen = None;
+        self.hook_seen = false;
+        self.context_pct = None;
+        self.todo = None;
     }
 
     pub fn resize(&mut self, cols: u16, rows: u16) {
@@ -250,8 +327,14 @@ impl Detector {
         mut payload: serde_json::Value,
         at: UnixMs,
     ) -> Option<StatusUpdate> {
-        if self.is_twin(&mut payload, at) {
-            return None;
+        // a mod line is no hook event: it has no twin, and says nothing about the hooks
+        if is_mod_line(&payload) {
+            self.ingest_mod(&payload, at);
+        } else {
+            self.hook_seen = true;
+            if self.is_twin(&mut payload, at) {
+                return None;
+            }
         }
         if !self.exited {
             self.set_agent(agent);
@@ -271,7 +354,8 @@ impl Detector {
                 exit_code: None,
                 at,
             })));
-            self.engine = Engine::with_default_adapters(self.id.clone(), self.base_agent);
+            self.engine = new_engine(self.id.clone(), self.base_agent);
+            self.forget_layers();
             out.push(StatusUpdate {
                 status: if self.base_agent == AgentKind::Terminal {
                     Status::Idle
@@ -799,6 +883,97 @@ mod tests {
         let mut d = detector(AgentKind::Terminal);
         d.on_foreground("/opt/homebrew/bin/codex".into(), 1);
         assert_eq!(d.agent(), AgentKind::Codex);
+    }
+
+    fn mod_line(d: &mut Detector, mut line: serde_json::Value, at: UnixMs) -> Option<StatusUpdate> {
+        line["kind"] = "lotse_mod".into();
+        line["lotse_source"] = "mod".into();
+        d.on_hook(AgentKind::ClaudeCode, line, at)
+    }
+
+    #[test]
+    fn the_layer_is_the_mod_while_it_beats_then_the_hooks_and_the_mod_data_goes_with_it() {
+        let mut d = detector(AgentKind::ClaudeCode);
+        assert_eq!(
+            d.mod_data(1).layer,
+            Some(SourceLayer::Screen),
+            "a Claude pane, nothing heard"
+        );
+        hook(&mut d, "UserPromptSubmit", Some("injected"), 100);
+        assert_eq!(d.mod_data(100).layer, Some(SourceLayer::Hooks));
+
+        mod_line(
+            &mut d,
+            serde_json::json!({"t": "heartbeat", "context_pct": 42, "rate_limits": []}),
+            200,
+        );
+        mod_line(
+            &mut d,
+            serde_json::json!({"t": "todo", "done": 1, "total": 3}),
+            210,
+        );
+        let data = d.mod_data(300);
+        assert_eq!(data.layer, Some(SourceLayer::Mod));
+        assert_eq!(
+            (data.context_pct, data.todo),
+            (Some(42), Some(Todo { done: 1, total: 3 }))
+        );
+        assert_eq!(d.take_rate_limits(), Some(vec![]));
+        assert_eq!(d.take_rate_limits(), None, "once");
+
+        // 2.5 beats after the last line: the mod is gone, the hooks are the layer again
+        let data = d.mod_data(210 + LOST_AFTER_MS + 1);
+        assert_eq!(
+            (data.layer, data.context_pct, data.todo),
+            (Some(SourceLayer::Hooks), None, None)
+        );
+    }
+
+    #[test]
+    fn a_plain_terminal_has_no_layer_and_leaving_the_agent_forgets_them() {
+        let mut d = detector(AgentKind::Terminal);
+        assert_eq!(d.mod_data(1).layer, None);
+        mod_line(&mut d, serde_json::json!({"t": "hello"}), 5);
+        assert_eq!(d.mod_data(6).layer, Some(SourceLayer::Mod));
+        d.on_foreground("/bin/zsh".into(), 9);
+        assert_eq!(d.mod_data(10).layer, None);
+    }
+
+    #[test]
+    fn a_lost_heartbeat_ends_a_mod_ask_through_the_engine_tick() {
+        let mut d = detector(AgentKind::ClaudeCode);
+        hook(&mut d, "UserPromptSubmit", Some("injected"), 100);
+        let up = mod_line(
+            &mut d,
+            serde_json::json!({"t": "perm", "agent_id": "a1", "tool": "Bash", "summary": "ls"}),
+            200,
+        )
+        .expect("the ask");
+        assert_eq!((up.status, up.source), (Status::Perm, DetectSource::Mod));
+        let t0 = Instant::now();
+        let ups = d.tick(t0, 200 + LOST_AFTER_MS + 1);
+        let last = ups.last().expect("the fallback");
+        assert_eq!(
+            (last.status, last.source),
+            (Status::Run, DetectSource::Hook)
+        );
+        assert_eq!(last.perm, None);
+    }
+
+    #[test]
+    fn mod_lines_have_no_twins() {
+        let mut d = detector(AgentKind::ClaudeCode);
+        let beat =
+            serde_json::json!({"t": "perm", "agent_id": "a1", "tool": "Bash", "summary": "ls"});
+        assert!(mod_line(&mut d, beat.clone(), 100).is_some());
+        // an identical line right after is not dropped as a copy: it is the same ask, already known
+        // (no change), but a repeat after the ask ended must work again
+        mod_line(
+            &mut d,
+            serde_json::json!({"t": "tool", "agent_id": "a1", "tool": "Bash"}),
+            110,
+        );
+        assert!(mod_line(&mut d, beat, 120).is_some());
     }
 
     fn settings() -> NotificationSettings {
