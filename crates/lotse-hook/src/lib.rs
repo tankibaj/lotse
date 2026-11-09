@@ -8,4 +8,5 @@ pub mod claude_settings;
 pub mod codex_home;
 pub mod forward;
 pub mod json;
+pub mod mod_bridge;
 pub mod opencode_plugin;

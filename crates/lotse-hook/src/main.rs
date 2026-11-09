@@ -3,6 +3,7 @@
 //! ```text
 //! lotse-hook [claude|codex|opencode] [--injected]    hook mode: stdin JSON -> lotsed (default claude)
 //! lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]
+//! lotse-hook mod-bridge | mod-status    the Claude mod's channel to lotsed (see `lotse_hook::mod_bridge`)
 //! ```
 //! Hook mode reads `LOTSE_SESSION_ID`, `LOTSE_SOCKET` and `LOTSE_TOKEN_FILE` (set by the daemon on
 //! every pane); the token is read from that file, never from the environment.
@@ -15,18 +16,20 @@
 
 use lotse_hook::claude_settings::{self, InstallStatus, UninstallOutcome};
 use lotse_hook::forward::{self, Config};
-use lotse_hook::opencode_plugin;
+use lotse_hook::{mod_bridge, opencode_plugin};
 use lotse_proto::AgentKind;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]";
+const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]\n       lotse-hook mod-bridge | mod-status";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("integration") => integration(&args[1..]),
+        Some("mod-bridge") => mod_bridge::main(false),
+        Some("mod-status") => mod_bridge::main(true),
         Some("-h" | "--help") => {
             println!("{USAGE}");
             ExitCode::SUCCESS

@@ -13,8 +13,12 @@
 //! writes. Each runs `"${LOTSE_HOOK_BIN:-lotse-hook}" claude --injected`: the daemon exports
 //! `LOTSE_HOOK_BIN` into the pane, so the plugin files do not depend on where Lotse is installed. The
 //! `--injected` tag lets the daemon drop the twin event when the global hooks are installed too.
+//!
+//! The same `hooks.json` names the Claude mod (`modules`, see [`mod_bridge`]), whose source sits at
+//! `<dir>/mod/register.js`. Claude builds older than [`mod_bridge::MIN_CLAUDE_VERSION`] get
+//! [`files_for`]`(false)`: hooks only. The mod also gates itself at run time.
 
-use crate::claude_settings;
+use crate::{claude_settings, mod_bridge};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -27,6 +31,11 @@ pub const HOOK_COMMAND: &str = r#""${LOTSE_HOOK_BIN:-lotse-hook}" claude --injec
 
 /// Relative path and content of every file of the plugin.
 pub fn files() -> Result<Vec<(&'static str, String)>> {
+    files_for(true)
+}
+
+/// [`files`], with or without the mod (`with_mod: false` for a Claude older than the mod needs).
+pub fn files_for(with_mod: bool) -> Result<Vec<(&'static str, String)>> {
     let tpl = claude_settings::template()?;
     let mut hooks = serde_json::Map::new();
     for spec in &tpl.events {
@@ -46,10 +55,17 @@ pub fn files() -> Result<Vec<(&'static str, String)>> {
         "description": "Reports this pane's Claude Code status and sub-agents to Lotse. Loaded by Lotse for its own panes only.",
         "license": "UNLICENSED",
     });
-    Ok(vec![
-        (".claude-plugin/plugin.json", pretty(&manifest)?),
-        ("hooks/hooks.json", pretty(&json!({ "hooks": hooks }))?),
-    ])
+    let mut hooks_file = json!({ "hooks": hooks });
+    let mut files = vec![(".claude-plugin/plugin.json", pretty(&manifest)?)];
+    if with_mod {
+        // one hooks.json carries both the command hooks and the module (probe G1)
+        hooks_file["modules"] = json!([mod_bridge::MOD_MODULE_PATH]);
+    }
+    files.push(("hooks/hooks.json", pretty(&hooks_file)?));
+    if with_mod {
+        files.push((mod_bridge::MOD_FILE, mod_bridge::MOD_SOURCE.to_owned()));
+    }
+    Ok(files)
 }
 
 fn pretty(value: &Value) -> Result<String> {
@@ -60,8 +76,13 @@ fn pretty(value: &Value) -> Result<String> {
 /// replaced atomically so a Claude starting right now never reads half a file). Returns the plugin
 /// directory: the value to put in `CLAUDE_CODE_PLUGIN_DIRS`.
 pub fn ensure(parent: &Path) -> Result<PathBuf> {
+    ensure_for(parent, true)
+}
+
+/// [`ensure`], with or without the mod.
+pub fn ensure_for(parent: &Path, with_mod: bool) -> Result<PathBuf> {
     let root = parent.join(PLUGIN_NAME);
-    for (relative, content) in files()? {
+    for (relative, content) in files_for(with_mod)? {
         let path = root.join(relative);
         if std::fs::read_to_string(&path).is_ok_and(|have| have == content) {
             continue;
