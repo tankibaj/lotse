@@ -9,12 +9,16 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
-/// The file to open: `path`, only when one of `connectors` declares it verbatim, it is a file, and its
-/// canonical target (symlinks resolved) lies inside one of `roots`. Returns the canonical path.
+/// The file to open: `path`, only when one of `connectors` declares it verbatim and it is a file.
+/// Its canonical target (symlinks resolved) must stay inside the root the path sits in: a path under
+/// a session directory (`project_roots`: cwd, worktree; a repo controls what is in there) resolves
+/// inside that same directory, any other (user-level) path inside `home`. A root of `/` is no root.
+/// Returns the canonical path.
 pub fn listed_config(
     connectors: &[Connector],
     path: &str,
-    roots: &[PathBuf],
+    home: Option<&Path>,
+    project_roots: &[PathBuf],
 ) -> Result<PathBuf, String> {
     if !connectors.iter().any(|c| c.config_path == path) {
         return Err(format!("{path} is not a config file the daemon listed"));
@@ -29,13 +33,23 @@ pub fn listed_config(
     if !resolved.is_file() {
         return Err(format!("{path} is not a file"));
     }
-    let inside = roots
+    // where the path itself sits: its directory resolved, the final component left alone
+    let location = match (file.parent().map(Path::canonicalize), file.file_name()) {
+        (Some(Ok(dir)), Some(name)) => dir.join(name),
+        _ => return Err(format!("{path} is not a file")),
+    };
+    let canonical = |r: &PathBuf| r.canonicalize().ok().filter(|r| r.parent().is_some());
+    let root = match project_roots
         .iter()
-        .filter_map(|r| r.canonicalize().ok())
-        .any(|r| resolved.starts_with(r));
-    if !inside {
+        .filter_map(canonical)
+        .find(|r| location.starts_with(r))
+    {
+        Some(project) => Some(project),
+        None => home.and_then(|h| canonical(&h.to_path_buf())),
+    };
+    if !root.is_some_and(|r| resolved.starts_with(r)) {
         return Err(format!(
-            "{path} resolves outside the home and project directories"
+            "{path} resolves outside the directory it is configured in"
         ));
     }
     Ok(resolved)
@@ -59,11 +73,15 @@ pub async fn open_agent_config(
     let Response::SessionInfo(info) = bridge.request(request).await? else {
         return Err("the daemon did not return the session".into());
     };
-    let mut roots: Vec<PathBuf> = dirs::home_dir().into_iter().collect();
-    roots.push(PathBuf::from(info.cwd));
-    roots.extend(info.worktree.map(PathBuf::from));
+    let mut project_roots = vec![PathBuf::from(info.cwd)];
+    project_roots.extend(info.worktree.map(PathBuf::from));
     // resolved here, right before `open`: what is opened is the canonical file just checked
-    let file = listed_config(&connectors, &path, &roots)?;
+    let file = listed_config(
+        &connectors,
+        &path,
+        dirs::home_dir().as_deref(),
+        &project_roots,
+    )?;
     let mut child = Command::new("/usr/bin/open")
         .arg("-t")
         .arg(&file)
@@ -107,16 +125,16 @@ mod tests {
         let other = dir.join("secrets.txt");
         std::fs::write(&listed, "{}").unwrap();
         std::fs::write(&other, "x").unwrap();
-        let roots = [dir.clone()];
+        let home = Some(dir.as_path());
         let connectors = [connector(listed.to_str().unwrap())];
         // a real file, but the daemon did not list it
-        assert!(listed_config(&connectors, other.to_str().unwrap(), &roots).is_err());
+        assert!(listed_config(&connectors, other.to_str().unwrap(), home, &[]).is_err());
         // `..` and relative forms of the listed path do not match either
         let dotted = format!("{}/../{}", dir.display(), ".mcp.json");
-        assert!(listed_config(&connectors, &dotted, &roots).is_err());
-        assert!(listed_config(&connectors, ".mcp.json", &roots).is_err());
-        assert!(listed_config(&[], listed.to_str().unwrap(), &roots).is_err());
-        assert!(listed_config(&connectors, "", &roots).is_err());
+        assert!(listed_config(&connectors, &dotted, home, &[]).is_err());
+        assert!(listed_config(&connectors, ".mcp.json", home, &[]).is_err());
+        assert!(listed_config(&[], listed.to_str().unwrap(), home, &[]).is_err());
+        assert!(listed_config(&connectors, "", home, &[]).is_err());
     }
 
     #[test]
@@ -126,7 +144,7 @@ mod tests {
         std::fs::write(&listed, "{}").unwrap();
         let connectors = [connector("/nowhere"), connector(listed.to_str().unwrap())];
         assert_eq!(
-            listed_config(&connectors, listed.to_str().unwrap(), &[dir]),
+            listed_config(&connectors, listed.to_str().unwrap(), Some(&dir), &[]),
             Ok(listed)
         );
     }
@@ -139,9 +157,9 @@ mod tests {
             connector(missing.to_str().unwrap()),
             connector(dir.to_str().unwrap()),
         ];
-        let roots = [dir.clone()];
-        assert!(listed_config(&connectors, missing.to_str().unwrap(), &roots).is_err());
-        assert!(listed_config(&connectors, dir.to_str().unwrap(), &roots).is_err());
+        let home = Some(dir.as_path());
+        assert!(listed_config(&connectors, missing.to_str().unwrap(), home, &[]).is_err());
+        assert!(listed_config(&connectors, dir.to_str().unwrap(), home, &[]).is_err());
     }
 
     #[test]
@@ -153,7 +171,7 @@ mod tests {
         let link = home.join(".mcp.json");
         std::os::unix::fs::symlink(&secret, &link).unwrap();
         let connectors = [connector(link.to_str().unwrap())];
-        assert!(listed_config(&connectors, link.to_str().unwrap(), &[home]).is_err());
+        assert!(listed_config(&connectors, link.to_str().unwrap(), Some(&home), &[]).is_err());
     }
 
     #[test]
@@ -166,7 +184,7 @@ mod tests {
         let connectors = [connector(link.to_str().unwrap())];
         // opens the resolved target, not the link
         assert_eq!(
-            listed_config(&connectors, link.to_str().unwrap(), &[home]),
+            listed_config(&connectors, link.to_str().unwrap(), Some(&home), &[]),
             Ok(real)
         );
     }
@@ -178,7 +196,68 @@ mod tests {
         let file = other.join("settings.json");
         std::fs::write(&file, "{}").unwrap();
         let connectors = [connector(file.to_str().unwrap())];
-        assert!(listed_config(&connectors, file.to_str().unwrap(), &[home]).is_err());
-        assert!(listed_config(&connectors, file.to_str().unwrap(), &[]).is_err());
+        let path = file.to_str().unwrap();
+        assert!(listed_config(&connectors, path, Some(&home), &[]).is_err());
+        assert!(listed_config(&connectors, path, None, &[]).is_err());
+    }
+
+    #[test]
+    fn config_open_refuses_a_project_symlink_to_elsewhere_under_home() {
+        // <cwd>/.mcp.json -> ~/.ssh/id_rsa: inside home, but not inside the project
+        let (_home, home) = root();
+        let cwd = home.join("repo");
+        let ssh = home.join(".ssh");
+        std::fs::create_dir_all(&cwd).unwrap();
+        std::fs::create_dir_all(&ssh).unwrap();
+        let key = ssh.join("id_rsa");
+        std::fs::write(&key, "x").unwrap();
+        let link = cwd.join(".mcp.json");
+        std::os::unix::fs::symlink(&key, &link).unwrap();
+        let connectors = [connector(link.to_str().unwrap())];
+        let path = link.to_str().unwrap();
+        assert!(listed_config(&connectors, path, Some(&home), &[cwd]).is_err());
+    }
+
+    #[test]
+    fn config_open_accepts_a_project_file_and_a_symlink_within_the_project() {
+        let (_home, home) = root();
+        let cwd = home.join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let real = cwd.join("mcp.real.json");
+        std::fs::write(&real, "{}").unwrap();
+        let link = cwd.join(".mcp.json");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let connectors = [connector(link.to_str().unwrap())];
+        let path = link.to_str().unwrap();
+        assert_eq!(
+            listed_config(&connectors, path, Some(&home), std::slice::from_ref(&cwd)),
+            Ok(real)
+        );
+    }
+
+    #[test]
+    fn config_open_refuses_a_project_symlink_when_the_cwd_is_root() {
+        // a session whose cwd is `/` must not make the whole disk "project"
+        let (_home, home) = root();
+        let (_outside, outside) = root();
+        let secret = outside.join("id_rsa");
+        std::fs::write(&secret, "x").unwrap();
+        let link = home.join(".mcp.json");
+        std::os::unix::fs::symlink(&secret, &link).unwrap();
+        let connectors = [connector(link.to_str().unwrap())];
+        let path = link.to_str().unwrap();
+        assert!(listed_config(&connectors, path, Some(&home), &[PathBuf::from("/")]).is_err());
+        let direct = outside.join("settings.json");
+        std::fs::write(&direct, "{}").unwrap();
+        let connectors = [connector(direct.to_str().unwrap())];
+        assert!(
+            listed_config(
+                &connectors,
+                direct.to_str().unwrap(),
+                None,
+                &[PathBuf::from("/")]
+            )
+            .is_err()
+        );
     }
 }

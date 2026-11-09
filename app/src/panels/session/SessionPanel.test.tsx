@@ -54,33 +54,27 @@ describe('SessionPanel', () => {
     expect(env).toHaveTextContent('Detected via Process');
   });
 
-  it('context bar expands to tokens, cache and cost', async () => {
+  it('usage_lists_input_output_and_cache_separately', async () => {
+    // cumulative session totals, not the current context: named "Usage", every kind its own row, no combined total
     await panel('a1');
-    const bar = await screen.findByRole('button', { name: /Context/ });
+    const bar = await screen.findByRole('button', { name: /Usage/ });
+    expect(screen.queryByRole('button', { name: /Context/ })).toBeNull();
     expect(bar).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('Session cost')).toBeNull();
     await userEvent.click(bar);
     expect(bar).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Input').nextSibling).toHaveTextContent('61k');
+    expect(screen.getByText('Output').nextSibling).toHaveTextContent('9k');
+    expect(screen.getByText('Cache read').nextSibling).toHaveTextContent('26k');
+    expect(screen.getByText('Cache write').nextSibling).toHaveTextContent('0');
     expect(screen.getByText('Session cost').nextSibling).toHaveTextContent('$1.14');
-    expect(screen.getByText('Cache').nextSibling).toHaveTextContent('26k read');
-    expect(screen.getByText('Tokens').nextSibling).toHaveTextContent('87k');
+    const panelText = screen.getByTestId('panel-session').textContent ?? '';
+    for (const total of ['87k', '96k', '200k', '%']) expect(panelText).not.toContain(total);
   });
 
-  it('context_shows_tokens_without_a_guessed_window_or_percentage', async () => {
-    // the client reports cumulative session totals, not the current context size: no "x / 200k", no "%", no bar
-    await panel('a1');
-    const bar = await screen.findByRole('button', { name: /Context/ });
-    expect(bar).toHaveTextContent('87k');
-    expect(bar).not.toHaveTextContent('%');
-    expect(bar.querySelector('[style*="width"]')).toBeNull();
-    await userEvent.click(bar);
-    expect(screen.getByText('Tokens').nextSibling).not.toHaveTextContent('200k');
-    expect(screen.getByText('Tokens').nextSibling).not.toHaveTextContent('/');
-  });
-
-  it('has no context bar for a plain terminal', async () => {
+  it('has no usage section for a plain terminal', async () => {
     await panel('a7');
-    expect(screen.queryByRole('button', { name: /Context/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Usage/ })).toBeNull();
   });
 
   it('lists the sub-agents with their state', async () => {

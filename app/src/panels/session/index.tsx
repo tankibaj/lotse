@@ -116,25 +116,28 @@ function Environment({ session, info }: { session: Session; info: SessionInfo | 
 
 function ContextBar({ usage }: { usage: Usage }) {
   const [open, setOpen] = useState(false);
-  const { input, cache_read, cache_write } = usage.tokens;
-  // cumulative session totals, not the current context size: no window, percentage or bar
-  const total = input + cache_read + cache_write;
+  // cumulative session totals, not the current context size: no window, percentage, bar or combined total
+  const { input, output, cache_read, cache_write } = usage.tokens;
   const cost = `$${(usage.spend.session / 1_000_000).toFixed(2)}${usage.priced ? '' : ' +'}`;
   return (
     <div className="border-t border-line py-3">
       <button className="flex w-full items-center gap-2 text-[13px]" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <span>Context</span>
+        <span>Usage</span>
         <span aria-hidden className="text-[10px] text-dim">
           {open ? '▾' : '▸'}
         </span>
-        <span className="ml-auto text-[12px] tabular-nums text-dim">{formatTokens(total)}</span>
+        <span className="ml-auto text-[12px] tabular-nums text-dim">{cost}</span>
       </button>
       {open && (
         <div className="mt-2 grid grid-cols-[1fr_auto] gap-y-1 text-[12px] text-dim">
-          <span>Tokens</span>
-          <span className="tabular-nums">{formatTokens(total)}</span>
-          <span>Cache</span>
-          <span className="tabular-nums">{formatTokens(cache_read)} read</span>
+          <span>Input</span>
+          <span className="tabular-nums">{formatTokens(input)}</span>
+          <span>Output</span>
+          <span className="tabular-nums">{formatTokens(output)}</span>
+          <span>Cache read</span>
+          <span className="tabular-nums">{formatTokens(cache_read)}</span>
+          <span>Cache write</span>
+          <span className="tabular-nums">{formatTokens(cache_write)}</span>
           <span>Session cost</span>
           <span className="tabular-nums" title={usage.priced ? undefined : 'A model without a known price took part: the cost covers the priced part only.'}>
             {cost}

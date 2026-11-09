@@ -9,36 +9,68 @@ use std::hash::{BuildHasher, Hasher};
 use std::io::{ErrorKind, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 const TEMP_ATTEMPTS: usize = 8;
 
 /// Ask the user where to save, then write `content` there. The saved path, or `None` when they cancelled.
+/// The dialog is a sheet on the main window; a second request while one is open is refused.
 #[tauri::command]
 pub async fn export_save(
     app: tauri::AppHandle,
     file_name: String,
     content: String,
 ) -> Result<Option<String>, String> {
+    static OPEN: AtomicBool = AtomicBool::new(false);
+    let _guard = DialogGuard::acquire(&OPEN)?;
     let pick = |name: &str| {
-        app.dialog()
+        let mut dialog = app
+            .dialog()
             .file()
             .set_title("Export transcript")
-            .set_file_name(name)
+            .set_file_name(name);
+        if let Some(main) = app.get_webview_window("main") {
+            dialog = dialog.set_parent(&main);
+        }
+        dialog
             .blocking_save_file()
-            .and_then(|p| p.into_path().ok())
+            .map(|p| {
+                p.into_path()
+                    .map_err(|e| format!("export: the dialog returned no file path: {e}"))
+            })
+            .transpose()
     };
     let saved = export_with(pick, &file_name, &content)?;
     Ok(saved.map(|p| p.to_string_lossy().into_owned()))
 }
 
+/// Held while a save dialog is open.
+struct DialogGuard<'a>(&'a AtomicBool);
+
+impl<'a> DialogGuard<'a> {
+    fn acquire(open: &'a AtomicBool) -> Result<Self, String> {
+        if open.swap(true, Ordering::AcqRel) {
+            return Err("export: a save dialog is already open".into());
+        }
+        Ok(Self(open))
+    }
+}
+
+impl Drop for DialogGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+/// `pick` shows the dialog: `Ok(None)` when the user cancelled, `Err` when the result is not a file path.
 fn export_with(
-    pick: impl FnOnce(&str) -> Option<PathBuf>,
+    pick: impl FnOnce(&str) -> Result<Option<PathBuf>, String>,
     file_name: &str,
     content: &str,
 ) -> Result<Option<PathBuf>, String> {
-    let Some(path) = pick(&default_name(file_name)) else {
+    let Some(path) = pick(&default_name(file_name))? else {
         return Ok(None);
     };
     write_file(&path, content)?;
@@ -80,8 +112,10 @@ fn temp_name() -> String {
     format!(".lotse-export-{:016x}.tmp", h.finish())
 }
 
-/// Write to a new 0600 temp file in `path`'s folder, then rename it over `path`. A temp name that is taken is
-/// skipped; only a file this call created is ever removed.
+/// Write to a new temp file in `path`'s folder, then rename it over `path`. The temp file takes the existing
+/// target's permissions; a new file is 0600 (a transcript can hold what redaction missed). A symlink at `path`
+/// is replaced, never written through. A temp name that is taken is skipped; only a file this call created is
+/// ever removed.
 fn write_atomic(
     path: &Path,
     content: &str,
@@ -89,6 +123,7 @@ fn write_atomic(
 ) -> Result<(), String> {
     let fail = |e: std::io::Error| format!("export: {}: {e}", path.display());
     let dir = path.parent().unwrap_or(Path::new("/"));
+    let existing = fs::metadata(path).ok().map(|m| m.permissions());
     for _ in 0..TEMP_ATTEMPTS {
         let tmp = dir.join(next_name());
         let mut file = match OpenOptions::new()
@@ -103,6 +138,7 @@ fn write_atomic(
         };
         let written = file
             .write_all(content.as_bytes())
+            .and_then(|()| existing.clone().map_or(Ok(()), |p| file.set_permissions(p)))
             .and_then(|()| file.sync_all())
             .and_then(|()| fs::rename(&tmp, path));
         if let Err(e) = written {
@@ -128,8 +164,55 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
-    fn picks(p: PathBuf) -> impl FnOnce(&str) -> Option<PathBuf> {
-        move |_| Some(p)
+    fn picks(p: PathBuf) -> impl FnOnce(&str) -> Result<Option<PathBuf>, String> {
+        move |_| Ok(Some(p))
+    }
+
+    #[test]
+    fn an_existing_files_permissions_survive_the_rewrite() {
+        let d = tmp();
+        let p = d.path().join("fix.md");
+        fs::write(&p, "old").unwrap();
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o640)).unwrap();
+        export_with(picks(p.clone()), "fix.md", "new").unwrap();
+        assert_eq!(fs::read_to_string(&p).unwrap(), "new");
+        assert_eq!(
+            fs::metadata(&p).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+    }
+
+    #[test]
+    fn a_symlink_is_replaced_and_its_target_is_not_written() {
+        let d = tmp();
+        let real = d.path().join("real.txt");
+        fs::write(&real, "precious").unwrap();
+        let link = d.path().join("link.md");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        export_with(picks(link.clone()), "link.md", "new").unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "precious");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "new");
+        assert!(
+            !fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[test]
+    fn a_dialog_result_that_is_not_a_path_is_an_error_not_a_cancel() {
+        let err = export_with(|_| Err("not a file path".into()), "x", "x").unwrap_err();
+        assert!(err.contains("not a file path"), "{err}");
+    }
+
+    #[test]
+    fn only_one_save_dialog_is_open_at_a_time() {
+        let open = AtomicBool::new(false);
+        let first = DialogGuard::acquire(&open).unwrap();
+        assert!(DialogGuard::acquire(&open).is_err());
+        drop(first);
+        assert!(DialogGuard::acquire(&open).is_ok());
     }
 
     #[test]
@@ -143,7 +226,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_dialog_writes_nothing() {
-        assert_eq!(export_with(|_| None, "fix.md", "x").unwrap(), None);
+        assert_eq!(export_with(|_| Ok(None), "fix.md", "x").unwrap(), None);
     }
 
     #[test]
@@ -152,7 +235,7 @@ mod tests {
         export_with(
             |n| {
                 *seen.borrow_mut() = n.to_string();
-                None
+                Ok(None)
             },
             "../../.zshrc",
             "x",
