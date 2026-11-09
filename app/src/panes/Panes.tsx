@@ -6,10 +6,12 @@ import { onUiCommand } from '../lib/ui/commands';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { TerminalView } from '../terminal';
 import { useTerminalAppearance } from '../terminal/useTerminalAppearance';
+import { EditorPane } from './EditorPane';
 import { ProjectTile } from './ProjectTile';
 import { StatusGlyph } from './StatusGlyph';
 import {
   MAX_PANES,
+  addEditor,
   addPane,
   closePane,
   columnsOf,
@@ -18,15 +20,19 @@ import {
   focusPane,
   focusStep,
   heightOf,
+  isEditor,
   leftShare,
   nextSessionToOpen,
+  paneKey,
   resizePair,
   resizeStack,
+  sessionOf,
+  sessionPanes,
   syncLayout,
   topShare,
   weightOf,
 } from './layout';
-import type { PaneLayout, SplitDirection } from './layout';
+import type { PaneLayout, PaneRef, SplitDirection } from './layout';
 import { onSplitRequest, onTabDrag } from './splitBus';
 import { useSessions } from './useSessions';
 
@@ -43,6 +49,9 @@ const AGENT_LABEL: Record<Session['agent'], string> = {
 const KEY_RESIZE_PX = 24;
 /** The drop zone sits this far inside the half of the pane it covers. */
 const ZONE_INSET_PX = 12;
+
+/** A keystroke inside an editor pane (its text area is a text field, so the shortcuts below skip it). */
+const inEditorPane = (target: EventTarget | null): target is HTMLElement => target instanceof HTMLElement && target.closest('[data-editor-pane]') !== null;
 
 /** Is the key event aimed at a text field that is not a terminal? Then app shortcuts stay out of its way. */
 function inForeignTextField(target: EventTarget | null): boolean {
@@ -110,6 +119,8 @@ const ZONE_LABEL: Record<SplitDirection, string> = { right: 'Open side by side',
  * Keys: ⌘D split right, ⌘⇧D split down, ⌘W close pane, ⌘[ ⌘] focus (column by column, top to bottom), ⌘+ ⌘− ⌘0 font size.
  * ⌥-click (⌥⇧-click: down) on a session card, the card's "Open in Split Right / Down", dropping a card or a tab on
  * the bottom or right half of a pane all end in `openInSplit` / `SESSION_DRAG_TYPE` / `onTabDrag`.
+ * Files open as editor panes beside the session's terminal (UI command `openFile`); ⌘W ⌘[ ⌘] work inside them,
+ * ⌥⌘↩ expands the editor to the whole area and Esc restores.
  */
 export function Panes() {
   const { sessions, projects, loaded } = useSessions();
@@ -119,6 +130,9 @@ export function Panes() {
   const [zone, setZone] = useState<Zone | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [focusSignal, setFocusSignal] = useState(0);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [dirty, setDirty] = useState<ReadonlySet<string>>(new Set());
+  const discard = useRef<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
 
   // Keep panes in step with the sessions that exist and the selection (derived while rendering).
@@ -140,14 +154,29 @@ export function Panes() {
     return () => window.clearTimeout(t);
   }, [notice]);
 
+  // The expanded editor, while it is still open.
+  const expandedKey = expanded !== null && layout.panes.some((p) => paneKey(p) === expanded) ? expanded : null;
+
+  const onDirty = useCallback(
+    (key: string, is: boolean) =>
+      setDirty((prev) => {
+        if (prev.has(key) === is) return prev;
+        const next = new Set(prev);
+        if (is) next.add(key);
+        else next.delete(key);
+        return next;
+      }),
+    [],
+  );
+
   const say = useCallback((text: string) => setNotice((n) => ({ text, id: (n?.id ?? 0) + 1 })), []);
 
   const focusAt = useCallback(
     (index: number) => {
       const next = focusPane(layout, index);
       setLayout(next);
-      const id = next.panes[next.focus];
-      if (id !== undefined) selectSession(id);
+      const ref = next.panes[next.focus];
+      if (ref !== undefined) selectSession(sessionOf(ref));
     },
     [layout],
   );
@@ -169,30 +198,53 @@ export function Panes() {
       const { layout: next, outcome } = addPane(base, id, direction);
       if (outcome === 'full') return say(`Up to ${MAX_PANES} panes side by side`);
       setLayout(next);
+      setExpanded(null);
       selectSession(id);
+    },
+    [layout, sessions, say],
+  );
+
+  /** Open `path` of session `sessionId` in an editor pane (its terminal first, when it is not open). */
+  const openFile = useCallback(
+    (sessionId: SessionId, path: string) => {
+      const exists = (s: SessionId) => sessions.some((x) => x.id === s);
+      if (!exists(sessionId)) return;
+      const { layout: next, outcome } = addEditor(syncLayout(layout, sessionId, exists), sessionId, path);
+      if (outcome === 'full') return say(`Up to ${MAX_PANES} panes side by side`);
+      setLayout(next);
+      setExpanded(null);
+      selectSession(sessionId);
     },
     [layout, sessions, say],
   );
 
   const split = useCallback(
     (wanted: SessionId | null, direction: SplitDirection = 'right') => {
-      const id = wanted ?? nextSessionToOpen(sessions, layout.panes);
+      const id = wanted ?? nextSessionToOpen(sessions, sessionPanes(layout));
       if (id === null) return say('All sessions are already open');
       place(id, direction, null);
     },
-    [layout.panes, sessions, say, place],
+    [layout, sessions, say, place],
   );
 
   const close = useCallback(
     (index: number) => {
       const next = closePane(layout, index);
       if (next === layout) return layout.panes.length === 1 ? say('The last pane stays open') : undefined;
+      const key = paneKey(layout.panes[index] as PaneRef);
+      // Unsaved edits: the first close only asks, the second throws them away.
+      if (dirty.has(key) && discard.current !== key) {
+        discard.current = key;
+        window.setTimeout(() => (discard.current = discard.current === key ? null : discard.current), 4000);
+        return say('Unsaved changes: close again to discard them');
+      }
+      discard.current = null;
       setLayout(next);
       setFocusSignal((n) => n + 1); // the ✕ that had focus is gone: put the keyboard back in the terminal
-      const id = next.panes[next.focus];
-      if (id !== undefined) selectSession(id);
+      const ref = next.panes[next.focus];
+      if (ref !== undefined) selectSession(sessionOf(ref));
     },
-    [layout, say],
+    [layout, dirty, say],
   );
 
   const step = useCallback(
@@ -200,8 +252,9 @@ export function Panes() {
       const next = focusStep(layout, delta);
       if (next === layout) return;
       setLayout(next);
-      const id = next.panes[next.focus];
-      if (id !== undefined) selectSession(id);
+      setExpanded(null);
+      const ref = next.panes[next.focus];
+      if (ref !== undefined) selectSession(sessionOf(ref));
     },
     [layout],
   );
@@ -235,6 +288,7 @@ export function Panes() {
   useEffect(() => onSplitRequest(split), [split]);
   useEffect(() => onUiCommand('splitSession', (id) => split(id ?? null, 'right')), [split]);
   useEffect(() => onUiCommand('splitSessionDown', (id) => split(id ?? null, 'down')), [split]);
+  useEffect(() => onUiCommand('openFile', (id, path) => (id && path ? openFile(id, path) : undefined)), [openFile]);
 
   // A tab pulled down out of the tab strip: the pane under the pointer decides the zone (the strip drags with the pointer).
   useEffect(
@@ -305,6 +359,29 @@ export function Panes() {
     return () => window.removeEventListener('keydown', onKey);
   }, [split, close, step, layout.focus, appearance]);
 
+  // Keys inside an editor pane. Captured, so CodeMirror's own ⌘[ ⌘] (indent) and ⌘W never see them: the pane shortcuts win.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!inEditorPane(e.target) || e.ctrlKey) return;
+      const key = paneKey(layout.panes[layout.focus] as PaneRef);
+      const handled = (fn: () => void) => {
+        e.preventDefault();
+        e.stopPropagation();
+        fn();
+      };
+      if (e.key === 'Escape' && !e.metaKey && expandedKey !== null && !e.target.closest('.cm-panel')) return handled(() => setExpanded(null));
+      if (!e.metaKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'enter' && e.altKey && !e.shiftKey && isEditor(layout.panes[layout.focus] as PaneRef)) return handled(() => setExpanded(expandedKey === key ? null : key));
+      if (e.altKey && k !== '[' && k !== ']') return;
+      if (k === 'w' && !e.shiftKey) return handled(() => close(layout.focus));
+      if (k === '[') return handled(() => step(-1));
+      if (k === ']') return handled(() => step(1));
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [layout, expandedKey, close, step]);
+
   const columnEls = () => box.current?.querySelectorAll<HTMLElement>('[data-column]');
   const paneEls = () => box.current?.querySelectorAll<HTMLElement>('[data-pane]');
   const beginResize = (
@@ -373,6 +450,9 @@ export function Panes() {
   };
 
   const sessionById = (id: SessionId) => sessions.find((s) => s.id === id);
+  /** Name of a pane for the divider labels. */
+  const labelOf = (p: PaneRef) => (isEditor(p) ? (p.path.split('/').pop() ?? p.path) : (sessionById(p)?.title ?? ''));
+  const hide = (is: boolean) => (is ? { display: 'none' } : undefined);
   const projectOf = (s: Session): Project | undefined => projects.find((p) => p.id === s.project_id);
   const multi = layout.panes.length > 1;
   const columns = columnsOf(layout);
@@ -394,16 +474,19 @@ export function Panes() {
         </div>
       )}
       {columns.map((column, c) => {
-        const top = column[0] as SessionId;
+        const top = column[0] as PaneRef;
+        const topKey = paneKey(top);
         const first = starts[c] ?? 0;
+        const shut = expandedKey !== null && !column.some((p) => paneKey(p) === expandedKey);
         return (
-          <Fragment key={top}>
+          <Fragment key={topKey}>
             {c > 0 && (
               <div
                 className="relative z-10 w-px shrink-0 cursor-col-resize bg-line focus-visible:bg-blue"
+                style={hide(expandedKey !== null)}
                 role="separator"
                 aria-orientation="vertical"
-                aria-label={`Resize panes ${sessionById(columns[c - 1]?.[0] ?? '')?.title ?? ''} and ${sessionById(top)?.title ?? ''}`}
+                aria-label={`Resize panes ${labelOf(columns[c - 1]?.[0] as PaneRef)} and ${labelOf(top)}`}
                 aria-valuemin={0}
                 aria-valuemax={100}
                 aria-valuenow={Math.round(leftShare(layout, first) * 100)}
@@ -415,21 +498,26 @@ export function Panes() {
                 <span className="absolute inset-y-0 -right-1.5 -left-1.5" />
               </div>
             )}
-            <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${weightOf(layout, top)} 1 0` }} data-column={top}>
-              {column.map((id, r) => {
+            <div className="flex min-h-0 min-w-0 flex-col" style={{ flex: `${weightOf(layout, topKey)} 1 0`, ...hide(shut) }} data-column={topKey}>
+              {column.map((ref, r) => {
                 const i = first + r;
-                const s = sessionById(id);
+                const key = paneKey(ref);
+                const s = sessionById(sessionOf(ref));
                 if (!s) return null;
+                const id = s.id;
                 const project = projectOf(s);
                 const focused = i === layout.focus;
+                const editor = isEditor(ref);
+                const closed = expandedKey !== null && key !== expandedKey;
                 return (
-                  <Fragment key={id}>
+                  <Fragment key={key}>
                     {r > 0 && (
                       <div
                         className="relative z-10 h-px shrink-0 cursor-row-resize bg-line focus-visible:bg-blue"
+                        style={hide(expandedKey !== null)}
                         role="separator"
                         aria-orientation="horizontal"
-                        aria-label={`Resize panes ${sessionById(column[r - 1] ?? '')?.title ?? ''} and ${s.title}`}
+                        aria-label={`Resize panes ${labelOf(column[r - 1] as PaneRef)} and ${labelOf(ref)}`}
                         aria-valuemin={0}
                         aria-valuemax={100}
                         aria-valuenow={Math.round(topShare(layout, i) * 100)}
@@ -443,12 +531,27 @@ export function Panes() {
                     )}
                     <section
                       className="flex min-h-0 min-w-0 flex-col"
-                      style={{ flex: `${heightOf(layout, id)} 1 0`, opacity: multi && !focused ? 0.62 : 1 }}
-                      data-pane={id}
+                      style={{ flex: `${heightOf(layout, key)} 1 0`, opacity: multi && !focused ? 0.62 : 1, ...hide(closed) }}
+                      data-pane={key}
                       data-focused={focused}
+                      data-editor-pane={editor ? '' : undefined}
                       onMouseDown={() => focusAt(i)}
                     >
-                      {multi && (
+                      {isEditor(ref) && (
+                        <EditorPane
+                          session={s}
+                          path={ref.path}
+                          projectName={project?.name ?? ''}
+                          focused={focused}
+                          expanded={expandedKey === key}
+                          paneKey={key}
+                          dirty={dirty.has(key)}
+                          onDirty={onDirty}
+                          onToggleExpand={() => setExpanded(expandedKey === key ? null : key)}
+                          onClose={() => close(i)}
+                        />
+                      )}
+                      {!editor && multi && (
                         <div
                           className="flex h-7 shrink-0 items-center gap-2 border-b px-3 text-[12px]"
                           style={focused ? { boxShadow: 'inset 0 2px 0 var(--blue)' } : undefined}
@@ -472,7 +575,7 @@ export function Panes() {
                           </button>
                         </div>
                       )}
-                      {appearance.ready ? (
+                      {editor ? null : appearance.ready ? (
                         <TerminalView
                           sessionId={id}
                           focused={focused}
