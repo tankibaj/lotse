@@ -1,50 +1,60 @@
+import { FileText } from 'lucide-react';
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import { X } from 'lucide-react';
 import type { Project, Session, SessionId } from '../lib/client';
 import { onUiCommand } from '../lib/ui/commands';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
 import { TerminalView } from '../terminal';
 import { useTerminalAppearance } from '../terminal/useTerminalAppearance';
 import { EditorPane } from './EditorPane';
+import { AGENT_LABEL, PaneBar } from './PaneBar';
 import { ProjectTile } from './ProjectTile';
 import { StatusGlyph } from './StatusGlyph';
+import { useDisplayChange } from './display';
 import {
   MAX_PANES,
+  RAIL_PX,
   addEditor,
   addPane,
   closePane,
+  collapseColumn,
+  columnMode,
   columnsOf,
   dropDirection,
   emptyLayout,
   focusPane,
   focusStep,
   heightOf,
+  hideColumn,
   isEditor,
+  keepPanes,
+  layoutKey,
   leftShare,
+  limitPanes,
+  loadLayout,
+  maxPanesFor,
   nextSessionToOpen,
+  paneColumn,
   paneKey,
   resizePair,
   resizeStack,
+  restoreColumn,
+  saveLayout,
   sessionOf,
   sessionPanes,
   syncLayout,
   topShare,
   weightOf,
 } from './layout';
-import type { PaneLayout, PaneRef, SplitDirection } from './layout';
+import type { Display, PaneLayout, PaneRef, SplitDirection } from './layout';
 import { onSplitRequest, onTabDrag } from './splitBus';
 import { useSessions } from './useSessions';
 
 /** Drag type the sidebar card sets (spec/mock.html: `text/lotse-session`). */
 export const SESSION_DRAG_TYPE = 'text/lotse-session';
 
-const AGENT_LABEL: Record<Session['agent'], string> = {
-  terminal: 'Terminal',
-  claude_code: 'Claude Code',
-  codex: 'Codex',
-  opencode: 'OpenCode',
-};
+/** The layout is written this long after the last change (a divider drag changes it on every pointer move). */
+const SAVE_DEBOUNCE_MS = 300;
 /** Arrow keys on a focused divider move it by this many px. */
 const KEY_RESIZE_PX = 24;
 /** The drop zone sits this far inside the half of the pane it covers. */
@@ -112,6 +122,42 @@ const sameZone = (a: Zone | null, b: Zone | null) =>
 
 const ZONE_LABEL: Record<SplitDirection, string> = { right: 'Open side by side', down: 'Open below' };
 
+/** A column collapsed to a 28 px strip: the project tile and status of each terminal in it, a file icon for each editor; a click opens the column again. */
+export function Rail({ column, projects, sessions, onRestore }: { column: PaneRef[]; projects: Project[]; sessions: Session[]; onRestore: () => void }) {
+  const items = column.flatMap((p): { key: string; name: string; session?: Session }[] => {
+    if (isEditor(p)) return [{ key: paneKey(p), name: p.path.split('/').pop() ?? p.path }];
+    const session = sessions.find((x) => x.id === p);
+    return session ? [{ key: p, name: session.title, session }] : [];
+  });
+  const names = items.map((i) => i.name).join(', ');
+  return (
+    <button
+      className="flex shrink-0 flex-col items-center gap-2 border-r border-line bg-side py-2 hover:bg-sel"
+      style={{ width: RAIL_PX }}
+      aria-label={`Restore ${names}`}
+      title={`Restore ${names}`}
+      data-testid="pane-rail"
+      onClick={onRestore}
+    >
+      {items.map(({ key, session }) => {
+        const project = session && projects.find((p) => p.id === session.project_id);
+        return (
+          <span key={key} className="flex flex-col items-center gap-1.5">
+            {session ? (
+              <>
+                {project && <ProjectTile project={project} />}
+                <StatusGlyph status={session.status} />
+              </>
+            ) : (
+              <FileText size={14} className="text-dim" aria-hidden="true" />
+            )}
+          </span>
+        );
+      })}
+    </button>
+  );
+}
+
 /**
  * The terminal area: up to four sessions in columns side by side, a column holding one or more panes stacked,
  * with draggable dividers. The selected session (`lib/ui/selection`) is the focused pane; focusing a pane selects
@@ -121,6 +167,8 @@ const ZONE_LABEL: Record<SplitDirection, string> = { right: 'Open side by side',
  * the bottom or right half of a pane all end in `openInSplit` / `SESSION_DRAG_TYPE` / `onTabDrag`.
  * Files open as editor panes beside the session's terminal (UI command `openFile`); ⌘W ⌘[ ⌘] work inside them,
  * ⌥⌘↩ expands the editor to the whole area and Esc restores.
+ * A column collapses to a 28 px rail (click restores) or hides (selecting its session restores); 6 panes instead of 4 on
+ * displays 3000 pt wide, and the layout is remembered per display (`layoutKey`, localStorage).
  */
 export function Panes() {
   const { sessions, projects, loaded } = useSessions();
@@ -134,6 +182,65 @@ export function Panes() {
   const [dirty, setDirty] = useState<ReadonlySet<string>>(new Set());
   const discard = useRef<string | null>(null);
   const box = useRef<HTMLDivElement>(null);
+  const [display, setDisplay] = useState<Display | null>(null);
+  const max = display === null ? MAX_PANES : maxPanesFor(display.width);
+  const storeKey = display === null ? null : layoutKey(display);
+
+  /** What the callbacks below need and must not capture stale: the current layout, unsaved editors and the loaded sessions. */
+  const live = useRef({ dirty, sessions, loaded });
+  useEffect(() => {
+    live.current = { dirty, sessions, loaded };
+  });
+
+  // On a display (first read, or the window moved): bring back the layout stored for it, else fit the current one to it.
+  // Editors with unsaved edits stay open either way.
+  const onDisplay = useCallback((d: Display) => {
+    setDisplay(d);
+    const fit = maxPanesFor(d.width);
+    const { dirty: unsaved, sessions: all, loaded: ready } = live.current;
+    let restored = loadLayout(localStorage, layoutKey(d));
+    if (restored !== null) {
+      restored = limitPanes(restored, fit);
+      if (ready) restored = syncLayout(restored, null, (id) => all.some((s) => s.id === id));
+      if (restored.panes.length === 0) restored = null;
+    }
+    if (restored === null) {
+      setLayout((l) => limitPanes(l, fit, live.current.dirty));
+      return;
+    }
+    const next = restored;
+    setLayout((l) => keepPanes(next, l, unsaved));
+    const focused = next.panes[next.focus];
+    if (focused !== undefined) selectSession(sessionOf(focused)); // else the old selection would replace a pane of the restored layout
+  }, []);
+  useDisplayChange(onDisplay);
+
+  const pendingSave = useRef<{ key: string; layout: PaneLayout } | null>(null);
+  useEffect(() => {
+    if (storeKey === null || !loaded) return;
+    const stale = pendingSave.current;
+    if (stale !== null && stale.key !== storeKey) saveLayout(localStorage, stale.key, stale.layout); // the window moved before the write
+    const job = { key: storeKey, layout };
+    pendingSave.current = job;
+    const timer = window.setTimeout(() => {
+      saveLayout(localStorage, job.key, job.layout);
+      if (pendingSave.current === job) pendingSave.current = null;
+    }, SAVE_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [layout, storeKey, loaded]);
+  useEffect(() => {
+    const flush = () => {
+      if (pendingSave.current !== null) saveLayout(localStorage, pendingSave.current.key, pendingSave.current.layout);
+    };
+    // a quit or window close within the debounce never unmounts React
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      flush();
+    };
+  }, []);
 
   // Keep panes in step with the sessions that exist and the selection (derived while rendering).
   if (loaded) {
@@ -195,13 +302,13 @@ export function Panes() {
         base = syncLayout(base, restore, exists);
       }
       if (index !== null) base = focusPane(base, index);
-      const { layout: next, outcome } = addPane(base, id, direction);
-      if (outcome === 'full') return say(`Up to ${MAX_PANES} panes side by side`);
+      const { layout: next, outcome } = addPane(base, id, direction, max);
+      if (outcome === 'full') return say(`Up to ${max} panes side by side`);
       setLayout(next);
       setExpanded(null);
       selectSession(id);
     },
-    [layout, sessions, say],
+    [layout, sessions, say, max],
   );
 
   /** Open `path` of session `sessionId` in an editor pane (its terminal first, when it is not open). */
@@ -210,8 +317,8 @@ export function Panes() {
       const exists = (s: SessionId) => sessions.some((x) => x.id === s);
       if (!exists(sessionId)) return;
       const base = syncLayout(layout, sessionId, exists);
-      const { layout: next, outcome } = addEditor(base, sessionId, path);
-      if (outcome === 'full') return say(`Up to ${MAX_PANES} panes side by side`);
+      const { layout: next, outcome } = addEditor(base, sessionId, path, max);
+      if (outcome === 'full') return say(`Up to ${max} panes side by side`);
       if (outcome === 'replaced') {
         const last = base.panes.filter(isEditor).pop();
         if (last !== undefined && dirty.has(paneKey(last))) return say(`Unsaved changes in ${last.path.split('/').pop()}: save or close it first`);
@@ -220,7 +327,7 @@ export function Panes() {
       setExpanded(null);
       selectSession(sessionId);
     },
-    [layout, sessions, dirty, say],
+    [layout, sessions, dirty, say, max],
   );
 
   const split = useCallback(
@@ -264,6 +371,24 @@ export function Panes() {
     [layout],
   );
 
+  /** Collapse to a rail or hide the column of pane `index`, or restore it; the session that gets focus becomes the selection. */
+  const changeColumn = useCallback(
+    (change: (l: PaneLayout, index: number) => PaneLayout, index: number) => {
+      if (change !== restoreColumn) {
+        // A rail (or a hidden column) shows no unsaved mark and offers no discard prompt: keep the edit in sight.
+        const unsaved = paneColumn(layout, index).find((p): p is Extract<PaneRef, object> => isEditor(p) && dirty.has(paneKey(p)));
+        if (unsaved !== undefined) return say(`Unsaved changes in ${unsaved.path.split('/').pop()}: save or close it first`);
+      }
+      const next = change(layout, index);
+      if (next === layout) return;
+      setLayout(next);
+      setExpanded(null);
+      const ref = next.panes[next.focus];
+      if (ref !== undefined) selectSession(sessionOf(ref));
+    },
+    [layout, dirty, say],
+  );
+
   /** The drop zone for a pointer at `x`,`y` over pane element `el` (null: not over a pane). */
   const zoneAt = useCallback((el: HTMLElement | null, x: number, y: number): Zone => {
     const area = box.current;
@@ -291,6 +416,8 @@ export function Panes() {
 
   // Other WPs ask for a split through the bus (card context menu, palette).
   useEffect(() => onSplitRequest(split), [split]);
+  useEffect(() => onUiCommand('focusPane', (dir) => step(dir === 'prev' ? -1 : 1)), [step]);
+  useEffect(() => onUiCommand('closePane', () => void close(layout.focus)), [close, layout.focus]);
   useEffect(() => onUiCommand('splitSession', (id) => split(id ?? null, 'right')), [split]);
   useEffect(() => onUiCommand('splitSessionDown', (id) => split(id ?? null, 'down')), [split]);
   useEffect(() => onUiCommand('openFile', (id, path) => (id && path ? openFile(id, path) : undefined)), [openFile]);
@@ -461,8 +588,10 @@ export function Panes() {
   const projectOf = (s: Session): Project | undefined => projects.find((p) => p.id === s.project_id);
   const multi = layout.panes.length > 1;
   const columns = columnsOf(layout);
+  const modes = columns.map((c) => columnMode(layout, layout.panes.indexOf(c[0] as PaneRef)));
   /** Flat index of each column's top pane. */
   const starts = columns.map((_, c) => columns.slice(0, c).reduce((n, col) => n + col.length, 0));
+  const openColumns = modes.filter((m) => m === 'open').length;
 
   return (
     <div
@@ -482,10 +611,15 @@ export function Panes() {
         const top = column[0] as PaneRef;
         const topKey = paneKey(top);
         const first = starts[c] ?? 0;
-        const shut = expandedKey !== null && !column.some((p) => paneKey(p) === expandedKey);
+        const mode = modes[c] ?? 'open';
+        const shut = mode !== 'open' || (expandedKey !== null && !column.some((p) => paneKey(p) === expandedKey));
         return (
           <Fragment key={topKey}>
-            {c > 0 && (
+            {mode === 'rail' && expandedKey === null && (
+              <Rail column={column} projects={projects} sessions={sessions} onRestore={() => changeColumn(restoreColumn, first)} />
+            )}
+            {mode === 'open' && modes[c - 1] === 'hidden' && modes.slice(0, c).includes('open') && <div className="w-px shrink-0 bg-line" aria-hidden="true" />}
+            {c > 0 && mode === 'open' && modes[c - 1] === 'open' && (
               <div
                 className="relative z-10 w-px shrink-0 cursor-col-resize bg-line focus-visible:bg-blue"
                 style={hide(expandedKey !== null)}
@@ -556,29 +690,15 @@ export function Panes() {
                           onClose={() => close(i)}
                         />
                       )}
-                      {!editor && multi && (
-                        <div
-                          className="flex h-7 shrink-0 items-center gap-2 border-b px-3 text-[12px]"
-                          style={focused ? { boxShadow: 'inset 0 2px 0 var(--blue)' } : undefined}
-                        >
-                          {project && <ProjectTile project={project} />}
-                          <span className="truncate">
-                            {s.title} <span className="text-tdim">· {project?.name}</span>
-                          </span>
-                          <StatusGlyph status={s.status} />
-                          <button
-                            className="ml-auto grid h-5 w-5 place-items-center rounded-md text-dim hover:bg-sel"
-                            aria-label="Close pane"
-                            title="Close pane ⌘W"
-                            onMouseDown={(e) => e.stopPropagation()}
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              close(i);
-                            }}
-                          >
-                            <X size={12} aria-hidden="true" />
-                          </button>
-                        </div>
+                      {!editor && (
+                        <PaneBar
+                          session={s}
+                          project={project}
+                          focused={focused}
+                          onClose={multi ? () => close(i) : undefined}
+                          onCollapse={openColumns > 1 ? () => changeColumn(collapseColumn, i) : undefined}
+                          onHide={openColumns > 1 ? () => changeColumn(hideColumn, i) : undefined}
+                        />
                       )}
                       {editor ? null : appearance.ready ? (
                         <TerminalView

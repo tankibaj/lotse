@@ -75,6 +75,8 @@ export function EditorPane({ session, path, projectName, focused, expanded, onDi
       <div
         className="flex h-7 shrink-0 items-center gap-1.5 overflow-hidden border-b border-line pr-1.5 pl-3 text-[12px] whitespace-nowrap"
         style={focused ? { boxShadow: 'inset 0 2px 0 var(--blue)' } : undefined}
+        data-testid="pane-status"
+        data-focused={focused}
       >
         <FileIcon name={name} />
         <span className="shrink-0 font-medium">{name}</span>
