@@ -10,6 +10,8 @@
 //! - [`detect_glue`]: hooks, OSC 7501, VT screen and process signals into the status engine (WP8)
 //! - [`git_glue`]: `lotse-git` wiring: git line, worktrees (WP8)
 //! - [`agent_env`]: agent-host variables dropped from panes, status plugins injected per pane
+//! - [`child_policy`] / [`child_sessions`]: what an agent's `lotse-hook mcp` connection may ask
+//!   (allowlist, limits) and the approval cards of the sessions it starts (proto 5)
 //! - [`perm_answer`]: option list on a permission prompt → the keys that answer it
 //! - [`launch`]: launch commands, PATH lookup, version detection, login environment
 //! - [`db`]: SQLite schema and migrations
@@ -24,6 +26,8 @@
 #![deny(unsafe_code)]
 
 pub mod agent_env;
+pub mod child_policy;
+pub mod child_sessions;
 pub mod config;
 pub mod db;
 pub mod detect_glue;

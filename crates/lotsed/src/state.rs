@@ -1,6 +1,8 @@
 //! The registry: projects, sessions, settings, and the request dispatcher.
 
 use crate::agent_env::Injection;
+use crate::child_policy::{self, ClientKind};
+use crate::child_sessions::StartRequests;
 use crate::config::Config;
 use crate::db::{DEFAULT_WORKSPACE, Db, DbError, SessionRow};
 use crate::git;
@@ -120,6 +122,8 @@ pub struct State {
     usage_scans: session_usage::ScanCache,
     /// `pr::generation()` at the last git refresh round.
     pr_seen: AtomicU64,
+    /// Open approval cards of agents that asked to start a session.
+    pub(crate) starts: StartRequests,
 }
 
 impl State {
@@ -158,6 +162,7 @@ impl State {
             usage,
             usage_scans: session_usage::ScanCache::default(),
             pr_seen: AtomicU64::new(0),
+            starts: StartRequests::default(),
         }))
     }
 
@@ -232,7 +237,7 @@ impl State {
             .cloned()
     }
 
-    fn handles(&self) -> Vec<Arc<SessionHandle>> {
+    pub(crate) fn handles(&self) -> Vec<Arc<SessionHandle>> {
         self.sessions
             .read()
             .unwrap_or_else(|e| e.into_inner())
@@ -241,7 +246,7 @@ impl State {
             .collect()
     }
 
-    fn session_list(&self, project: Option<&ProjectId>) -> Vec<Session> {
+    pub(crate) fn session_list(&self, project: Option<&ProjectId>) -> Vec<Session> {
         let mut v: Vec<Session> = self
             .handles()
             .iter()
@@ -255,6 +260,7 @@ impl State {
     /// A client connection ended: stop streaming to it.
     pub fn client_gone(&self, client_id: u64) {
         self.hub.remove(client_id);
+        self.starts.client_gone(client_id);
         for h in self.handles() {
             h.detach(client_id);
         }
@@ -292,6 +298,10 @@ impl State {
         req_id: u64,
         req: Request,
     ) -> Option<Response> {
+        // an agent's tool process (`lotse-hook mcp`): the allowlist, nothing else
+        if let ClientKind::Mcp(caller) = child_policy::classify(&client.name) {
+            return Some(self.handle_mcp(client, caller, req).await);
+        }
         Some(match req {
             Request::Ping => Response::Pong,
             Request::GetSnapshot => self.snapshot(),
@@ -317,6 +327,11 @@ impl State {
             Request::ListSessions { project_id } => {
                 Response::Sessions(self.session_list(project_id.as_ref()))
             }
+            // only the daemon, after the user approved an agent's request, marks it so
+            Request::CreateSession(ns) if ns.requested_by_agent => err(
+                ErrorCode::InvalidRequest,
+                "requested_by_agent is set by the daemon",
+            ),
             Request::CreateSession(ns) => self.create_session(ns).await,
             Request::RenameSession { session_id, title } => {
                 self.rename_session(&session_id, &title)
@@ -436,10 +451,15 @@ impl State {
             req @ (Request::ListConnectors { .. } | Request::CheckConnectors { .. }) => {
                 mcp::handle(self, req).await
             }
-            // proto 5: the mod and child-session handlers land with M2 / C1
-            req @ (Request::ModAttach { .. } | Request::ResolveSessionStart { .. }) => {
-                unavailable(req.method())
+            Request::ResolveSessionStart { id, approve } => {
+                if self.starts.resolve(&id, approve) {
+                    Response::Ok
+                } else {
+                    not_found("start request")
+                }
             }
+            // proto 5: the mod handler lands with M2
+            req @ Request::ModAttach { .. } => unavailable(req.method()),
             Request::HookEvent {
                 agent,
                 session_id,
@@ -605,7 +625,11 @@ impl State {
         }
     }
 
-    async fn get_transcript(self: &Arc<Self>, id: &SessionId, limit: Option<u32>) -> Response {
+    pub(crate) async fn get_transcript(
+        self: &Arc<Self>,
+        id: &SessionId,
+        limit: Option<u32>,
+    ) -> Response {
         transcript_sources::get(self, id, limit).await
     }
 
@@ -719,12 +743,19 @@ impl State {
 
     // sessions
 
-    async fn create_session(self: &Arc<Self>, ns: NewSession) -> Response {
+    pub(crate) async fn create_session(self: &Arc<Self>, ns: NewSession) -> Response {
         let project = match self.db.get_project(&ns.project_id) {
             Ok(Some(p)) => p,
             Ok(None) => return not_found("project"),
             Err(e) => return db_err(e),
         };
+        if ns
+            .parent_session
+            .as_ref()
+            .is_some_and(|p| self.session(p).is_none())
+        {
+            return not_found("parent session");
+        }
         let settings = self.settings();
         let command = match ns.command.as_deref().map(str::trim) {
             Some(c) if !c.is_empty() => c.to_owned(),
@@ -794,7 +825,7 @@ impl State {
             source: DetectSource::Process,
             context_pct: None,
             source_layer: None,
-            parent_session: None,
+            parent_session: ns.parent_session.clone(),
             todo: None,
         };
         launch::add_claude_plugin_dir(&mut argv, ns.agent, self.inject.claude_plugin_dir());
@@ -846,7 +877,7 @@ impl State {
             }
         };
         if let Some(prompt) = ns.first_prompt.filter(|p| !p.trim().is_empty()) {
-            send_first_prompt(handle.clone(), prompt);
+            send_first_prompt(handle.clone(), prompt, ns.requested_by_agent);
         }
         // the current state, not the one at spawn: a command that already exited reads as exited
         Response::Session(handle.snapshot())
@@ -891,7 +922,7 @@ impl State {
         }
     }
 
-    fn close_session(&self, id: &SessionId) -> Response {
+    pub(crate) fn close_session(&self, id: &SessionId) -> Response {
         let removed = self
             .sessions
             .write()
@@ -1094,7 +1125,7 @@ fn hook_bin() -> Option<PathBuf> {
     sibling.is_file().then_some(sibling)
 }
 
-fn not_found(what: &str) -> Response {
+pub(crate) fn not_found(what: &str) -> Response {
     err(ErrorCode::NotFound, format!("{what} not found"))
 }
 
@@ -1160,7 +1191,11 @@ pub fn normalize_settings(s: &mut Settings, env: &LaunchEnv) -> Result<(), Strin
 
 /// Best effort: wait for the agent's first output (it is ready for input), then type the prompt.
 /// Unverified: Claude Code / Codex / OpenCode accept input this early; check in WP8 with the real CLIs.
-fn send_first_prompt(handle: Arc<SessionHandle>, prompt: String) {
+///
+/// `as_paste`: an agent asked for this session, so its prompt goes in as one bracketed paste (line
+/// breaks as Returns, like the app's composer) instead of keystrokes; it was already stripped of
+/// control characters, which are dropped here again.
+fn send_first_prompt(handle: Arc<SessionHandle>, prompt: String, as_paste: bool) {
     let spawned = std::thread::Builder::new()
         .name("lotse-first-prompt".into())
         .spawn(move || {
@@ -1171,7 +1206,18 @@ fn send_first_prompt(handle: Arc<SessionHandle>, prompt: String) {
             }
             std::thread::sleep(Duration::from_millis(700));
             let text = prompt.trim_end_matches(['\r', '\n']);
-            if handle.inject(text.as_bytes()).is_ok() {
+            let typed = if as_paste {
+                let body: String = text
+                    .replace("\r\n", "\n")
+                    .chars()
+                    .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+                    .map(|c| if c == '\n' { '\r' } else { c })
+                    .collect();
+                format!("\x1b[200~{body}\x1b[201~")
+            } else {
+                text.to_owned()
+            };
+            if handle.inject(typed.as_bytes()).is_ok() {
                 std::thread::sleep(Duration::from_millis(150));
                 let _ = handle.inject(b"\r");
             }

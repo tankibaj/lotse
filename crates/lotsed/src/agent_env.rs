@@ -11,7 +11,7 @@
 //!   a `config.toml`, see `integrations/codex/README.md`); all per pane, nothing in `~/.claude`,
 //!   `~/.config/opencode` or `~/.codex` changes.
 
-use lotse_hook::{claude_plugin, codex_home, opencode_plugin};
+use lotse_hook::{claude_plugin, codex_home, mcp_inject, opencode_plugin};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -70,6 +70,7 @@ pub fn scrub_host_markers(vars: &mut HashMap<String, String>) {
 
 const CLAUDE_PLUGIN_DIRS: &str = "CLAUDE_CODE_PLUGIN_DIRS";
 const OPENCODE_CONFIG_DIR: &str = "OPENCODE_CONFIG_DIR";
+const OPENCODE_CONFIG_CONTENT: &str = "OPENCODE_CONFIG_CONTENT";
 const CODEX_HOME: &str = "CODEX_HOME";
 /// The user's own Codex home, next to the mirror in `CODEX_HOME`: a pane started from a Lotse pane
 /// inherits both and must still mirror the user's home, not the mirror.
@@ -94,7 +95,13 @@ impl Injection {
             .unwrap_or_else(|_| data_dir.to_owned())
             .join("integrations");
         let claude_plugin = match claude_plugin::ensure(&base.join("claude")) {
-            Ok(dir) => Some(dir),
+            Ok(dir) => {
+                // child sessions: the `lotse` MCP server rides in the same plugin
+                if let Err(e) = mcp_inject::ensure_claude(&dir) {
+                    tracing::warn!("Claude Code gets no lotse MCP server: {e:#}");
+                }
+                Some(dir)
+            }
             Err(e) => {
                 tracing::warn!(
                     "Claude Code plugin not written, panes get no injected hooks: {e:#}"
@@ -135,6 +142,12 @@ impl Injection {
 
     /// Put the injection into a pane's environment.
     pub fn apply(&self, vars: &mut HashMap<String, String>) {
+        // the daemon exports it before calling this; Codex and OpenCode do not expand variables
+        let hook_bin = vars
+            .get("LOTSE_HOOK_BIN")
+            .filter(|b| !b.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "lotse-hook".to_owned());
         if let Some(plugin) = &self.claude_plugin {
             let mut dirs: Vec<PathBuf> = vars
                 .get(CLAUDE_PLUGIN_DIRS)
@@ -174,6 +187,11 @@ impl Injection {
                 }
                 Err(e) => tracing::warn!("{OPENCODE_CONFIG_DIR} left alone: {e:#}"),
             }
+            // the overlay links the user's opencode.json: the MCP server goes in the inline config
+            let inline = vars.get(OPENCODE_CONFIG_CONTENT).map(String::as_str);
+            if let Some(content) = mcp_inject::opencode_config_content(inline, &hook_bin) {
+                vars.insert(OPENCODE_CONFIG_CONTENT.into(), content);
+            }
         }
         let codex_off = vars.get(CODEX_HOOKS_SWITCH).is_some_and(|v| {
             matches!(
@@ -186,6 +204,15 @@ impl Injection {
         {
             match codex_home::mirror(root, &source) {
                 Ok(dir) => {
+                    match mcp_inject::ensure_codex(&dir.join("config.toml"), &hook_bin) {
+                        Ok(mcp_inject::CodexOutcome::Skipped) => {
+                            tracing::info!(
+                                "Codex config has its own `lotse` MCP server: not added"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!("Codex gets no lotse MCP server: {e:#}"),
+                    }
                     vars.insert(CODEX_HOME.into(), dir.to_string_lossy().into_owned());
                     vars.insert(
                         CODEX_SOURCE_HOME.into(),
@@ -515,6 +542,89 @@ mod tests {
         ]);
         s.inj.apply(&mut vars);
         assert!(vars.contains_key("CODEX_HOME"));
+    }
+
+    #[test]
+    fn claude_gets_the_lotse_mcp_server_in_the_injected_plugin_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inj = Injection::prepare(tmp.path());
+        let plugin = inj.claude_plugin_dir().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(plugin.join(".mcp.json")).unwrap(),
+            lotse_hook::mcp_inject::claude_mcp_json()
+        );
+    }
+
+    #[test]
+    fn codex_mirror_gets_the_lotse_mcp_server_pointing_at_the_hook_binary() {
+        let s = codex_setup();
+        let user_config = "model = \"gpt-5\"\n";
+        std::fs::write(s.home.join(".codex/config.toml"), user_config).unwrap();
+        let mut vars = map(&[
+            ("HOME", s.home.to_str().unwrap()),
+            (
+                "LOTSE_HOOK_BIN",
+                "/Applications/Lotse.app/Contents/MacOS/lotse-hook",
+            ),
+        ]);
+        s.inj.apply(&mut vars);
+        let mirror = PathBuf::from(&vars["CODEX_HOME"]);
+        let config: toml::Table = std::fs::read_to_string(mirror.join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(config["model"].as_str(), Some("gpt-5"));
+        let lotse = &config["mcp_servers"]["lotse"];
+        assert_eq!(
+            lotse["command"].as_str(),
+            Some("/Applications/Lotse.app/Contents/MacOS/lotse-hook")
+        );
+        assert_eq!(lotse["args"][0].as_str(), Some("mcp"));
+        // the hook trust entries are still there, and the user's own file is not touched
+        assert!(config.contains_key("hooks"));
+        assert_eq!(
+            std::fs::read_to_string(s.home.join(".codex/config.toml")).unwrap(),
+            user_config
+        );
+        // every pane applies it again: nothing changes
+        let before = std::fs::read_to_string(mirror.join("config.toml")).unwrap();
+        s.inj.apply(&mut vars);
+        assert_eq!(
+            std::fs::read_to_string(mirror.join("config.toml")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn opencode_gets_the_lotse_mcp_server_inline_and_a_users_inline_config_is_merged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inj = Injection::prepare(tmp.path());
+        let mut vars = map(&[("LOTSE_HOOK_BIN", "/h/lotse-hook")]);
+        inj.apply(&mut vars);
+        let inline: serde_json::Value =
+            serde_json::from_str(&vars["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(
+            inline["mcp"]["lotse"]["command"],
+            serde_json::json!(["/h/lotse-hook", "mcp"])
+        );
+        // a pane started from a Lotse pane inherits it: unchanged
+        let once = vars.clone();
+        inj.apply(&mut vars);
+        assert_eq!(vars, once);
+
+        let mut vars = map(&[("OPENCODE_CONFIG_CONTENT", r#"{"theme":"x"}"#)]);
+        inj.apply(&mut vars);
+        let inline: serde_json::Value =
+            serde_json::from_str(&vars["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(inline["theme"], "x");
+        assert_eq!(
+            inline["mcp"]["lotse"]["command"][0], "lotse-hook",
+            "no LOTSE_HOOK_BIN: found on PATH"
+        );
+        // a value that is not JSON is the user's: left alone
+        let mut vars = map(&[("OPENCODE_CONFIG_CONTENT", "{// jsonc")]);
+        inj.apply(&mut vars);
+        assert_eq!(vars["OPENCODE_CONFIG_CONTENT"], "{// jsonc");
     }
 
     #[test]

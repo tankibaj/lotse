@@ -8,4 +8,7 @@ pub mod claude_settings;
 pub mod codex_home;
 pub mod forward;
 pub mod json;
+pub mod mcp;
+pub mod mcp_inject;
+pub mod mcp_link;
 pub mod opencode_plugin;
