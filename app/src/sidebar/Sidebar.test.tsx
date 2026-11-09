@@ -54,6 +54,22 @@ describe('tree', () => {
     expect(screen.getAllByRole('img', { name: 'Not a git repository' })).toHaveLength(1);
   });
 
+  it('shows_behind_and_diffstat', async () => {
+    await ready();
+    const a1 = within(card('a1'));
+    expect(a1.getByText('↓1')).toBeInTheDocument();
+    expect(a1.getByText('+42')).toHaveClass('text-green');
+    expect(a1.getByText('−7')).toHaveClass('text-red');
+    expect(a1.getByText('PR #184 · Draft')).toHaveAttribute('title', 'Pull request #184 · Draft');
+    const a3 = within(card('a3'));
+    expect(a3.getByText('+310')).toBeInTheDocument();
+    expect(a3.getByText('−96')).toBeInTheDocument();
+    expect(a3.queryByText(/↓/)).toBeNull(); // nothing behind: no arrow
+    expect(a3.queryByText(/^PR /)).toBeNull(); // no PR: no pill
+    const a2 = card('a2');
+    expect(a2.textContent).not.toMatch(/[+−]\d/); // a clean worktree has no diffstat
+  });
+
   it('uses coarse time: minutes and hours, never seconds', async () => {
     await ready();
     expect(within(card('a1')).getByText('2m')).toBeInTheDocument(); // running 161 s
