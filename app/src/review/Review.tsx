@@ -1,8 +1,8 @@
 import { FolderGit2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { NotSubmitted, sendPrompt } from '../composer/send';
+import { NotSubmitted } from '../composer/send';
 import { useClient } from '../lib/client';
-import type { DiffFile, GitDiff, SessionId } from '../lib/client/types';
+import type { DiffFile, GitDiff, Review as BranchReview, SessionId } from '../lib/client/types';
 import { useSessions } from '../panes/useSessions';
 import { diffCounts } from '../sheets/diffLines';
 import { inTauri } from '../sheets/hostBridge';
@@ -10,11 +10,24 @@ import { useDialogFocus } from '../sheets/ui';
 import { buildReviewPrompt, clearComments, dropEmptyComments, useComments, written } from './comments';
 import { BADGE, FileDiff } from './FileDiff';
 import type { Layout } from './FileDiff';
+import { sendReviewPrompt } from './send';
 
 // The mock's `#diff`: the whole change of a session against its review base, file by file, with line comments that go
 // to the agent as one prompt. The shell mounts it in the `review` slot and closes it on Esc.
 
-type Load = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; diff: GitDiff; base: string };
+// `base` is what the branch is compared with (shown); `oldRev` is where the old side of every file is read: the merge base.
+type Load = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; diff: GitDiff; base: string; oldRev: string };
+
+/**
+ * The file list, counts and patch come from `getDiff(…, 'merge_base')`, so the old side must be the merge base too, not
+ * the base tip (they differ when the branch is behind). The protocol has no merge-base field: it is the parent of the
+ * oldest commit ahead, HEAD when none is ahead. A truncated commit list cannot tell, so that case reads at the base.
+ */
+function mergeBaseRev(r: BranchReview): string {
+  if (r.commits.length === 0) return 'HEAD';
+  const oldest = r.commits[r.commits.length - 1];
+  return r.truncated || !oldest ? r.base : `${oldest.sha}^`;
+}
 
 const PR_STATE = { open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' } as const;
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -43,8 +56,8 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
     void (async () => {
       const diff = await client.getDiff(sessionId, 'merge_base');
       // what the base is called: the files are read at it
-      const base = diff.is_git && diff.files.length > 0 ? (await client.getReview(sessionId)).base : 'HEAD';
-      if (alive) setLoad({ status: 'ready', diff, base });
+      const review = diff.is_git && diff.files.length > 0 ? await client.getReview(sessionId) : null;
+      if (alive) setLoad({ status: 'ready', diff, base: review?.base ?? 'HEAD', oldRev: review ? mergeBaseRev(review) : 'HEAD' });
     })().catch((e: unknown) => alive && setLoad({ status: 'error', message: errorText(e) }));
     return () => {
       alive = false;
@@ -87,7 +100,7 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
     setProblem('');
     setNotice('');
     try {
-      await sendPrompt(client, sessionId, buildReviewPrompt(comments));
+      await sendReviewPrompt(client, sessionId, buildReviewPrompt(comments));
       clearComments(sessionId);
       onClose();
     } catch (e) {
@@ -223,7 +236,7 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
           )}
           {load.status === 'ready' && !load.diff.is_git && <div className="px-4 py-6 text-center font-sans text-dim">Not a git repository: nothing to review.</div>}
           {load.status === 'ready' && load.diff.is_git && files.length === 0 && <div className="px-4 py-6 text-center font-sans text-dim">No changes to review</div>}
-          {load.status === 'ready' && shown.map((f) => <FileDiff key={f.path} sessionId={sessionId} file={f} baseRev={load.base} layout={layout} />)}
+          {load.status === 'ready' && shown.map((f) => <FileDiff key={f.path} sessionId={sessionId} file={f} baseRev={load.oldRev} layout={layout} />)}
           {load.status === 'ready' && load.diff.truncated && (
             <div role="status" className="border-t px-4 py-2 font-sans text-[12px] text-orange">
               The diff is cut at 512 KB: later files are left out. Run <span className="font-mono">git diff</span> in the terminal for the rest.

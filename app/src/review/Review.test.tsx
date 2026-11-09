@@ -247,6 +247,19 @@ describe('Review', () => {
       expect(getComments('a1')).toEqual([]);
     });
 
+    it('the review goes out as a bracketed paste although no terminal is mounted', async () => {
+      const sent = vi.spyOn(client, 'sendInput');
+      mount({ file: TOTALS });
+      await loaded(1);
+      await userEvent.click(addMarker(TOTALS, 41));
+      await userEvent.type(await screen.findByRole('textbox', { name: 'Comment for line 41' }), 'why');
+      await userEvent.click(send());
+      await waitFor(() => expect(sent).toHaveBeenCalledTimes(2));
+      const first = String(sent.mock.calls[0]?.[1]);
+      expect(first.startsWith('\x1b[200~')).toBe(true);
+      expect(first.endsWith('\x1b[201~')).toBe(true);
+    });
+
     it('a send that fails keeps the comments and says so', async () => {
       vi.spyOn(client, 'sendInput').mockRejectedValue(new Error('daemon gone'));
       onClose.mockClear();
@@ -306,6 +319,30 @@ describe('Review', () => {
       expect(screen.getByText('-old line')).toBeInTheDocument();
       expect(document.querySelector('[data-add-comment]')).toBeNull();
     });
+  });
+});
+
+describe('old side of the diff', () => {
+  const commit = (sha: string) => ({ sha, subject: sha, author: 'a', at: 0 });
+  const review = (over: Partial<Awaited<ReturnType<MockClient['getReview']>>>) =>
+    vi.spyOn(client, 'getReview').mockResolvedValue({ base: 'origin/main', ahead: 2, behind: 3, commits: [commit('c2'), commit('c1')], truncated: false, ...over });
+
+  it('is read at the merge base (parent of the oldest commit ahead), not at the base tip', async () => {
+    review({});
+    const read = vi.spyOn(client, 'readFile');
+    mount({ file: TOTALS });
+    await loaded(1);
+    expect(read).toHaveBeenCalledWith('a1', TOTALS, 'c1^');
+    expect(read).not.toHaveBeenCalledWith('a1', TOTALS, 'origin/main');
+    expect(sidebar().getByText(/vs/)).toHaveTextContent('origin/main');
+  });
+
+  it('nothing ahead: the merge base is HEAD', async () => {
+    review({ ahead: 0, commits: [] });
+    const read = vi.spyOn(client, 'readFile');
+    mount({ file: TOTALS });
+    await loaded(1);
+    expect(read).toHaveBeenCalledWith('a1', TOTALS, 'HEAD');
   });
 });
 

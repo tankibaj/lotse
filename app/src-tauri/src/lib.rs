@@ -67,7 +67,7 @@ pub fn run() {
             fonts::list_fonts,
             symbols::symbol_png,
             un::un_available,
-            export::export_write,
+            export::export_save,
             config_open::open_agent_config,
             speech::speech_available,
             speech::speech_start,

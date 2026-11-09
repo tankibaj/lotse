@@ -209,16 +209,21 @@ export function Panes() {
     (sessionId: SessionId, path: string) => {
       const exists = (s: SessionId) => sessions.some((x) => x.id === s);
       if (!exists(sessionId)) return;
-      const { layout: next, outcome } = addEditor(syncLayout(layout, sessionId, exists), sessionId, path);
+      const base = syncLayout(layout, sessionId, exists);
+      const { layout: next, outcome } = addEditor(base, sessionId, path);
       if (outcome === 'full') return say(`Up to ${MAX_PANES} panes side by side`);
+      if (outcome === 'replaced') {
+        const last = base.panes.filter(isEditor).pop();
+        if (last !== undefined && dirty.has(paneKey(last))) return say(`Unsaved changes in ${last.path.split('/').pop()}: save or close it first`);
+      }
       setLayout(next);
       setExpanded(null);
       selectSession(sessionId);
     },
-    [layout, sessions, say],
+    [layout, sessions, dirty, say],
   );
 
-  const split = useCallback(
+  const split =useCallback(
     (wanted: SessionId | null, direction: SplitDirection = 'right') => {
       const id = wanted ?? nextSessionToOpen(sessions, sessionPanes(layout));
       if (id === null) return say('All sessions are already open');

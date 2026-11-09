@@ -59,6 +59,13 @@ export function useComments(sessionId: SessionId): readonly ReviewComment[] {
 
 const QUOTE_MAX = 200;
 
+// The prompt is typed into a PTY: a source line or a file name carrying ESC[201~ would end the bracketed paste early and
+// the rest would run as keystrokes. Everything but newline and tab goes (C0 incl. ESC and CR, DEL, C1).
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f-\x9f]/g;
+export const stripControl = (s: string): string => s.replace(CONTROL, '');
+const clean = stripControl;
+
 /** One prompt for the agent: every written comment as `path:line`, the quoted line and the comment, grouped by file. */
 export function buildReviewPrompt(comments: readonly ReviewComment[]): string {
   const files = new Map<string, ReviewComment[]>();
@@ -67,8 +74,8 @@ export function buildReviewPrompt(comments: readonly ReviewComment[]): string {
     list
       .sort((a, b) => a.line - b.line)
       .map((c) => {
-        const quote = c.quote.trim();
-        return [`${c.path}:${c.line}`, `> ${quote.length > QUOTE_MAX ? `${quote.slice(0, QUOTE_MAX)}…` : quote}`, c.text.trim()].join('\n');
+        const quote = clean(c.quote).trim();
+        return [`${clean(c.path)}:${c.line}`, `> ${quote.length > QUOTE_MAX ? `${quote.slice(0, QUOTE_MAX)}…` : quote}`, clean(c.text).trim()].join('\n');
       }),
   );
   return ['Review comments on your changes. Please address each one:', ...blocks].join('\n\n');

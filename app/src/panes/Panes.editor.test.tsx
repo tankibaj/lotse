@@ -18,6 +18,9 @@ const edKey = (sessionId: string, path: string) => paneKey({ kind: 'editor', ses
 
 let client: MockClient;
 
+// jsdom lacks layout rects; CodeMirror measures selections through Range.
+Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+
 const mount = async () => {
   render(
     <ClientProvider client={client}>
@@ -149,6 +152,32 @@ describe('editor panes', () => {
     expect(await screen.findByText(/Changed by/)).toBeInTheDocument();
     expect(screen.getByText('+7')).toBeInTheDocument();
     expect(screen.getByText('−2')).toBeInTheDocument();
+  });
+
+  it('drops the change bar when reloading the diff fails', async () => {
+    const diff = { is_git: true, truncated: false, files: [{ path: TOTALS, old_path: null, status: 'modified' as const, binary: false, truncated: false, diff: '', added: 7, removed: 2 }] };
+    const spy = vi.spyOn(client, 'getDiff').mockResolvedValue(diff);
+    await mount();
+    openFile('a1', TOTALS);
+    expect(await screen.findByText(/Changed by/)).toBeInTheDocument();
+    spy.mockRejectedValue(new Error('daemon gone'));
+    act(() => client.setStatus('a1', 'run'));
+    await waitFor(() => expect(screen.queryByText(/Changed by/)).toBeNull());
+  });
+
+  it('never replaces an editor with unsaved edits when the panes are full', async () => {
+    await mount();
+    openFile('a1', TOTALS);
+    await waitFor(() => expect(cmContent()).not.toBeNull());
+    await waitFor(() => expect(editorView().state.doc.length).toBeGreaterThan(0));
+    act(() => editorView().dispatch({ changes: { from: 0, insert: 'x' } }));
+    act(() => void emitUiCommand('splitSession', 'a4'));
+    act(() => void emitUiCommand('splitSession', 'a3'));
+    expect(paneIds()).toHaveLength(4);
+    const before = paneIds();
+    openFile('a1', 'package.json');
+    expect(paneIds()).toEqual(before);
+    expect(screen.getByRole('status')).toHaveTextContent(/Unsaved changes in totals\.ts/);
   });
 
   it('Review in the change bar opens the full review on that file', async () => {

@@ -4,6 +4,7 @@ import type { Usage, UsageSpan } from '../../lib/client/types';
 import { ClientProvider, MockClient } from '../../lib/client';
 import { mount } from '../../sidebar/testUtils';
 import { UsagePanel } from './index';
+import { useUsage } from './useUsage';
 
 const MIN = 60_000;
 /** Local 14:02, so "since 14:02" holds in every time zone. */
@@ -131,6 +132,39 @@ describe('UsagePanel', () => {
       </ClientProvider>,
     );
     await waitFor(() => expect(getUsage).toHaveBeenLastCalledWith('a3'));
+  });
+
+  it('does not show the previous session numbers while the new session loads', async () => {
+    const { client, getUsage, rerender } = mountPanel(usage());
+    await screen.findByTestId('usage-tile-session');
+    getUsage.mockReturnValue(new Promise(() => {}));
+    rerender(
+      <ClientProvider client={client}>
+        <UsagePanel sessionId="a3" />
+      </ClientProvider>,
+    );
+    expect(screen.queryByTestId('usage-tile-session')).not.toBeInTheDocument();
+    expect(screen.getByText('Loading…')).toBeInTheDocument();
+  });
+
+  it('never renders a session with the state of another one', async () => {
+    const client = new MockClient({ script: false });
+    vi.spyOn(client, 'getUsage').mockResolvedValue(usage());
+    const seen: [string | null, string][] = [];
+    function Probe({ id }: { id: string }) {
+      seen.push([id, useUsage(id).kind]);
+      return null;
+    }
+    const { rerender } = mount(<Probe id="a1" />, client);
+    await waitFor(() => expect(seen.at(-1)).toEqual(['a1', 'ready']));
+    seen.length = 0;
+    vi.spyOn(client, 'getUsage').mockReturnValue(new Promise(() => {}));
+    rerender(
+      <ClientProvider client={client}>
+        <Probe id="a3" />
+      </ClientProvider>,
+    );
+    expect(seen.filter(([id]) => id === 'a3').map(([, kind]) => kind)).not.toContain('ready');
   });
 
   it('says so when no session is selected', () => {

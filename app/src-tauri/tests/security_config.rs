@@ -83,13 +83,13 @@ fn capabilities_are_explicit_and_minimal() {
         })
         .collect();
     // what the webview calls: daemon events (listen/unlisten, also drag-drop), the title-bar drag
-    // region, the folder picker, and the transcript export's save dialog. A missing one fails silently at runtime.
+    // region, and the folder picker. A missing one fails silently at runtime. The transcript export's save
+    // dialog runs in Rust (`export_save`), so the webview gets no `dialog:allow-save`.
     for needed in [
         "core:event:allow-listen",
         "core:event:allow-unlisten",
         "core:window:allow-start-dragging",
         "dialog:allow-open",
-        "dialog:allow-save",
     ] {
         assert!(perms.contains(&needed), "missing {needed}");
     }
@@ -132,7 +132,6 @@ fn capability_set_is_exact() {
             "core:window:allow-internal-toggle-maximize",
             "core:window:allow-start-dragging",
             "dialog:allow-open",
-            "dialog:allow-save",
         ]
     );
 }

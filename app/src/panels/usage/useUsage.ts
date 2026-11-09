@@ -31,13 +31,16 @@ function touches(e: DaemonEvent, sessionId: SessionId): boolean {
  */
 export function useUsage(sessionId: SessionId | null): UsageState {
   const client = useClient();
-  const [state, setState] = useState<UsageState>({ kind: 'none' });
+  // keyed by session so a render right after a switch never shows the previous session's numbers
+  const [keyed, setKeyed] = useState<{ id: SessionId; state: UsageState } | null>(null);
 
   useEffect(() => {
-    if (sessionId === null) {
-      setState({ kind: 'none' });
-      return;
-    }
+    if (sessionId === null) return;
+    const setState = (next: UsageState | ((s: UsageState) => UsageState)) =>
+      setKeyed((k) => {
+        const prev: UsageState = k?.id === sessionId ? k.state : { kind: 'loading' };
+        return { id: sessionId, state: typeof next === 'function' ? next(prev) : next };
+      });
     let alive = true;
     let inflight = false;
     let again = false;
@@ -77,5 +80,6 @@ export function useUsage(sessionId: SessionId | null): UsageState {
     };
   }, [client, sessionId]);
 
-  return state;
+  if (sessionId === null) return { kind: 'none' };
+  return keyed?.id === sessionId ? keyed.state : { kind: 'loading' };
 }

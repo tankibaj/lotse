@@ -29,6 +29,19 @@ describe('buildReviewPrompt', () => {
   });
 });
 
+describe('buildReviewPrompt: control bytes', () => {
+  it('strips ESC, C0, DEL and C1 from quote, comment and path, keeps newline and tab', () => {
+    const prompt = buildReviewPrompt([
+      { path: 'a\x1b.ts', line: 1, quote: 'x\x1b[201~\x0d\x03rm -rf\x7f\x9b', text: 'ok\x1b[200~\x00 a\tb\nsecond\r\nthird' },
+    ]);
+    const allowed = new Set(['\n', '\t']);
+    expect([...prompt].filter((ch) => ch.charCodeAt(0) < 0x20 && !allowed.has(ch))).toEqual([]);
+    expect([...prompt].filter((ch) => ch.charCodeAt(0) >= 0x7f && ch.charCodeAt(0) <= 0x9f)).toEqual([]);
+    expect(prompt).toContain('a.ts:1\n> x[201~rm -rf\n');
+    expect(prompt).toContain('ok[200~ a\tb\nsecond\nthird');
+  });
+});
+
 describe('comment store', () => {
   it('replaces the comment on the same line, removes, and drops empty boxes', () => {
     putComment('s1', { path: 'a.ts', line: 1, quote: 'q', text: '' });

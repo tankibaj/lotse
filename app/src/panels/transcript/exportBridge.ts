@@ -1,9 +1,9 @@
 import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
 import { inTauri } from '../../sheets/hostBridge';
 
-// Where an exported transcript goes: the native save dialog, then `export_write` (`app/src-tauri/src/export.rs`)
-// writes to the path the user picked. The browser (dev server) downloads the file instead. Tests inject a bridge.
+// Where an exported transcript goes: `export_save` (`app/src-tauri/src/export.rs`) opens the native save dialog
+// and writes to the path the user picked; the webview never names a path. The browser (dev server) downloads
+// the file instead. Tests inject a bridge.
 
 export interface ExportBridge {
   /** Save `content` as the user chooses; the saved path, or `null` when they cancelled. */
@@ -12,10 +12,7 @@ export interface ExportBridge {
 
 const tauriBridge: ExportBridge = {
   async save({ fileName, content }) {
-    const path = await save({ title: 'Export transcript', defaultPath: fileName });
-    if (path === null) return null;
-    await invoke('export_write', { path, content });
-    return path;
+    return invoke<string | null>('export_save', { fileName, content });
   },
 };
 

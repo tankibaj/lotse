@@ -12,8 +12,6 @@ import { Section } from './Section';
 
 const SOURCE_LABEL: Record<DetectSource, string> = { hook: 'Hooks', osc7501: 'OSC 7501', screen: 'Screen', process: 'Process' };
 const SUB_LABEL: Partial<Record<Status, string>> = { run: 'running', perm: 'waiting', fail: 'failed', done: 'done' };
-/** Claude's context window; the daemon reports no per-model size (see Requests in the WP report). */
-const CONTEXT_WINDOW = 200_000;
 
 /** `undefined` while loading, `null` when the request failed. Reloads when `key` changes or `reload()` runs. */
 function useLoaded<T>(load: () => Promise<T>, key: string): [T | null | undefined, () => void] {
@@ -119,8 +117,8 @@ function Environment({ session, info }: { session: Session; info: SessionInfo | 
 function ContextBar({ usage }: { usage: Usage }) {
   const [open, setOpen] = useState(false);
   const { input, cache_read, cache_write } = usage.tokens;
-  const inWindow = input + cache_read + cache_write;
-  const pct = Math.min(100, Math.round((inWindow / CONTEXT_WINDOW) * 100));
+  // cumulative session totals, not the current context size: no window, percentage or bar
+  const total = input + cache_read + cache_write;
   const cost = `$${(usage.spend.session / 1_000_000).toFixed(2)}${usage.priced ? '' : ' +'}`;
   return (
     <div className="border-t border-line py-3">
@@ -129,17 +127,12 @@ function ContextBar({ usage }: { usage: Usage }) {
         <span aria-hidden className="text-[10px] text-dim">
           {open ? '▾' : '▸'}
         </span>
-        <span className="ml-auto text-[12px] tabular-nums text-dim">{pct}%</span>
-        <span aria-hidden className="h-1.5 w-10 overflow-hidden rounded-full bg-line">
-          <span className="block h-full rounded-full bg-blue" style={{ width: `${pct}%` }} />
-        </span>
+        <span className="ml-auto text-[12px] tabular-nums text-dim">{formatTokens(total)}</span>
       </button>
       {open && (
         <div className="mt-2 grid grid-cols-[1fr_auto] gap-y-1 text-[12px] text-dim">
-          <span>Tokens in window</span>
-          <span className="tabular-nums">
-            {formatTokens(inWindow)} / {formatTokens(CONTEXT_WINDOW)}
-          </span>
+          <span>Tokens</span>
+          <span className="tabular-nums">{formatTokens(total)}</span>
           <span>Cache</span>
           <span className="tabular-nums">{formatTokens(cache_read)} read</span>
           <span>Session cost</span>

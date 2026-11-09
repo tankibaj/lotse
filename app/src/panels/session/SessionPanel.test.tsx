@@ -63,7 +63,19 @@ describe('SessionPanel', () => {
     expect(bar).toHaveAttribute('aria-expanded', 'true');
     expect(screen.getByText('Session cost').nextSibling).toHaveTextContent('$1.14');
     expect(screen.getByText('Cache').nextSibling).toHaveTextContent('26k read');
-    expect(screen.getByText('Tokens in window').nextSibling).toHaveTextContent('87k / 200k');
+    expect(screen.getByText('Tokens').nextSibling).toHaveTextContent('87k');
+  });
+
+  it('context_shows_tokens_without_a_guessed_window_or_percentage', async () => {
+    // the client reports cumulative session totals, not the current context size: no "x / 200k", no "%", no bar
+    await panel('a1');
+    const bar = await screen.findByRole('button', { name: /Context/ });
+    expect(bar).toHaveTextContent('87k');
+    expect(bar).not.toHaveTextContent('%');
+    expect(bar.querySelector('[style*="width"]')).toBeNull();
+    await userEvent.click(bar);
+    expect(screen.getByText('Tokens').nextSibling).not.toHaveTextContent('200k');
+    expect(screen.getByText('Tokens').nextSibling).not.toHaveTextContent('/');
   });
 
   it('has no context bar for a plain terminal', async () => {

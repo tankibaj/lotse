@@ -21,18 +21,20 @@ function ExpandIcon({ expanded }: { expanded: boolean }) {
 /** What the session's agent changed in `path` (lines added/removed against the diff base), kept current while the session works. */
 function useAgentChange(session: Session, path: string): EditorChange | undefined {
   const client = useClient();
-  const [change, setChange] = useState<EditorChange | undefined>();
+  // Tagged with the file it was loaded for, so a change never shows on another session's or path's editor.
+  const [loaded, setLoaded] = useState<{ id: string; path: string; change: EditorChange | undefined }>();
   const agent = AGENT_NAME[session.agent];
   useEffect(() => {
     if (agent === undefined) return;
     let live = true;
+    const set = (change: EditorChange | undefined) => live && setLoaded({ id: session.id, path, change });
     const load = () =>
       client.getDiff(session.id).then(
         (d) => {
           const f = d.files.find((x) => x.path === path);
-          if (live) setChange(f ? { added: f.added ?? 0, removed: f.removed ?? 0, by: `${agent} in “${session.title}”` } : undefined);
+          set(f ? { added: f.added ?? 0, removed: f.removed ?? 0, by: `${agent} in “${session.title}”` } : undefined);
         },
-        () => undefined,
+        () => set(undefined),
       );
     void load();
     const off = client.onEvent((e) => {
@@ -43,7 +45,7 @@ function useAgentChange(session: Session, path: string): EditorChange | undefine
       off();
     };
   }, [client, session.id, session.title, agent, path]);
-  return change;
+  return loaded?.id === session.id && loaded.path === path ? loaded.change : undefined;
 }
 
 interface Props {
