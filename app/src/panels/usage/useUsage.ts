@@ -76,6 +76,8 @@ export function useUsage(sessionId: SessionId | null): UsageState {
     ];
     return () => {
       alive = false;
+      // a later switch back to this session must not render these numbers for a frame
+      setKeyed(null);
       stops.forEach((stop) => stop());
     };
   }, [client, sessionId]);

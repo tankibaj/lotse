@@ -2,6 +2,7 @@ import { FolderGit2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { NotSubmitted } from '../composer/send';
 import { useClient } from '../lib/client';
+import type { DaemonClient } from '../lib/client';
 import type { DiffFile, GitDiff, Review as BranchReview, SessionId } from '../lib/client/types';
 import { useSessions } from '../panes/useSessions';
 import { diffCounts } from '../sheets/diffLines';
@@ -16,17 +17,32 @@ import { sendReviewPrompt } from './send';
 // to the agent as one prompt. The shell mounts it in the `review` slot and closes it on Esc.
 
 // `base` is what the branch is compared with (shown); `oldRev` is where the old side of every file is read: the merge base.
-type Load = { status: 'loading' } | { status: 'error'; message: string } | { status: 'ready'; diff: GitDiff; base: string; oldRev: string };
+type Load =
+  | { status: 'loading' }
+  | { status: 'error'; message: string }
+  | { status: 'ready'; diff: GitDiff; base: string; oldRev: string; unsure: boolean };
 
 /**
  * The file list, counts and patch come from `getDiff(…, 'merge_base')`, so the old side must be the merge base too, not
- * the base tip (they differ when the branch is behind). The protocol has no merge-base field: it is the parent of the
- * oldest commit ahead, HEAD when none is ahead. A truncated commit list cannot tell, so that case reads at the base.
+ * the base tip (they differ when the branch is behind). The protocol has no merge-base field, so this is a guess: the
+ * parent of the oldest commit ahead, HEAD when none is ahead. The guess is only trusted when the commit list adds up
+ * (not truncated, as many as `ahead`) and git resolves it: a probe reads a changed file at it, which also catches a root
+ * commit (no parent). Otherwise the old side is read at the base ref and `unsure` is set for a notice.
+ * Proper fix: the daemon returns the merge-base sha in `get_review` (proto bump).
  */
-function mergeBaseRev(r: BranchReview): string {
-  if (r.commits.length === 0) return 'HEAD';
+async function resolveOldRev(client: DaemonClient, sessionId: SessionId, r: BranchReview, files: DiffFile[]): Promise<{ rev: string; unsure: boolean }> {
+  if (r.commits.length === 0) return r.ahead === 0 ? { rev: 'HEAD', unsure: false } : { rev: r.base, unsure: true };
   const oldest = r.commits[r.commits.length - 1];
-  return r.truncated || !oldest ? r.base : `${oldest.sha}^`;
+  if (r.truncated || !oldest || r.commits.length !== r.ahead) return { rev: r.base, unsure: true };
+  const guess = `${oldest.sha}^`;
+  const probe = files.find((f) => !f.binary && f.status !== 'added' && f.status !== 'untracked');
+  if (!probe) return { rev: guess, unsure: false }; // no file is read at the old side
+  try {
+    await client.readFile(sessionId, probe.old_path ?? probe.path, guess);
+    return { rev: guess, unsure: false };
+  } catch {
+    return { rev: r.base, unsure: true };
+  }
 }
 
 const PR_STATE = { open: 'Open', draft: 'Draft', merged: 'Merged', closed: 'Closed' } as const;
@@ -57,7 +73,8 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
       const diff = await client.getDiff(sessionId, 'merge_base');
       // what the base is called: the files are read at it
       const review = diff.is_git && diff.files.length > 0 ? await client.getReview(sessionId) : null;
-      if (alive) setLoad({ status: 'ready', diff, base: review?.base ?? 'HEAD', oldRev: review ? mergeBaseRev(review) : 'HEAD' });
+      const old = review ? await resolveOldRev(client, sessionId, review, diff.files) : { rev: 'HEAD', unsure: false };
+      if (alive) setLoad({ status: 'ready', diff, base: review?.base ?? 'HEAD', oldRev: old.rev, unsure: old.unsure });
     })().catch((e: unknown) => alive && setLoad({ status: 'error', message: errorText(e) }));
     return () => {
       alive = false;
@@ -100,7 +117,7 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
     setProblem('');
     setNotice('');
     try {
-      await sendReviewPrompt(client, sessionId, buildReviewPrompt(comments));
+      await sendReviewPrompt(client, sessionId, buildReviewPrompt(comments), session?.agent);
       clearComments(sessionId);
       onClose();
     } catch (e) {
@@ -236,6 +253,11 @@ export function Review({ sessionId, file, onClose }: { sessionId: SessionId; fil
           )}
           {load.status === 'ready' && !load.diff.is_git && <div className="px-4 py-6 text-center font-sans text-dim">Not a git repository: nothing to review.</div>}
           {load.status === 'ready' && load.diff.is_git && files.length === 0 && <div className="px-4 py-6 text-center font-sans text-dim">No changes to review</div>}
+          {load.status === 'ready' && load.unsure && (
+            <div role="status" className="border-b px-4 py-2 font-sans text-[12px] text-orange">
+              The merge base could not be determined: the old side is read at <span className="font-mono">{load.base}</span> and may differ from the patch.
+            </div>
+          )}
           {load.status === 'ready' && shown.map((f) => <FileDiff key={f.path} sessionId={sessionId} file={f} baseRev={load.oldRev} layout={layout} />)}
           {load.status === 'ready' && load.diff.truncated && (
             <div role="status" className="border-t px-4 py-2 font-sans text-[12px] text-orange">
