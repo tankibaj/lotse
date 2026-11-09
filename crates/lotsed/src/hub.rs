@@ -68,6 +68,14 @@ impl ClientTx {
     pub fn kick(&self) {
         self.kick.notify_one();
     }
+
+    /// `lotse-hook mcp` (`Hello.client` = `mcp` or `mcp:<session>`): see [`crate::child_policy`].
+    pub fn is_agent_tool(&self) -> bool {
+        matches!(
+            crate::child_policy::classify(&self.name),
+            crate::child_policy::ClientKind::Mcp(_)
+        )
+    }
 }
 
 /// Sees every broadcast event, on the thread that broadcasts it: keep it quick, never block, and
@@ -226,7 +234,9 @@ impl Hub {
             return;
         };
         let bytes: Bytes = bytes.into();
-        for c in self.lock().values() {
+        // An agent's tool process (`mcp`) hears nothing pushed: it would see other sessions'
+        // notifications and start requests. It asks for what it needs.
+        for c in self.lock().values().filter(|c| !c.is_agent_tool()) {
             c.send_bytes(bytes.clone());
         }
     }

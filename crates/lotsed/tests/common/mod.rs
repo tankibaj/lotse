@@ -205,8 +205,13 @@ pub struct Client {
 
 impl Client {
     pub fn connect(socket: &Path, token: &str) -> Self {
+        Self::connect_as(socket, token, "test")
+    }
+
+    /// Like `connect`, with the `client` name of the hello (`mcp:<session>` for an agent's tool process).
+    pub fn connect_as(socket: &Path, token: &str, client: &str) -> Self {
         let mut stream = UnixStream::connect(socket).unwrap();
-        hello(&mut stream, token, PROTO_VERSION);
+        hello_as(&mut stream, token, PROTO_VERSION, client);
         match read_frame(&mut stream).unwrap() {
             Some(Frame::Control(Message::HelloOk(ok))) => {
                 assert_eq!(ok.proto_version, PROTO_VERSION)
@@ -474,12 +479,16 @@ impl Client {
 }
 
 pub fn hello(stream: &mut UnixStream, token: &str, proto_version: u32) {
+    hello_as(stream, token, proto_version, "test");
+}
+
+pub fn hello_as(stream: &mut UnixStream, token: &str, proto_version: u32, client: &str) {
     write_frame(
         stream,
         &Frame::Control(Message::Hello(Hello {
             proto_version,
             token: token.to_owned(),
-            client: "test".into(),
+            client: client.into(),
         })),
     )
     .unwrap();
