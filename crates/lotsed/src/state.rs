@@ -436,6 +436,10 @@ impl State {
             req @ (Request::ListConnectors { .. } | Request::CheckConnectors { .. }) => {
                 mcp::handle(self, req).await
             }
+            // proto 5: the mod and child-session handlers land with M2 / C1
+            req @ (Request::ModAttach { .. } | Request::ResolveSessionStart { .. }) => {
+                unavailable(req.method())
+            }
             Request::HookEvent {
                 agent,
                 session_id,
@@ -788,6 +792,10 @@ impl State {
             unread: false,
             perm: None,
             source: DetectSource::Process,
+            context_pct: None,
+            source_layer: None,
+            parent_session: None,
+            todo: None,
         };
         launch::add_claude_plugin_dir(&mut argv, ns.agent, self.inject.claude_plugin_dir());
         let spec = SpawnSpec {

@@ -55,5 +55,28 @@
   { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "banner": true, "sound": true, "at": 1793610000000 } } },
   { "type": "event", "body": { "event": "notification", "data": { "session_id": "a6", "kind": "done", "title": "dotfiles · OpenCode", "subtitle": "Done", "body": null, "banner": true, "sound": false, "at": 1793608920000 } } },
   { "type": "event", "body": { "event": "notification", "data": { "session_id": "a1", "kind": "sub_agent_done", "title": "billing-api · Claude Code", "subtitle": "Sub-agent done", "body": "explore-repo", "banner": true, "sound": false, "at": 1793610700000 } } },
-  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "banner": false, "sound": true, "at": 1793610001000 } } }
+  { "type": "event", "body": { "event": "notification", "data": { "session_id": "a4", "kind": "fail", "title": "praxis-web · Codex", "subtitle": "Failed", "body": null, "banner": false, "sound": true, "at": 1793610001000 } } },
+  { "type": "event", "body": { "event": "session_created", "data": {
+    "id": "a9", "project_id": "p1", "title": "Write the migration", "agent": "claude_code", "command": "claude",
+    "status": "run", "sub_agents": [
+      { "id": "a9-s1", "name": "explore-repo", "status": "run", "activity": "Read src/db/migrations", "tokens": 18400, "cost_usd": 0.042, "model": "claude-sonnet-5-5", "background": true },
+      { "id": "a9-s2", "name": "test-runner", "status": "perm", "parent": "a9-s1" }
+    ],
+    "git": { "is_git": true, "branch": "main", "ahead": 0, "dirty": 0, "worktree": false, "worktree_path": null, "behind": 0, "added": 0, "removed": 0, "pr": null },
+    "created_at": 1793610900000, "last_activity": 1793610900000, "running_since": 1793610900000,
+    "unread": false, "perm": null, "source": "mod",
+    "context_pct": 62, "source_layer": "mod", "parent_session": "a1", "todo": { "done": 2, "total": 5 }
+  } } },
+  { "type": "event", "body": { "event": "status_changed", "data": { "session_id": "a9", "status": "run", "source": "mod", "perm": null, "running_since": 1793610900000, "at": 1793610900000 } } },
+  { "type": "event", "body": { "event": "usage_changed", "data": { "input_tokens": 52000, "output_tokens": 38000, "cache_read_tokens": 300000, "cache_write_tokens": 22000, "cost_micros": 4180000, "rate_limits": [
+    { "kind": "five_hour", "pct": 42, "resets_at": 1793624400000 },
+    { "kind": "seven_day", "pct": 17, "resets_at": 1794142800000 }
+  ] } } },
+  { "type": "event", "body": { "event": "mod_command", "data": { "session_id": "a1", "command": { "cmd": "submit", "text": "Run the tests again" } } } },
+  { "type": "event", "body": { "event": "mod_command", "data": { "session_id": "a1", "command": { "cmd": "answer", "prompt_id": "5f0c1c3e-7d0b-4a39-9d0e-0a8f4c2b6e11", "decision": "allow" } } } },
+  { "type": "event", "body": { "event": "mod_command", "data": { "session_id": "a1", "command": { "cmd": "ping" } } } },
+  { "type": "event", "body": { "event": "session_start_requested", "data": {
+    "id": "7d1e3b52-4c0a-4a5e-8c55-2f7a9d6e0b13", "parent_session": "a1", "project_id": "p1", "agent": "claude_code",
+    "title": "Write the migration", "prompt": "Add the V43 Flyway migration", "worktree": { "branch": "lotse/v43" }, "at": 1793610890000
+  } } }
 ]

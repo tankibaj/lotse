@@ -10,7 +10,7 @@ import { ProjectIcon } from '../../sheets/symbols';
 import { Connectors } from './Connectors';
 import { Section } from './Section';
 
-const SOURCE_LABEL: Record<DetectSource, string> = { hook: 'Hooks', osc7501: 'OSC 7501', screen: 'Screen', process: 'Process' };
+const SOURCE_LABEL: Record<DetectSource, string> = { mod: 'Mod', hook: 'Hooks', osc7501: 'OSC 7501', screen: 'Screen', process: 'Process' };
 const SUB_LABEL: Partial<Record<Status, string>> = { run: 'running', perm: 'waiting', fail: 'failed', done: 'done' };
 
 /** `undefined` while loading, `null` when the request failed. Reloads when `key` changes or `reload()` runs. */

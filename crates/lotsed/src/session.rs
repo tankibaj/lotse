@@ -1275,6 +1275,10 @@ mod tests {
             unread: false,
             perm: None,
             source: DetectSource::Process,
+            context_pct: None,
+            source_layer: None,
+            parent_session: None,
+            todo: None,
         };
         let spec = SpawnSpec {
             argv: vec!["/bin/sh".into(), "-c".into(), script.into()],

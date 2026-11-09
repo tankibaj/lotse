@@ -345,6 +345,12 @@ export class RealClient implements DaemonClient {
   checkConnectors(sessionId: SessionId): Promise<Connector[]> {
     return this.data({ method: 'check_connectors', params: { session_id: sessionId } }, 'connectors');
   }
+  modAttach(sessionId: SessionId): Promise<void> {
+    return this.ok({ method: 'mod_attach', params: { session_id: sessionId } });
+  }
+  resolveSessionStart(id: string, approve: boolean): Promise<void> {
+    return this.ok({ method: 'resolve_session_start', params: { id, approve } });
+  }
   hookEvent(agent: AgentKind, sessionId: SessionId | null, payload: unknown): Promise<void> {
     return this.ok({ method: 'hook_event', params: { agent, session_id: sessionId, payload } });
   }

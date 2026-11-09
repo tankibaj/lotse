@@ -284,14 +284,16 @@ impl OpenCodeAdapter {
             status,
             perm: blocked.map(|r| r.req.clone()),
             sub_agents: children()
-                .map(|s| SubAgent {
-                    id: SubAgentId::new(s.id.as_str()),
-                    name: if s.name.is_empty() {
-                        "subagent".to_owned()
-                    } else {
-                        s.name.clone()
-                    },
-                    status: s.status(),
+                .map(|s| {
+                    SubAgent::new(
+                        SubAgentId::new(s.id.as_str()),
+                        if s.name.is_empty() {
+                            "subagent".to_owned()
+                        } else {
+                            s.name.clone()
+                        },
+                        s.status(),
+                    )
                 })
                 .collect(),
         }

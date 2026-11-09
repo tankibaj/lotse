@@ -135,6 +135,10 @@ export interface DaemonClient {
   listConnectors(sessionId: SessionId): Promise<Connector[]>;
   /** `check_connectors`: like `listConnectors`, with live status where `Settings.external.mcp_live` allows it. */
   checkConnectors(sessionId: SessionId): Promise<Connector[]>;
+  /** `mod_attach`: the Claude mod's bridge attaches to the session; `mod_command` events follow. */
+  modAttach(sessionId: SessionId): Promise<void>;
+  /** `resolve_session_start`: answers a `session_start_requested` card; `approve` starts the child session. */
+  resolveSessionStart(id: string, approve: boolean): Promise<void>;
   /** `hook_event` (sent by `lotse-hook`; exposed for completeness and tests) */
   hookEvent(agent: AgentKind, sessionId: SessionId | null, payload: unknown): Promise<void>;
   /** `shutdown` */

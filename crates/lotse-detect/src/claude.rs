@@ -656,11 +656,7 @@ impl ClaudeAdapter {
         let sub_agents: Vec<SubAgent> = self
             .subs
             .iter()
-            .map(|s| SubAgent {
-                id: SubAgentId::new(s.id.as_str()),
-                name: s.name.clone(),
-                status: s.status,
-            })
+            .map(|s| SubAgent::new(SubAgentId::new(s.id.as_str()), s.name.clone(), s.status))
             .collect();
         let previous = self.reported.as_ref();
         let subs_changed = previous.is_none_or(|r| r.sub_agents != sub_agents);

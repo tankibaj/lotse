@@ -493,15 +493,16 @@ impl Osc7501Adapter {
         let sub_agents: Vec<SubAgent> = self
             .children
             .iter()
-            .map(|(id, c)| SubAgent {
-                id: SubAgentId::new(id.as_str()),
-                name: c
-                    .title
-                    .clone()
-                    .or_else(|| c.msg.clone())
-                    .or_else(|| c.app.clone())
-                    .unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_owned()),
-                status: c.status(),
+            .map(|(id, c)| {
+                SubAgent::new(
+                    SubAgentId::new(id.as_str()),
+                    c.title
+                        .clone()
+                        .or_else(|| c.msg.clone())
+                        .or_else(|| c.app.clone())
+                        .unwrap_or_else(|| id.rsplit('/').next().unwrap_or(id).to_owned()),
+                    c.status(),
+                )
             })
             .collect();
         let root_status = self.root.as_ref().map(Record::status);

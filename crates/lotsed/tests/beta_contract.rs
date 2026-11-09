@@ -53,6 +53,8 @@ fn agent_session(c: &mut Client, d: &Daemon, command: &str) -> Session {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),
@@ -228,6 +230,8 @@ impl Local {
             title: None,
             worktree: None,
             first_prompt: None,
+            parent_session: None,
+            requested_by_agent: false,
         })) {
             Response::Session(s) => s,
             other => panic!("create_session: {other:?}"),

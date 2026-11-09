@@ -210,6 +210,23 @@ describe('RealClient', () => {
     ]);
   });
 
+  it('proto 5 requests: mod_attach and resolve_session_start', async () => {
+    const seen: Request[] = [];
+    const h = fakeHost((r) => {
+      seen.push(r);
+      return { kind: 'ok' };
+    });
+    const c = new RealClient({ transport: h.transport });
+    await c.modAttach('s1');
+    await c.resolveSessionStart('req-1', true);
+    await c.resolveSessionStart('req-2', false);
+    expect(seen).toEqual([
+      { method: 'mod_attach', params: { session_id: 's1' } },
+      { method: 'resolve_session_start', params: { id: 'req-1', approve: true } },
+      { method: 'resolve_session_start', params: { id: 'req-2', approve: false } },
+    ]);
+  });
+
   it('resolve_permission carries via and prompt_id only when given', async () => {
     const seen: Request[] = [];
     const h = fakeHost((r) => {

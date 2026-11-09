@@ -50,6 +50,8 @@ impl AgentKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DetectSource {
+    /// The Claude Code mod (in-process module). Since proto 5.
+    Mod,
     Hook,
     Osc7501,
     Screen,
@@ -94,11 +96,49 @@ pub struct Project {
     pub notifications: NotificationMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Everything after `status` is new in proto 5 and absent until the mod (or a transcript) reports it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SubAgent {
     pub id: SubAgentId,
     pub name: String,
     pub status: Status,
+    /// The sub-agent that started this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<SubAgentId>,
+    /// What it is doing now, e.g. `Read src/db/migrations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<u64>,
+    /// Display only: the daemon's totals (`Usage`, `UsageToday`) sum `cost_micros`, never this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Runs in the background (the lead does not wait for it).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub background: bool,
+}
+
+impl SubAgent {
+    /// A sub-agent with only the proto 4 fields.
+    pub fn new(id: SubAgentId, name: impl Into<String>, status: Status) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            status,
+            parent: None,
+            activity: None,
+            tokens: None,
+            cost_usd: None,
+            model: None,
+            background: false,
+        }
+    }
 }
 
 /// Where a pull or merge request stands. Since proto 4.
@@ -167,7 +207,23 @@ pub struct GitInfo {
     pub pr: Option<PrInfo>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Which layer of the detection stack feeds a session's data. Since proto 5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceLayer {
+    Mod,
+    Hooks,
+    Screen,
+}
+
+/// Progress of the agent's todo list. Since proto 5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Todo {
+    pub done: u32,
+    pub total: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Session {
     pub id: SessionId,
     pub project_id: ProjectId,
@@ -189,6 +245,18 @@ pub struct Session {
     pub perm: Option<PermRequest>,
     /// Which source set the current status.
     pub source: DetectSource,
+    /// Share of the context window in use, 0–100. Since proto 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_pct: Option<u8>,
+    /// Which layer feeds this session's data (the card's source tooltip). Since proto 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_layer: Option<SourceLayer>,
+    /// The session whose agent started this one. Since proto 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session: Option<SessionId>,
+    /// Since proto 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub todo: Option<Todo>,
 }
 
 /// What a permission prompt asks for (banner and card text).
@@ -253,6 +321,27 @@ pub struct NewSession {
     pub title: Option<String>,
     pub worktree: Option<WorktreeSpec>,
     pub first_prompt: Option<String>,
+    /// The session whose agent starts this one (a child session). Since proto 5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session: Option<SessionId>,
+    /// An agent asked for this session (through `lotse-hook mcp`), not the user. Since proto 5.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub requested_by_agent: bool,
+}
+
+/// What the daemon asks the Claude mod to do (`Event::ModCommand`). Since proto 5.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum ModCommand {
+    /// Submit `text` as the user's prompt.
+    Submit { text: String },
+    /// Answer the permission prompt `prompt_id` (`PermRequest::id`).
+    Answer {
+        prompt_id: Option<String>,
+        decision: PermDecision,
+    },
+    /// Liveness check; the mod's heartbeat answers it.
+    Ping,
 }
 
 /// "Add a project" sheet. Browse and drag-drop use `path`; the other tabs need git.
@@ -762,6 +851,16 @@ pub struct Connector {
     pub status: ConnectorStatus,
 }
 
+/// One rate-limit window of the agent's plan (the status bar meter). Since proto 5.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RateLimit {
+    /// `five_hour`, `seven_day`, …
+    pub kind: String,
+    /// Share of the window used, 0–100.
+    pub pct: u8,
+    pub resets_at: UnixMs,
+}
+
 /// Tokens and cost of today (local time), summed over the Claude Code transcripts the daemon knows.
 /// Since proto 3.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -772,6 +871,13 @@ pub struct UsageToday {
     pub cache_write_tokens: u64,
     /// Millionths of a US dollar; `None` when a model without a known price took part ("tokens only").
     pub cost_micros: Option<u64>,
+    /// Empty until the mod reports them. Since proto 5.
+    ///
+    /// The transcript tracker rebuilds the token and cost fields on every refresh; it must carry
+    /// the last reported `rate_limits` over into each new `UsageToday`, or every refresh wipes them
+    /// (obligation for M2).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rate_limits: Vec<RateLimit>,
 }
 
 impl UsageToday {
@@ -785,7 +891,7 @@ impl UsageToday {
 }
 
 /// Everything a client needs to draw the first frame.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub daemon: DaemonInfo,
     /// In creation order; the first is the default workspace.

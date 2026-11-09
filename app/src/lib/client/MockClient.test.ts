@@ -258,7 +258,7 @@ describe('MockClient Beta data (proto 4, spec/mock.html panels)', () => {
 
   it('seeds the v4 fields: git behind, +/− and PR, a perm prompt id', async () => {
     const snap = await make().getSnapshot();
-    expect(snap.daemon.proto_version).toBe(4);
+    expect(snap.daemon.proto_version).toBe(5); // the proto 5 bump
     const a1 = snap.sessions.find((s) => s.id === 'a1')!;
     expect(a1.git).toMatchObject({ ahead: 2, behind: 1, added: 42, removed: 7, pr: { number: 184, state: 'draft', provider: 'github' } });
     expect(snap.settings.external).toEqual({ pr_status: false, mcp_live: false });
@@ -551,6 +551,8 @@ describe('DaemonClient mirrors the proto', () => {
     stop_task: 'stopTask',
     list_connectors: 'listConnectors',
     check_connectors: 'checkConnectors',
+    mod_attach: 'modAttach',
+    resolve_session_start: 'resolveSessionStart',
     hook_event: 'hookEvent',
     shutdown: 'shutdown',
   };
@@ -564,6 +566,112 @@ describe('DaemonClient mirrors the proto', () => {
       expect(name, `no mapping for ${m}`).toBeDefined();
       expect(typeof c[name as string], `DaemonClient.${name}`).toBe('function');
     }
+  });
+});
+
+describe('proto 5: mod data and child sessions', () => {
+  it('seed stays the mock data: no proto 5 field on any session or sub-agent', async () => {
+    const sessions = await make().listSessions();
+    for (const s of sessions) {
+      expect(s).not.toHaveProperty('parent_session');
+      expect(s).not.toHaveProperty('context_pct');
+      for (const sub of s.sub_agents) expect(Object.keys(sub).sort()).toEqual(['id', 'name', 'status']);
+    }
+    expect(await make().getSnapshot().then((x) => x.usage)).not.toHaveProperty('rate_limits');
+  });
+
+  it('carries sub-agent mod data and session mod data through events', async () => {
+    const c = make();
+    const events = collect(c);
+    c.setSubAgents('a1', [
+      { id: 'a1-s1', name: 'explore-repo', status: 'run', activity: 'Read src/db', tokens: 18_400, cost_usd: 0.042, model: 'claude-sonnet-5-5', background: true },
+      { id: 'a1-s2', name: 'test-runner', status: 'perm', parent: 'a1-s1' },
+    ]);
+    c.setSessionMeta('a1', { context_pct: 62, source_layer: 'mod', todo: { done: 2, total: 5 } });
+    c.setRateLimits([{ kind: 'five_hour', pct: 42, resets_at: FIXTURE_NOW + 3_600_000 }]);
+    const a1 = (await c.listSessions()).find((s) => s.id === 'a1');
+    expect(a1).toMatchObject({ context_pct: 62, source_layer: 'mod', todo: { done: 2, total: 5 } });
+    expect(a1?.sub_agents[0]).toMatchObject({ activity: 'Read src/db', tokens: 18_400, background: true });
+    expect(a1?.sub_agents[1]?.parent).toBe('a1-s1');
+    expect((await c.getSnapshot()).usage.rate_limits).toEqual([{ kind: 'five_hour', pct: 42, resets_at: FIXTURE_NOW + 3_600_000 }]);
+    expect(events.map((e) => e.event)).toEqual(['sub_agents_changed', 'session_updated', 'usage_changed']);
+  });
+
+  it('modAttach: mod_command reaches only an attached session', async () => {
+    const c = make();
+    const events = collect(c);
+    expect(c.sendModCommand('a1', { cmd: 'ping' })).toBe(false);
+    await c.modAttach('a1');
+    expect(c.sendModCommand('a1', { cmd: 'submit', text: 'go' })).toBe(true);
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(false);
+    expect(events).toEqual([{ event: 'mod_command', data: { session_id: 'a1', command: { cmd: 'submit', text: 'go' } } }]);
+    await expect(c.modAttach('nope')).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('a start request asks first; approve starts the child under its parent, deny starts nothing', async () => {
+    const c = make();
+    const events = collect(c);
+    const ask = { parent_session: 'a1', project_id: 'p1', agent: 'claude_code' as const, title: 'Write the migration', prompt: 'Add V43', worktree: null };
+    const id = c.requestSessionStart(ask);
+    expect(events.at(-1)).toMatchObject({ event: 'session_start_requested', data: { id, ...ask } });
+    expect(await c.listSessions()).toHaveLength(7);
+
+    await c.resolveSessionStart(id, true);
+    const child = (await c.listSessions()).at(-1);
+    expect(child).toMatchObject({ title: 'Write the migration', agent: 'claude_code', parent_session: 'a1' });
+    expect(events.at(-1)?.event).toBe('session_created');
+    await expect(c.resolveSessionStart(id, true)).rejects.toMatchObject({ code: 'not_found' }); // answered once
+
+    const id2 = c.requestSessionStart(ask);
+    await c.resolveSessionStart(id2, false);
+    expect(await c.listSessions()).toHaveLength(8);
+    await expect(c.resolveSessionStart('nope', false)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('modAttached is cleared when the session closes and when the link drops or returns', async () => {
+    const c = make();
+    const events = collect(c);
+    await c.modAttach('a1');
+    await c.closeSession('a1');
+    expect(c.sendModCommand('a1', { cmd: 'ping' })).toBe(false);
+
+    await c.modAttach('a2');
+    c.setConnection('disconnected');
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(false);
+    await c.modAttach('a2');
+    c.setConnection('reconnected');
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(false);
+    await c.modAttach('a2');
+    expect(c.sendModCommand('a2', { cmd: 'ping' })).toBe(true);
+    expect(events.filter((e) => e.event === 'mod_command')).toHaveLength(1);
+  });
+
+  it('a failed approve keeps the request open: it can be answered again', async () => {
+    const c = make();
+    const id = c.requestSessionStart({ parent_session: 'a1', project_id: 'p1', agent: 'codex', title: null, prompt: 'x', worktree: null });
+    await c.closeSession('a1'); // the parent goes away: the start fails
+    await expect(c.resolveSessionStart(id, true)).rejects.toMatchObject({ code: 'not_found' });
+    await c.resolveSessionStart(id, false); // still open, so a denial is accepted
+    await expect(c.resolveSessionStart(id, false)).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('setSessionMeta with undefined removes the key instead of storing undefined', async () => {
+    const c = make();
+    c.setSessionMeta('a1', { context_pct: 50, todo: { done: 1, total: 2 } });
+    const events = collect(c);
+    c.setSessionMeta('a1', { context_pct: undefined });
+    const data = (events[0] as { data: Record<string, unknown> }).data;
+    expect('context_pct' in data).toBe(false);
+    expect(data.todo).toEqual({ done: 1, total: 2 });
+    expect('context_pct' in ((await c.listSessions()).find((s) => s.id === 'a1') ?? {})).toBe(false);
+  });
+
+  it('createSession keeps parent_session; an unknown parent is not_found', async () => {
+    const c = make();
+    const base = { project_id: 'p1', agent: 'codex' as const, command: null, title: null, worktree: null, first_prompt: null };
+    expect(await c.createSession({ ...base, parent_session: 'a1', requested_by_agent: true })).toMatchObject({ parent_session: 'a1' });
+    expect(await c.createSession(base)).not.toHaveProperty('parent_session');
+    await expect(c.createSession({ ...base, parent_session: 'nope' })).rejects.toMatchObject({ code: 'not_found' });
   });
 });
 

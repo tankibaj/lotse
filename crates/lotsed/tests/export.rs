@@ -101,6 +101,8 @@ fn claude_session(c: &mut Client, d: &Daemon, fixture: &str) -> (Project, Sessio
         title: Some("Round cents".into()),
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),
@@ -254,6 +256,8 @@ fn export_of_a_scrollback_never_holds_a_private_key_cut_by_chunks() {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),
@@ -299,6 +303,8 @@ fn export_before_the_agent_named_a_transcript_is_unavailable() {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),
