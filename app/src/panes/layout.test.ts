@@ -21,7 +21,7 @@ import {
 } from './layout';
 import type { PaneLayout } from './layout';
 
-const layout = (panes: string[], focus = 0, weights: Record<string, number> = {}): PaneLayout => ({ panes, focus, weights });
+const layout = (panes: PaneLayout['panes'], focus = 0, weights: Record<string, number> = {}): PaneLayout => ({ panes, focus, weights });
 /** Columns of stacked panes: stacked([['a1'], ['a2', 'a3']]) is a1 beside (a2 over a3). */
 const stacked = (columns: string[][], focus = 0, extra: Partial<PaneLayout> = {}): PaneLayout => ({
   panes: columns.flat(),
