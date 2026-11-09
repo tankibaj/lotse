@@ -7,6 +7,7 @@
 
 pub mod adapter;
 pub mod claude; // WP2
+pub mod claude_mod; // Beta M2
 pub mod codex;
 pub mod engine; // WP2
 pub mod opencode; // WP6

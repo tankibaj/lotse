@@ -82,4 +82,13 @@ pub trait Adapter: Send {
     fn observe_batch(&mut self, batch: &[Observation]) -> Vec<Detection> {
         batch.iter().flat_map(|obs| self.observe(obs)).collect()
     }
+
+    /// Asked on every clock tick: `true` when the adapter's signal is gone for good (the mod's
+    /// heartbeat stopped). The engine then forgets everything this source said.
+    fn expired(&mut self, _now: UnixMs) -> bool {
+        false
+    }
+
+    /// The daemon's price table, for adapters that show a cost (the mod's sub-agent rows).
+    fn set_pricing(&mut self, _pricing: crate::claude_mod::Pricing) {}
 }

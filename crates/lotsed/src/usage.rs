@@ -29,7 +29,7 @@
 //! cache-read rate (kept at 0.1x) and the pre-4.5 rows (written from memory).
 
 use crate::transcript::parse_iso_utc_ms;
-use lotse_proto::{UnixMs, UsageToday};
+use lotse_proto::{RateLimit, UnixMs, UsageToday};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
@@ -295,6 +295,8 @@ struct Inner {
     last: UsageToday,
     /// Cost of the priced messages only (`last.cost_micros` is `None` when any is unpriced).
     priced_micros: u64,
+    /// The last rate limits the mod reported: not in the transcripts, so every refresh carries them over.
+    rate_limits: Vec<RateLimit>,
 }
 
 /// See the module docs. Cheap to share: every method takes `&self`.
@@ -332,6 +334,7 @@ impl UsageTracker {
                     ..UsageToday::default()
                 },
                 priced_micros: 0,
+                rate_limits: Vec::new(),
             }),
             refreshing: Mutex::new(()),
             nudged: (Mutex::new(false), Condvar::new()),
@@ -373,6 +376,18 @@ impl UsageTracker {
                 true
             }
         }
+    }
+
+    /// The mod reported the account's rate limits. `Some(total)` when they differ from the last
+    /// ones: the total with them, to push.
+    pub fn set_rate_limits(&self, limits: Vec<RateLimit>) -> Option<UsageToday> {
+        let mut g = self.lock();
+        if g.rate_limits == limits {
+            return None;
+        }
+        g.rate_limits.clone_from(&limits);
+        g.last.rate_limits = limits;
+        Some(g.last.clone())
     }
 
     /// The total of the last [`Self::refresh`] (no file access).
@@ -440,7 +455,7 @@ impl UsageTracker {
             cache_read_tokens: total.counts.cache_read,
             cache_write_tokens: total.counts.cache_write,
             cost_micros: (!total.unpriced).then_some((total.cost / 1_000_000) as u64),
-            rate_limits: Vec::new(),
+            rate_limits: g.rate_limits.clone(),
         };
         g.priced_micros = (total.cost / 1_000_000) as u64;
         if usage == g.last {
@@ -591,6 +606,57 @@ mod tests {
     }
 
     const NOW: &str = "2026-11-02T10:00:00.000Z";
+
+    fn five_hour(pct: u8) -> Vec<RateLimit> {
+        vec![RateLimit {
+            kind: "five_hour".into(),
+            pct,
+            resets_at: DAY.start_ms + 15 * 3_600_000,
+        }]
+    }
+
+    #[test]
+    fn rate_limits_from_the_mod_survive_every_transcript_refresh() {
+        let (t, _dir, path) = tracker_with(&line(
+            "m1",
+            "claude-opus-4-5-20251101",
+            NOW,
+            (1_000, 0, 0, 0),
+        ));
+        assert!(t.refresh(DAY).is_some());
+        let pushed = t
+            .set_rate_limits(five_hour(61))
+            .expect("new limits are pushed");
+        assert_eq!((pushed.input_tokens, pushed.rate_limits.len()), (1_000, 1));
+        assert_eq!(
+            t.set_rate_limits(five_hour(61)),
+            None,
+            "same limits, nothing to push"
+        );
+
+        // more tokens: the refresh rebuilds the totals and still carries the meter
+        append(
+            &path,
+            &line("m2", "claude-opus-4-5-20251101", NOW, (500, 0, 0, 0)),
+        );
+        let after = t.refresh(DAY).expect("totals moved");
+        assert_eq!(after.input_tokens, 1_500);
+        assert_eq!(after.rate_limits, five_hour(61));
+        assert_eq!(t.current().rate_limits, five_hour(61));
+        // nothing moved: no spurious push because the rebuilt value lacked the limits
+        assert_eq!(t.refresh(DAY), None);
+
+        assert_eq!(
+            t.set_rate_limits(five_hour(70)).unwrap().rate_limits,
+            five_hour(70)
+        );
+        assert!(
+            t.set_rate_limits(Vec::new())
+                .unwrap()
+                .rate_limits
+                .is_empty()
+        );
+    }
 
     #[test]
     fn a_file_swapped_for_a_link_after_validation_is_not_read() {

@@ -17,7 +17,7 @@ use lotse_detect::engine::StatusUpdate;
 use lotse_detect::osc7501::QUERY_REPLY;
 use lotse_proto::{
     AgentKind, AttachInfo, DetectSource, Event, Frame, GitInfo, PermDecision, Session, SessionId,
-    Settings, Status, UnixMs,
+    Settings, SourceLayer, Status, UnixMs,
 };
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
@@ -491,16 +491,47 @@ impl SessionHandle {
         self.activity.bump();
         self.note_transcript(agent, &payload);
         let at = now_ms();
-        let triggers = {
+        // a status line of the Claude mod is no hook: it does not make a foreground sample stale
+        let from_mod = lotse_detect::claude_mod::is_mod_line(&payload);
+        let (triggers, limits) = {
             let mut g = self.lock();
             if g.closing || g.live.is_none() {
                 return;
             }
-            g.hooks_applied += 1;
+            if !from_mod {
+                g.hooks_applied += 1;
+            }
             let update = g.detector.on_hook(agent, payload, at);
-            self.apply(&mut g, update.into_iter().collect())
+            let triggers = self.apply(&mut g, update.into_iter().collect());
+            self.sync_mod_data(&mut g, at);
+            (triggers, g.detector.take_rate_limits())
         };
         self.notify(triggers);
+        // account-wide, not the session's: the usage total carries them
+        if let Some(limits) = limits
+            && let Some(usage) = self.ctx.usage.set_rate_limits(limits)
+        {
+            self.ctx.hub.broadcast(Event::UsageChanged(usage));
+        }
+    }
+
+    /// Context share, todo progress and source layer of the session, from what the detector heard.
+    ///
+    /// Clients hear of it at once when the mod's data changes or the mod comes or goes. A move
+    /// between the hooks and the screen layer is set quietly: it goes out with the next
+    /// `session_updated` (the finished turn's, say) and with every snapshot, so a plain hook session
+    /// does not get an event of its own on its first hook.
+    fn sync_mod_data(&self, g: &mut Inner, at: UnixMs) {
+        let data = g.detector.mod_data(at);
+        let meta = &mut g.meta;
+        let loud = (meta.context_pct, meta.todo) != (data.context_pct, data.todo)
+            || (meta.source_layer == Some(SourceLayer::Mod))
+                != (data.layer == Some(SourceLayer::Mod));
+        (meta.source_layer, meta.context_pct, meta.todo) =
+            (data.layer, data.context_pct, data.todo);
+        if loud {
+            self.ctx.hub.broadcast(Event::SessionUpdated(meta.clone()));
+        }
     }
 
     /// Keep the newest `transcript_path` of a Claude Code or Codex hook, if it passes
@@ -628,6 +659,7 @@ impl SessionHandle {
             updates.extend(g.detector.tick(now, at));
             let quiet = g.detector.idle();
             let triggers = self.apply(&mut g, updates);
+            self.sync_mod_data(&mut g, at);
             self.read_perm_options(&mut g, at);
             (triggers, quiet)
         };
