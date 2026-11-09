@@ -228,12 +228,19 @@ export function Panes() {
     }, SAVE_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [layout, storeKey, loaded]);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const flush = () => {
       if (pendingSave.current !== null) saveLayout(localStorage, pendingSave.current.key, pendingSave.current.layout);
-    },
-    [],
-  );
+    };
+    // a quit or window close within the debounce never unmounts React
+    window.addEventListener('pagehide', flush);
+    window.addEventListener('beforeunload', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      window.removeEventListener('beforeunload', flush);
+      flush();
+    };
+  }, []);
 
   // Keep panes in step with the sessions that exist and the selection (derived while rendering).
   if (loaded) {

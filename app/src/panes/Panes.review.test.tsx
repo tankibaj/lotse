@@ -209,3 +209,15 @@ describe('palette pane commands', () => {
     expect(paneIds()).toEqual([second]);
   });
 });
+
+describe('review: saving on quit', () => {
+  it('flushes a pending layout save when the page is hidden before the debounce fires', async () => {
+    await mount();
+    cmdD();
+    window.dispatchEvent(new Event('pagehide'));
+    const keys = Object.keys(localStorage).filter((k) => k.startsWith('lotse-panes:'));
+    const saved = keys.map((k) => localStorage.getItem(k) ?? '').join('');
+    expect(saved.length).toBeGreaterThan(0);
+    expect(JSON.parse(localStorage.getItem(keys[0]!)!).panes).toHaveLength(2);
+  });
+});
