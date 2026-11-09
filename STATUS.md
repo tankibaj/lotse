@@ -2,7 +2,7 @@
 
 ## Beta (Release 2, MLP): current
 
-Updated 2026-11-03 22:05. Handover for a fresh session: `docs/handover/beta-waves-20261103-2158.md`.
+Updated 2026-11-09. Handover for a fresh session: `docs/handover/beta-waves-20261103-2158.md`.
 
 - **Plan:** `docs/plan/beta.md`, with WP docs in `docs/plan/beta-wp/`.
 - **Next plan:** `docs/plan/beta-mod-and-child-sessions.md` (wave 5).
@@ -12,7 +12,7 @@ Updated 2026-11-03 22:05. Handover for a fresh session: `docs/handover/beta-wave
 |---|---|---|---|
 | 0 contracts | wp01 proto v4, wp02 client mirror, wp03 shell + composer + Dictation spike | merged | in `2d271f4` |
 | 1 providers | wp04 git/PR, wp05 files, wp06 history/usage, wp07 transcript/export, wp08 session info/connectors, wp09 notifications, wp10 editor core; fixes fixa–fixf (live-walk findings) | merged; local CI green (cargo 645, vitest 619); harnex gate closed round 2 | `2d271f4` (main, **not pushed**: ahead 37) |
-| 2 panels | wp11 changes, wp12 editor pane, wp13 files, wp14 usage, wp15 transcript + export UI, wp16 session, wp17 review + comments | **running**, 7 parallel delegates since 21:58 | — |
+| 2 panels | wp11 changes, wp12 editor pane, wp13 files, wp14 usage, wp15 transcript + export UI, wp16 session, wp17 review + comments | merged; local CI green (cargo 669, vitest 752); gate: validator PASS, code-review 10 findings, 2 fix rounds (paste sanitising, `export_save` replaces `export_write`, config_open root confinement, dirty-editor guard). **Parity vs mock and built-app walk NOT VERIFIED.** Open: review old side uses commit-list heuristic for merge base (needs proto bump to return it); send always bracketed paste; usage null→same session render; export keeps no xattrs | `100684e` (main, not pushed) |
 | 3 | wp18 pane status bars + columns, wp19 voice mic (only if the Dictation spike passes; needs Naim at the Mac) | pending | — |
 | 4 | wp20 actions coverage | pending | — |
 | 5 | mod (14 features, hooks fallback) + child sessions (stdio MCP) | planned (draft); gates G1–G4 wait on the mod probe | — |
