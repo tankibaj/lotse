@@ -120,6 +120,32 @@ pub fn tokenize(cmd: &str, var: &dyn Fn(&str) -> Option<String>) -> Result<Vec<S
     Ok(out)
 }
 
+/// Claude Code reads `env.CLAUDE_CODE_PLUGIN_DIRS` from a user's settings.json over the process
+/// environment (seen with 2.1.311), which would drop Lotse's per-pane hooks: the flag cannot be
+/// overridden. Appended last so a positional prompt is never read as a plugin path; the user's own
+/// arguments stay as they are.
+pub fn add_claude_plugin_dir(argv: &mut Vec<String>, agent: AgentKind, plugin: Option<&Path>) {
+    let (AgentKind::ClaudeCode, Some(plugin)) = (agent, plugin) else {
+        return;
+    };
+    // only a program that is Claude Code: a wrapper or a stand-in would take the flag as its own
+    let is_claude = argv
+        .first()
+        .and_then(|p| Path::new(p).file_name())
+        .is_some_and(|n| n.to_string_lossy().contains("claude"));
+    if !is_claude {
+        return;
+    }
+    let plugin = plugin.to_string_lossy();
+    let present = argv
+        .windows(2)
+        .any(|w| w[0] == "--plugin-dir" && w[1] == plugin);
+    if !present {
+        argv.push("--plugin-dir".into());
+        argv.push(plugin.into_owned());
+    }
+}
+
 /// Look a program up: a path with `/` is checked as is, a bare name is searched on `path_var`.
 pub fn resolve_program(program: &str, path_var: Option<&str>, cwd: &Path) -> Option<PathBuf> {
     if program.contains('/') {
@@ -404,6 +430,51 @@ mod tests {
         assert_eq!(tok("x \"\" y"), ["x", "", "y"]);
         assert_eq!(tok("a $UNSET b"), ["a", "", "b"]);
         assert_eq!(tok("price $5"), ["price", "$5"]);
+    }
+
+    #[test]
+    fn claude_gets_the_lotse_plugin_dir_after_its_own_args() {
+        let plugin = Path::new("/data/integrations/claude/lotse-status");
+        let mut argv = tok(r#"/bin/claude --model "opus 4" "fix it""#);
+        add_claude_plugin_dir(&mut argv, AgentKind::ClaudeCode, Some(plugin));
+        assert_eq!(
+            argv,
+            [
+                "/bin/claude",
+                "--model",
+                "opus 4",
+                "fix it",
+                "--plugin-dir",
+                "/data/integrations/claude/lotse-status"
+            ]
+        );
+        // a user's own --plugin-dir stays; ours is added next to it, once
+        let mut own = tok("/bin/claude --plugin-dir /mine");
+        add_claude_plugin_dir(&mut own, AgentKind::ClaudeCode, Some(plugin));
+        add_claude_plugin_dir(&mut own, AgentKind::ClaudeCode, Some(plugin));
+        assert_eq!(
+            own,
+            [
+                "/bin/claude",
+                "--plugin-dir",
+                "/mine",
+                "--plugin-dir",
+                "/data/integrations/claude/lotse-status"
+            ]
+        );
+    }
+
+    #[test]
+    fn other_agents_and_a_missing_plugin_leave_the_command_alone() {
+        let plugin = Path::new("/p");
+        for agent in [AgentKind::Terminal, AgentKind::Codex, AgentKind::OpenCode] {
+            let mut argv = tok("tool -x");
+            add_claude_plugin_dir(&mut argv, agent, Some(plugin));
+            assert_eq!(argv, ["tool", "-x"]);
+        }
+        let mut argv = tok("claude");
+        add_claude_plugin_dir(&mut argv, AgentKind::ClaudeCode, None);
+        assert_eq!(argv, ["claude"]);
     }
 
     #[test]

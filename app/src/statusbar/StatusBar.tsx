@@ -1,4 +1,5 @@
 import { FolderGit2, GitBranch } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useClient } from '../lib/client/context';
 import {
   formatUsage,
@@ -42,6 +43,21 @@ export function StatusBar() {
   const paused = settings?.notifications.paused ?? false;
   const up = connection === 'connected';
   const lan = lanState();
+
+  // Why the daemon is down: the `daemon_connect` error. The client dedups `connect()` and keeps its own
+  // retry timer, so asking while down costs nothing; the text only shows while down.
+  const [connectError, setConnectError] = useState<string | null>(null);
+  useEffect(() => {
+    if (up) return;
+    let live = true;
+    client.connect().then(
+      () => live && setConnectError(null),
+      (e: unknown) => live && setConnectError(e instanceof Error ? e.message : String(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [up, client]);
 
   return (
     <footer className="flex h-7 shrink-0 items-center gap-4 border-t bg-side lotse-glass px-3 text-[11px] text-dim">
@@ -91,8 +107,10 @@ export function StatusBar() {
         </span>
       )}
 
-      <span className={up ? '' : 'text-red'}>
-        ● {up ? 'lotsed running' : 'lotsed not running'} · {sessions.length} session{sessions.length === 1 ? '' : 's'}
+      <span className={`flex min-w-0 ${up ? '' : 'text-red'}`} data-testid="status-daemon" title={up ? undefined : (connectError ?? undefined)}>
+        <span className="shrink-0 whitespace-pre">{up ? '● lotsed running' : '● lotsed not running'}</span>
+        {!up && connectError && <span className="max-w-[360px] truncate whitespace-pre">{` · ${connectError}`}</span>}
+        <span className="shrink-0 whitespace-pre">{` · ${sessions.length} session${sessions.length === 1 ? '' : 's'}`}</span>
       </span>
 
       <button

@@ -271,7 +271,7 @@ fn sum_of<'a>(files: impl Iterator<Item = &'a FileState>) -> Sum {
 
 /// Claude Code's sub-agent transcripts of a session transcript: `<session>/subagents/*.jsonl` beside
 /// `<session>.jsonl`. Regular files only (a link is not followed), at most [`MAX_SUBAGENT_FILES`].
-fn subagent_files(transcript: &Path) -> Vec<PathBuf> {
+pub(crate) fn subagent_files(transcript: &Path) -> Vec<PathBuf> {
     let dir = transcript.with_extension("").join("subagents");
     let Ok(entries) = std::fs::read_dir(&dir) else {
         return Vec::new();

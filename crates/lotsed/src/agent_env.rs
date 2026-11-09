@@ -5,7 +5,8 @@
 //!   agent in a Lotse pane believe it is a child session, so they are dropped. User configuration
 //!   (`ANTHROPIC_*`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_USE_BEDROCK`, …) stays.
 //! * [`Injection`]: status hooks that need no global install. Claude Code gets the Lotse plugin
-//!   through `CLAUDE_CODE_PLUGIN_DIRS`, OpenCode gets the Lotse plugin through an overlay
+//!   through `--plugin-dir` on the launch command (and `CLAUDE_CODE_PLUGIN_DIRS` for older Claude: a
+//!   settings.json `env` overrides the process variable), OpenCode gets the Lotse plugin through an overlay
 //!   `OPENCODE_CONFIG_DIR`, Codex gets a mirrored `CODEX_HOME` (its hooks need a trusted entry in
 //!   a `config.toml`, see `integrations/codex/README.md`); all per pane, nothing in `~/.claude`,
 //!   `~/.config/opencode` or `~/.codex` changes.
@@ -124,6 +125,12 @@ impl Injection {
             opencode_overlays,
             codex_mirrors,
         }
+    }
+
+    /// The Lotse plugin directory, for `--plugin-dir` on a Claude Code launch command (see
+    /// [`crate::launch::add_claude_plugin_dir`]); `None` when it could not be written.
+    pub fn claude_plugin_dir(&self) -> Option<&Path> {
+        self.claude_plugin.as_deref()
     }
 
     /// Put the injection into a pane's environment.
@@ -311,6 +318,22 @@ mod tests {
             bare["CLAUDE_CODE_PLUGIN_DIRS"],
             plugin.display().to_string()
         );
+    }
+
+    #[test]
+    fn the_claude_plugin_dir_is_exposed_for_the_launch_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inj = Injection::prepare(tmp.path());
+        assert_eq!(
+            inj.claude_plugin_dir(),
+            Some(
+                tmp.path()
+                    .join("integrations/claude/lotse-status")
+                    .as_path()
+            )
+        );
+        let broken = Injection::prepare(Path::new("/proc/definitely/not/writable"));
+        assert_eq!(broken.claude_plugin_dir(), None);
     }
 
     #[test]

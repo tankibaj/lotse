@@ -789,6 +789,7 @@ impl State {
             perm: None,
             source: DetectSource::Process,
         };
+        launch::add_claude_plugin_dir(&mut argv, ns.agent, self.inject.claude_plugin_dir());
         let spec = SpawnSpec {
             argv,
             cwd: cwd.clone(),
