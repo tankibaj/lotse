@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useClient } from '../lib/client';
 import { emitUiCommand, onUiCommand } from '../lib/ui/commands';
 import { openInSplit } from '../panes/splitBus';
+import { startSession } from '../lib/state/actions';
+import { getOpenPanel, togglePanel } from '../lib/ui/panel';
+import type { PanelName } from '../lib/ui/panel';
 import { selectSession, getSelectedSessionId } from '../lib/ui/selection';
 import { openOverlay, openSettings, closeOverlay, toggleOverlay, useOverlay } from '../sheets/overlay';
 import { Modal } from '../sheets/ui';
@@ -9,6 +12,16 @@ import { useSnapshot } from '../sheets/useSnapshot';
 import { StatusGlyph } from './StatusGlyph';
 import { nextNeedingYou, paletteItems } from './items';
 import type { PaletteItem } from './items';
+
+const pressMeta = (key: string) => dispatchEvent(new KeyboardEvent('keydown', { key, metaKey: true, bubbles: true, cancelable: true }));
+
+/** Open `name` and leave it open (`togglePanel` would close it when it is already the open one). */
+const openPanel = (name: PanelName) => getOpenPanel() !== name && togglePanel(name);
+
+const showPanel = (sessionId: string, name: PanelName) => {
+  selectSession(sessionId);
+  openPanel(name);
+};
 
 function PaletteView() {
   const client = useClient();
@@ -43,6 +56,19 @@ function PaletteView() {
         }
         case 'add-project': openOverlay({ name: 'addProject' }); break;
         case 'new-session': openOverlay({ name: 'newSession' }); break;
+        case 'new-terminal': void startSession(client, snap, 'terminal').catch(() => {}); break;
+        case 'new-claude': void startSession(client, snap, 'claude_code').catch(() => {}); break;
+        // the pane shortcuts live in `panes/`: replay the key so there is one implementation
+        case 'focus-prev': pressMeta('['); break;
+        case 'focus-next': pressMeta(']'); break;
+        case 'close-pane': pressMeta('w'); break;
+        case 'toggle-sidebar': emitUiCommand('toggleSidebar'); break;
+        case 'project-style': {
+          const projectId = snap.sessions.find((s) => s.id === selected)?.project_id;
+          if (projectId) emitUiCommand('openProjectStyle', projectId);
+          break;
+        }
+        case 'export-transcript': openPanel('transcript'); break; // the Export menu is in that panel
         case 'split-right': openInSplit(null, 'right'); break;
         case 'split-down': openInSplit(null, 'down'); break;
         case 'panel-session': emitUiCommand('togglePanel', 'session'); break;
@@ -125,6 +151,11 @@ export function Palette() {
 
   useEffect(() => {
     const off = onUiCommand('openPalette', () => openOverlay({ name: 'palette' }));
+    // Show Changes / Show Transcript (session menu, palette): the Beta panels, for that session.
+    const offPanels = [
+      onUiCommand('showChanges', (id) => id && showPanel(id, 'changes')),
+      onUiCommand('showTranscript', (id) => id && showPanel(id, 'transcript')),
+    ];
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && e.code === 'KeyK') {
         e.preventDefault();
@@ -134,6 +165,7 @@ export function Palette() {
     addEventListener('keydown', onKey);
     return () => {
       off();
+      offPanels.forEach((o) => o());
       removeEventListener('keydown', onKey);
     };
   }, []);
