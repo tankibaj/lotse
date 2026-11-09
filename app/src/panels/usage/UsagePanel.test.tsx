@@ -167,6 +167,29 @@ describe('UsagePanel', () => {
     expect(seen.filter(([id]) => id === 'a3').map(([, kind]) => kind)).not.toContain('ready');
   });
 
+  it('a1 -> null -> a1 never renders the old numbers of a1 again', async () => {
+    const client = new MockClient({ script: false });
+    vi.spyOn(client, 'getUsage').mockResolvedValue(usage());
+    const seen: string[] = [];
+    function Probe({ id }: { id: string | null }) {
+      seen.push(useUsage(id).kind);
+      return null;
+    }
+    const wrap = (id: string | null) => (
+      <ClientProvider client={client}>
+        <Probe id={id} />
+      </ClientProvider>
+    );
+    const { rerender } = mount(<Probe id="a1" />, client);
+    await waitFor(() => expect(seen.at(-1)).toBe('ready'));
+    rerender(wrap(null));
+    expect(seen.at(-1)).toBe('none');
+    seen.length = 0;
+    vi.spyOn(client, 'getUsage').mockReturnValue(new Promise(() => {}));
+    rerender(wrap('a1'));
+    expect(seen).not.toContain('ready');
+  });
+
   it('says so when no session is selected', () => {
     mount(<UsagePanel sessionId={null} />);
     expect(screen.getByText('No session selected')).toBeInTheDocument();

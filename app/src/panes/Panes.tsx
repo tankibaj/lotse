@@ -223,7 +223,7 @@ export function Panes() {
     [layout, sessions, dirty, say],
   );
 
-  const split =useCallback(
+  const split = useCallback(
     (wanted: SessionId | null, direction: SplitDirection = 'right') => {
       const id = wanted ?? nextSessionToOpen(sessions, sessionPanes(layout));
       if (id === null) return say('All sessions are already open');

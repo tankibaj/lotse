@@ -2,7 +2,7 @@ import { EditorView } from '@codemirror/view';
 import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ClientProvider, MockClient } from '../lib/client';
+import { ClientProvider, DaemonError, MockClient } from '../lib/client';
 import type { DiffFile, GitDiff } from '../lib/client/types';
 import { emitUiCommand } from '../lib/ui/commands';
 import { closeReview } from '../lib/ui/panel';
@@ -335,6 +335,36 @@ describe('old side of the diff', () => {
     expect(read).toHaveBeenCalledWith('a1', TOTALS, 'c1^');
     expect(read).not.toHaveBeenCalledWith('a1', TOTALS, 'origin/main');
     expect(sidebar().getByText(/vs/)).toHaveTextContent('origin/main');
+  });
+
+  it('a guess git cannot resolve (root commit has no parent) reads at the base and says so', async () => {
+    review({ commits: [commit('c2'), commit('root')] });
+    const read = vi.spyOn(client, 'readFile');
+    read.mockImplementation(async (id, path, rev) => {
+      if (rev?.endsWith('^')) throw new DaemonError({ code: 'invalid_request', message: `bad revision ${rev}` });
+      return MockClient.prototype.readFile.call(client, id, path, rev);
+    });
+    mount({ file: TOTALS });
+    await loaded(1);
+    expect(read).toHaveBeenCalledWith('a1', TOTALS, 'origin/main');
+    expect(screen.getByRole('status')).toHaveTextContent(/merge base/i);
+  });
+
+  it('a commit list that does not add up to ahead is not trusted: base, with the notice', async () => {
+    review({ ahead: 5, commits: [commit('c2'), commit('c1')] });
+    const read = vi.spyOn(client, 'readFile');
+    mount({ file: TOTALS });
+    await loaded(1);
+    expect(read).toHaveBeenCalledWith('a1', TOTALS, 'origin/main');
+    expect(read).not.toHaveBeenCalledWith('a1', TOTALS, 'c1^');
+    expect(screen.getByRole('status')).toHaveTextContent(/merge base/i);
+  });
+
+  it('a sure merge base shows no notice', async () => {
+    review({});
+    mount({ file: TOTALS });
+    await loaded(1);
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
   it('nothing ahead: the merge base is HEAD', async () => {
