@@ -102,8 +102,11 @@ export function reduceEvent(state: WorkspaceState, e: DaemonEvent): WorkspaceSta
       return patchSession(state, e.data.session_id, (s) => ({ ...s, git: e.data.git }));
     case 'settings_changed':
       return { ...state, settings: e.data };
+    // mod_command and session_start_requested (proto 5) go to the mod bridge and the approval card, not the workspace state
     case 'session_exited':
     case 'notification':
+    case 'mod_command':
+    case 'session_start_requested':
       return state;
   }
 }

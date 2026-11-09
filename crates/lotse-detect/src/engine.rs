@@ -276,11 +276,7 @@ mod tests {
             status: None,
             sub_agents: Some(
                 subs.iter()
-                    .map(|(id, status)| SubAgent {
-                        id: SubAgentId::new(*id),
-                        name: (*id).into(),
-                        status: *status,
-                    })
+                    .map(|(id, status)| SubAgent::new(SubAgentId::new(*id), *id, *status))
                     .collect(),
             ),
             perm: None,

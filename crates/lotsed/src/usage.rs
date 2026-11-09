@@ -440,6 +440,7 @@ impl UsageTracker {
             cache_read_tokens: total.counts.cache_read,
             cache_write_tokens: total.counts.cache_write,
             cost_micros: (!total.unpriced).then_some((total.cost / 1_000_000) as u64),
+            rate_limits: Vec::new(),
         };
         g.priced_micros = (total.cost / 1_000_000) as u64;
         if usage == g.last {

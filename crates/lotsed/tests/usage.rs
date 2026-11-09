@@ -132,6 +132,8 @@ impl Local {
             title: None,
             worktree: None,
             first_prompt: None,
+            parent_session: None,
+            requested_by_agent: false,
         })) {
             Response::Session(s) => s,
             other => panic!("create_session: {other:?}"),
@@ -470,11 +472,11 @@ fn a_sub_agent_has_its_own_lane() {
     let s = l.session(&p, AgentKind::ClaudeCode);
     l.state.hub.broadcast(lotse_proto::Event::SubAgentsChanged {
         session_id: s.id.clone(),
-        sub_agents: vec![lotse_proto::SubAgent {
-            id: lotse_proto::SubAgentId::new("a1"),
-            name: "Explore".into(),
-            status: Status::Run,
-        }],
+        sub_agents: vec![lotse_proto::SubAgent::new(
+            lotse_proto::SubAgentId::new("a1"),
+            "Explore",
+            Status::Run,
+        )],
     });
     let u = l.usage(&s.id);
     let kinds: Vec<_> = u.lanes.iter().map(|x| (x.kind, x.name.as_str())).collect();

@@ -29,6 +29,8 @@ fn start_with(extra_path: Option<&Path>) -> Fixture {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),

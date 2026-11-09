@@ -563,6 +563,8 @@ fn first_prompt_of_a_new_session_becomes_title_and_is_typed() {
         title: None,
         worktree: None,
         first_prompt: Some("echo refactor the parser".into()),
+        parent_session: None,
+        requested_by_agent: false,
     }));
     let Response::Session(s) = resp else {
         panic!("{resp:?}")
@@ -589,6 +591,8 @@ fn create_session_errors() {
             title: None,
             worktree: None,
             first_prompt: None,
+            parent_session: None,
+            requested_by_agent: false,
         }))),
         ErrorCode::NotFound
     );
@@ -602,6 +606,8 @@ fn create_session_errors() {
                 branch: "lotse/x".into(),
             }),
             first_prompt: None,
+            parent_session: None,
+            requested_by_agent: false,
         }))
     };
     assert_eq!(

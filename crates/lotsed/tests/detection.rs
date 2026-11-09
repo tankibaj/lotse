@@ -22,6 +22,8 @@ fn agent_session(c: &mut Client, project: &lotse_proto::Project, agent: AgentKin
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),
@@ -412,6 +414,8 @@ fn git_line_and_isolated_worktrees() {
             branch: "lotse/new-task".into(),
         }),
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("worktree session: {other:?}"),
@@ -444,6 +448,8 @@ fn git_line_and_isolated_worktrees() {
             branch: "--oops".into(),
         }),
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     }));
     assert!(matches!(bad, Response::Error(e) if e.code == ErrorCode::InvalidRequest));
 }
@@ -540,6 +546,8 @@ fn prompt_pane(
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) {
         Response::Session(s) => s,
         other => panic!("create_session: {other:?}"),

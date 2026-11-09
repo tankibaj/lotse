@@ -110,6 +110,8 @@ fn new_session(project: &lotse_proto::Project, agent: AgentKind) -> Request {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })
 }
 

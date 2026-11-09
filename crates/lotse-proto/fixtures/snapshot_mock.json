@@ -5,7 +5,7 @@
     "response": {
       "kind": "snapshot",
       "data": {
-        "daemon": { "version": "0.1.0", "proto_version": 4, "pid": 4242, "started_at": 1793524440000 },
+        "daemon": { "version": "0.1.0", "proto_version": 5, "pid": 4242, "started_at": 1793524440000 },
         "workspaces": [
           { "id": "w1", "name": "Default" }
         ],

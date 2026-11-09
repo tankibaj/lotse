@@ -247,6 +247,19 @@ pub enum Request {
         session_id: SessionId,
     },
 
+    // mod and child sessions (since proto 5); every handler is `unavailable` until its work package lands
+    /// The Claude mod's bridge (`lotse-hook mod-bridge`) attaches to the session: the daemon then
+    /// pushes `Event::ModCommand`s for it on this connection → `Response::Ok`.
+    ModAttach {
+        session_id: SessionId,
+    },
+    /// Answer an `Event::SessionStartRequested` card: `approve` starts the child session → `Response::Ok`.
+    /// `not_found` when `id` is not an open request.
+    ResolveSessionStart {
+        id: String,
+        approve: bool,
+    },
+
     /// From `lotse-hook`: an agent hook payload. Forwarded as received, except that `lotse-hook`
     /// strips `tool_response` (tool output can be huge and no adapter reads it).
     HookEvent {
@@ -299,6 +312,8 @@ impl Request {
         "stop_task",
         "list_connectors",
         "check_connectors",
+        "mod_attach",
+        "resolve_session_start",
         "hook_event",
         "shutdown",
     ];
@@ -343,6 +358,8 @@ impl Request {
             Request::StopTask { .. } => "stop_task",
             Request::ListConnectors { .. } => "list_connectors",
             Request::CheckConnectors { .. } => "check_connectors",
+            Request::ModAttach { .. } => "mod_attach",
+            Request::ResolveSessionStart { .. } => "resolve_session_start",
             Request::HookEvent { .. } => "hook_event",
             Request::Shutdown => "shutdown",
         }
@@ -510,6 +527,26 @@ pub enum Event {
         prompt_id: Option<String>,
         at: UnixMs,
     },
+    /// To the connection that sent `mod_attach` for `session_id`: something for the mod to do.
+    /// Since proto 5.
+    ModCommand {
+        session_id: SessionId,
+        command: ModCommand,
+    },
+    /// An agent asked to start a child session (`lotse-hook mcp`); the app shows the full `prompt`
+    /// on an approval card and answers with `resolve_session_start`. Since proto 5.
+    SessionStartRequested {
+        /// Identifies the request for `resolve_session_start`.
+        id: String,
+        /// The session whose agent asked.
+        parent_session: SessionId,
+        project_id: ProjectId,
+        agent: AgentKind,
+        title: Option<String>,
+        prompt: String,
+        worktree: Option<WorktreeSpec>,
+        at: UnixMs,
+    },
 }
 
 impl Event {
@@ -531,6 +568,8 @@ impl Event {
         "settings_changed",
         "usage_changed",
         "notification",
+        "mod_command",
+        "session_start_requested",
     ];
 
     pub fn name(&self) -> &'static str {
@@ -552,6 +591,8 @@ impl Event {
             Event::SettingsChanged(_) => "settings_changed",
             Event::UsageChanged(_) => "usage_changed",
             Event::Notification { .. } => "notification",
+            Event::ModCommand { .. } => "mod_command",
+            Event::SessionStartRequested { .. } => "session_start_requested",
         }
     }
 }

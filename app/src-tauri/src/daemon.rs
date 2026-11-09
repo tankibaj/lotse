@@ -620,6 +620,7 @@ mod tests {
             cache_read_tokens: 3,
             cache_write_tokens: 4,
             cost_micros: Some(5),
+            rate_limits: Vec::new(),
         }))
         .unwrap();
         assert_eq!(v["event"], "usage_changed");
@@ -632,6 +633,6 @@ mod tests {
             (v["event"].as_str(), v["data"]["workspace_id"].as_str()),
             (Some("workspace_removed"), Some("w2"))
         );
-        assert_eq!(PROTO_VERSION, 4);
+        assert_eq!(PROTO_VERSION, 5);
     }
 }

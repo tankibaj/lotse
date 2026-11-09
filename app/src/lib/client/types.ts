@@ -1,7 +1,7 @@
-// Mirror of crates/lotse-proto (PROTO_VERSION 4). Frozen after WP0: change only with an
+// Mirror of crates/lotse-proto (PROTO_VERSION 5). Frozen after WP0: change only with an
 // orchestrator-approved proto bump. JSON fixtures in crates/lotse-proto/fixtures are the shared contract.
 
-export const PROTO_VERSION = 4;
+export const PROTO_VERSION = 5;
 
 // ids (opaque strings minted by the daemon)
 export type WorkspaceId = string;
@@ -13,7 +13,10 @@ export type UnixMs = number;
 
 export type Status = 'run' | 'perm' | 'fail' | 'done' | 'idle' | 'unknown';
 export type AgentKind = 'terminal' | 'claude_code' | 'codex' | 'opencode';
-export type DetectSource = 'hook' | 'osc7501' | 'screen' | 'process';
+/** `mod` is the Claude Code mod, the strongest source (proto 5). */
+export type DetectSource = 'mod' | 'hook' | 'osc7501' | 'screen' | 'process';
+/** Which layer feeds a session's data (proto 5). */
+export type SourceLayer = 'mod' | 'hooks' | 'screen';
 export type Theme = 'light' | 'dark' | 'auto';
 export type PermDecision = 'allow' | 'always' | 'deny';
 /** What Always picks on the prompt on screen: remember = "don't ask again", auto_mode = "switch to auto mode". */
@@ -58,6 +61,22 @@ export interface SubAgent {
   id: SubAgentId;
   name: string;
   status: Status;
+  // Proto 5. Absent until the mod (or a transcript) reports them.
+  /** The sub-agent that started this one. */
+  parent?: SubAgentId;
+  /** What it is doing now, e.g. `Read src/db/migrations`. */
+  activity?: string;
+  tokens?: number;
+  cost_usd?: number;
+  model?: string;
+  /** Runs in the background; absent means `false`. */
+  background?: boolean;
+}
+
+/** Progress of the agent's todo list (proto 5). */
+export interface Todo {
+  done: number;
+  total: number;
 }
 
 export type PrState = 'open' | 'draft' | 'merged' | 'closed';
@@ -116,6 +135,14 @@ export interface Session {
   unread: boolean;
   perm: PermRequest | null;
   source: DetectSource;
+  // Proto 5. Absent until the mod (or a hook) reports them.
+  /** Share of the context window in use, 0–100. */
+  context_pct?: number;
+  /** Which layer feeds this session's data (the card's source tooltip). */
+  source_layer?: SourceLayer;
+  /** The session whose agent started this one. */
+  parent_session?: SessionId;
+  todo?: Todo;
 }
 
 export interface WorktreeSpec {
@@ -129,7 +156,17 @@ export interface NewSession {
   title: string | null;
   worktree: WorktreeSpec | null;
   first_prompt: string | null;
+  /** The session whose agent starts this one (a child session; proto 5). */
+  parent_session?: SessionId;
+  /** An agent asked for this session, not the user (proto 5). */
+  requested_by_agent?: boolean;
 }
+
+/** What the daemon asks the Claude mod to do (`mod_command`, proto 5). */
+export type ModCommand =
+  | { cmd: 'submit'; text: string }
+  | { cmd: 'answer'; prompt_id: string | null; decision: PermDecision }
+  | { cmd: 'ping' };
 
 export interface NewProject {
   path: string;
@@ -445,6 +482,15 @@ export interface Connector {
   status: ConnectorStatus;
 }
 
+/** One rate-limit window of the agent's plan (proto 5). */
+export interface RateLimit {
+  /** `five_hour`, `seven_day`, … */
+  kind: string;
+  /** Share of the window used, 0–100. */
+  pct: number;
+  resets_at: UnixMs;
+}
+
 /** Today's tokens and cost (local day), from the Claude Code transcripts the daemon knows. */
 export interface UsageToday {
   input_tokens: number;
@@ -453,6 +499,8 @@ export interface UsageToday {
   cache_write_tokens: number;
   /** Millionths of a US dollar; `null` when a model without a known price took part ("tokens only"). */
   cost_micros: number | null;
+  /** Absent until the mod reports them (proto 5). */
+  rate_limits?: RateLimit[];
 }
 
 export interface Snapshot {
@@ -530,6 +578,8 @@ export type Request =
   | { method: 'stop_task'; params: { session_id: SessionId; pid: number } }
   | { method: 'list_connectors'; params: { session_id: SessionId } }
   | { method: 'check_connectors'; params: { session_id: SessionId } }
+  | { method: 'mod_attach'; params: { session_id: SessionId } }
+  | { method: 'resolve_session_start'; params: { id: string; approve: boolean } }
   | { method: 'hook_event'; params: { agent: AgentKind; session_id: SessionId | null; payload: unknown } }
   | { method: 'shutdown' };
 
@@ -599,6 +649,22 @@ export type DaemonEvent =
         sound_name?: string;
         /** The `PermRequest.id` a `perm` notification is about; its Allow/Deny answers with it (proto 4). */
         prompt_id?: string;
+        at: UnixMs;
+      };
+    }
+  | { event: 'mod_command'; data: { session_id: SessionId; command: ModCommand } }
+  | {
+      event: 'session_start_requested';
+      data: {
+        /** Identifies the request for `resolve_session_start`. */
+        id: string;
+        /** The session whose agent asked. */
+        parent_session: SessionId;
+        project_id: ProjectId;
+        agent: AgentKind;
+        title: string | null;
+        prompt: string;
+        worktree: WorktreeSpec | null;
         at: UnixMs;
       };
     };

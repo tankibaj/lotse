@@ -276,11 +276,7 @@ fn sub_agents_get_their_own_lane() {
     let state = state_on(Db::open_in_memory().unwrap(), tmp.path());
     let s = SessionId::new("s1");
     state.hub.broadcast(status_event("s1", Status::Run, 1_000));
-    let sub = |id: &str, status| SubAgent {
-        id: SubAgentId::new(id),
-        name: id.into(),
-        status,
-    };
+    let sub = |id: &str, status| SubAgent::new(SubAgentId::new(id), id, status);
     state.hub.broadcast(Event::SubAgentsChanged {
         session_id: s.clone(),
         sub_agents: vec![sub("a1", Status::Run), sub("a2", Status::Run)],
@@ -415,6 +411,8 @@ fn perm_event_records_decision_and_source() {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) else {
         panic!("create_session")
     };
@@ -620,6 +618,10 @@ fn a_new_session_opens_its_first_span_at_its_creation() {
         unread: false,
         perm: None,
         source: DetectSource::Process,
+        context_pct: None,
+        source_layer: None,
+        parent_session: None,
+        todo: None,
     };
     state.hub.broadcast(Event::SessionCreated(session));
     state.hub.broadcast(status_event("s1", Status::Run, 800));

@@ -22,6 +22,7 @@ import type {
   LaunchCommandInfo,
   NewProject,
   NewSession,
+  ModCommand,
   NotificationKind,
   PermDecision,
   PermRequest,
@@ -29,6 +30,7 @@ import type {
   Project,
   ProjectId,
   ProjectPatch,
+  RateLimit,
   Review,
   Session,
   SessionId,
@@ -43,6 +45,7 @@ import type {
   UsageToday,
   Workspace,
   WorkspaceId,
+  WorktreeSpec,
 } from './types';
 import { DaemonError, PROTO_VERSION } from './types';
 
@@ -306,6 +309,16 @@ export const SUB_AGENT_SCRIPT: ScriptStep[] = [
   { at: 7_000, run: (c) => c.setSubAgent('a6', 'a6-s1', 'done') },
 ];
 
+/** What an agent asks for when it wants a child session (the data of `session_start_requested`, without `id` and `at`). */
+export interface SessionStartRequest {
+  parent_session: SessionId;
+  project_id: ProjectId;
+  agent: AgentKind;
+  title: string | null;
+  prompt: string;
+  worktree: WorktreeSpec | null;
+}
+
 export interface MockClientOptions {
   /** Clock, default `Date.now`. */
   now?: () => number;
@@ -331,10 +344,15 @@ export class MockClient implements DaemonClient {
   /** Files written through `writeFile`, by `<session>:<path>`; everything else reads from `MOCK_SOURCES`. */
   private readonly written = new Map<string, string>();
   private readonly tasks = new Map<SessionId, BackgroundTask[]>();
+  /** Sessions a mod bridge attached to (`modAttach`). */
+  private readonly modAttached = new Set<SessionId>();
+  /** `session_start_requested` cards nobody answered yet, by request id. */
+  private readonly startRequests = new Map<string, SessionStartRequest>();
   private readonly steps: ScriptStep[];
   private nextStep = 0;
   private elapsed = 0;
   private nextPrompt = 1;
+  private nextStartRequest = 1;
   private nextSession = 8;
   private nextProject = 6;
   private nextWorkspace = 2;
@@ -558,6 +576,7 @@ export class MockClient implements DaemonClient {
 
   async createSession(n: NewSession): Promise<Session> {
     const project = this.mustProject(n.project_id);
+    if (n.parent_session) this.must(n.parent_session);
     const at = this.now();
     const git: GitInfo = project.is_git
       ? {
@@ -590,6 +609,7 @@ export class MockClient implements DaemonClient {
       unread: false,
       perm: null,
       source: 'process',
+      ...(n.parent_session ? { parent_session: n.parent_session } : {}),
     };
     this.sessions.push(session);
     this.emit({ event: 'session_created', data: clone(session) });
@@ -845,6 +865,56 @@ export class MockClient implements DaemonClient {
   setUsage(usage: UsageToday): void {
     this.usage = clone(usage);
     this.emit({ event: 'usage_changed', data: clone(usage) });
+  }
+
+  async modAttach(sessionId: SessionId): Promise<void> {
+    this.modAttached.add(this.must(sessionId).id);
+  }
+
+  /** Push a `mod_command` like the daemon does: only to a session a mod bridge attached to. `false`: nobody is attached. */
+  sendModCommand(sessionId: SessionId, command: ModCommand): boolean {
+    if (!this.modAttached.has(sessionId)) return false;
+    this.emit({ event: 'mod_command', data: { session_id: sessionId, command: clone(command) } });
+    return true;
+  }
+
+  /** An agent asks for a child session: emits the approval card's `session_start_requested`, returns the request id. */
+  requestSessionStart(req: SessionStartRequest): string {
+    this.must(req.parent_session);
+    const id = `start-${this.nextStartRequest++}`;
+    this.startRequests.set(id, clone(req));
+    this.emit({ event: 'session_start_requested', data: { id, ...clone(req), at: this.now() } });
+    return id;
+  }
+
+  async resolveSessionStart(id: string, approve: boolean): Promise<void> {
+    const req = this.startRequests.get(id);
+    if (!req) throw new DaemonError({ code: 'not_found', message: `no session start request ${id}` });
+    this.startRequests.delete(id);
+    if (!approve) return;
+    await this.createSession({
+      project_id: req.project_id,
+      agent: req.agent,
+      command: null,
+      title: req.title,
+      worktree: req.worktree,
+      first_prompt: req.prompt,
+      parent_session: req.parent_session,
+      requested_by_agent: true,
+    });
+  }
+
+  /** Set what the mod reports about a session (context %, source layer, todo, parent): emits `session_updated`. */
+  setSessionMeta(sessionId: SessionId, meta: Partial<Pick<Session, 'context_pct' | 'source_layer' | 'todo' | 'parent_session'>>): void {
+    const s = this.must(sessionId);
+    Object.assign(s, clone(meta));
+    this.emit({ event: 'session_updated', data: clone(s) });
+  }
+
+  /** Set the rate-limit windows the mod reports: emits `usage_changed`. */
+  setRateLimits(rateLimits: RateLimit[]): void {
+    this.usage = { ...this.usage, rate_limits: clone(rateLimits) };
+    this.emit({ event: 'usage_changed', data: clone(this.usage) });
   }
 
   async hookEvent(): Promise<void> {}

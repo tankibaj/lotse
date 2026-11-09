@@ -157,6 +157,8 @@ fn configured_override_is_what_gets_detected_and_launched() {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) else {
         panic!("create failed")
     };
@@ -238,6 +240,8 @@ fn default_terminal_command_launches_the_login_shell() {
         title: None,
         worktree: None,
         first_prompt: None,
+        parent_session: None,
+        requested_by_agent: false,
     })) else {
         panic!()
     };

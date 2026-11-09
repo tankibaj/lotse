@@ -238,8 +238,129 @@ fn snapshot_mock_reproduces_the_mock_states() {
 }
 
 #[test]
-fn proto_version_is_4() {
-    assert_eq!(PROTO_VERSION, 4);
+fn proto_version_is_5() {
+    assert_eq!(PROTO_VERSION, 5);
+}
+
+/// The TypeScript mirror and the Tauri bridge rely on these exact v5 shapes.
+#[test]
+fn v5_messages_have_the_documented_wire_shape() {
+    use serde_json::json;
+    let sid = SessionId::new("a1");
+
+    assert_eq!(
+        serde_json::to_value(Request::ModAttach {
+            session_id: sid.clone()
+        })
+        .unwrap(),
+        json!({"method": "mod_attach", "params": {"session_id": "a1"}})
+    );
+    assert_eq!(
+        serde_json::to_value(Request::ResolveSessionStart {
+            id: "r-1".into(),
+            approve: false
+        })
+        .unwrap(),
+        json!({"method": "resolve_session_start", "params": {"id": "r-1", "approve": false}})
+    );
+    assert_eq!(
+        serde_json::to_value(DetectSource::Mod).unwrap(),
+        json!("mod")
+    );
+    assert!(
+        DetectSource::Mod < DetectSource::Hook,
+        "mod is the strongest source"
+    );
+
+    let ev = Event::ModCommand {
+        session_id: sid.clone(),
+        command: ModCommand::Answer {
+            prompt_id: Some("p-1".into()),
+            decision: PermDecision::Deny,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({"event": "mod_command", "data": {"session_id": "a1",
+            "command": {"cmd": "answer", "prompt_id": "p-1", "decision": "deny"}}})
+    );
+    assert_eq!(
+        serde_json::to_value(ModCommand::Ping).unwrap(),
+        json!({"cmd": "ping"})
+    );
+
+    let ev = Event::SessionStartRequested {
+        id: "r-1".into(),
+        parent_session: sid,
+        project_id: ProjectId::new("p1"),
+        agent: AgentKind::Codex,
+        title: None,
+        prompt: "go".into(),
+        worktree: None,
+        at: 9,
+    };
+    assert_eq!(
+        serde_json::to_value(&ev).unwrap(),
+        json!({"event": "session_start_requested", "data": {"id": "r-1", "parent_session": "a1",
+            "project_id": "p1", "agent": "codex", "title": null, "prompt": "go",
+            "worktree": null, "at": 9}})
+    );
+
+    let usage = UsageToday {
+        rate_limits: vec![RateLimit {
+            kind: "five_hour".into(),
+            pct: 42,
+            resets_at: 5,
+        }],
+        ..UsageToday::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&usage).unwrap()["rate_limits"],
+        json!([{"kind": "five_hour", "pct": 42, "resets_at": 5}])
+    );
+}
+
+/// A v4-shaped message, without any field v5 added, still parses and takes the defaults.
+#[test]
+fn v4_shaped_json_without_the_new_fields_still_parses() {
+    use serde_json::{from_value, json};
+
+    let sub: SubAgent = from_value(json!({"id": "s1", "name": "x", "status": "run"})).unwrap();
+    assert_eq!(
+        (
+            sub.parent,
+            sub.activity,
+            sub.tokens,
+            sub.cost_usd,
+            sub.model,
+            sub.background
+        ),
+        (None, None, None, None, None, false)
+    );
+
+    let git = json!({"is_git": true, "branch": "main", "ahead": 0, "dirty": 0,
+        "worktree": false, "worktree_path": null});
+    let s: Session = from_value(json!({"id": "a1", "project_id": "p1", "title": "t",
+        "agent": "claude_code", "command": "claude", "status": "run", "sub_agents": [],
+        "git": git, "created_at": 1, "last_activity": 2, "running_since": null,
+        "unread": false, "perm": null, "source": "hook"}))
+    .unwrap();
+    assert_eq!(
+        (s.context_pct, s.source_layer, s.parent_session, s.todo),
+        (None, None, None, None)
+    );
+
+    let u: UsageToday = from_value(json!({"input_tokens": 1, "output_tokens": 2,
+        "cache_read_tokens": 3, "cache_write_tokens": 4, "cost_micros": null}))
+    .unwrap();
+    assert!(u.rate_limits.is_empty());
+
+    let n: NewSession = from_value(
+        json!({"project_id": "p1", "agent": "codex", "command": null,
+        "title": null, "worktree": null, "first_prompt": null}),
+    )
+    .unwrap();
+    assert_eq!((n.parent_session, n.requested_by_agent), (None, false));
 }
 
 /// The TypeScript mirror and the Tauri bridge rely on these exact v4 shapes.
@@ -448,6 +569,7 @@ fn v3_messages_have_the_documented_wire_shape() {
         cache_read_tokens: 3,
         cache_write_tokens: 4,
         cost_micros: None,
+        rate_limits: Vec::new(),
     });
     assert_eq!(
         serde_json::to_value(&ev).unwrap(),
