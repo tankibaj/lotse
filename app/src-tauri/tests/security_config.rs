@@ -83,12 +83,13 @@ fn capabilities_are_explicit_and_minimal() {
         })
         .collect();
     // what the webview calls: daemon events (listen/unlisten, also drag-drop), the title-bar drag
-    // region, and the folder picker. A missing one fails silently at runtime.
+    // region, the folder picker, and the transcript export's save dialog. A missing one fails silently at runtime.
     for needed in [
         "core:event:allow-listen",
         "core:event:allow-unlisten",
         "core:window:allow-start-dragging",
         "dialog:allow-open",
+        "dialog:allow-save",
     ] {
         assert!(perms.contains(&needed), "missing {needed}");
     }
@@ -109,6 +110,30 @@ fn capabilities_are_explicit_and_minimal() {
         !perms
             .iter()
             .any(|p| p.starts_with("core:webview:allow-internal-toggle-devtools"))
+    );
+}
+
+#[test]
+fn capability_set_is_exact() {
+    let cap = read_json("capabilities/default.json");
+    let mut perms: Vec<&str> = cap["permissions"]
+        .as_array()
+        .expect("permissions")
+        .iter()
+        .map(|p| p.as_str().expect("plain permission identifiers"))
+        .collect();
+    perms.sort_unstable();
+    // a new permission is a decision: it changes this list in the same diff
+    assert_eq!(
+        perms,
+        [
+            "core:event:allow-listen",
+            "core:event:allow-unlisten",
+            "core:window:allow-internal-toggle-maximize",
+            "core:window:allow-start-dragging",
+            "dialog:allow-open",
+            "dialog:allow-save",
+        ]
     );
 }
 
