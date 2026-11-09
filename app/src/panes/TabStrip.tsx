@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { useClient } from '../lib/client/context';
 import type { Session, SessionId } from '../lib/client/types';
@@ -37,6 +37,12 @@ export function TabStrip() {
   const current = sessions.find((s) => s.id === selected);
   const project = projects.find((p) => p.id === current?.project_id);
   const tabs = useProjectTabs(sessions, current?.project_id);
+
+  // Title sync: the window carries the selected session's live title.
+  const windowTitle = current?.title ? `${current.title} · Lotse` : 'Lotse';
+  useEffect(() => {
+    document.title = windowTitle;
+  }, [windowTitle]);
 
   const listRef = useRef<HTMLDivElement>(null);
   const suppressClick = useRef(false);

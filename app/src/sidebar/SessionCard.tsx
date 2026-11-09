@@ -2,9 +2,10 @@ import { FolderGit2, GitBranch, RotateCcw } from 'lucide-react';
 import { memo } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { PermDecision, Project, Session, SessionId } from '../lib/client/types';
-import { AGENT_LABEL, displayStatus, noLiveStatus, sessionAge, shortBranch } from '../lib/state/selectors';
+import { AGENT_LABEL, displayStatus, formatTokens, noLiveStatus, sessionAge, shortBranch } from '../lib/state/selectors';
 import { prLabel, prTitle } from '../panels/changes/pr';
 import { InlineEdit } from './InlineEdit';
+import { clampPct, COMPACT_AT, formatCost, orderSubAgents, SOURCE_TITLE } from './modData';
 import { StatusGlyph } from './StatusGlyph';
 
 // Session card, spec/research.html#sidebar. Line 1: status, title, unread dot, coarse time (Retry on
@@ -48,6 +49,9 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
   const needsSub = s.sub_agents.some((x) => x.status === 'perm' || x.status === 'fail');
   const showSubs = selected || needsSub;
   const running = s.sub_agents.filter((x) => x.status === 'run').length;
+  const hasTodo = (s.todo?.total ?? 0) > 0;
+  const compactSoon = s.context_pct !== undefined && s.context_pct >= COMPACT_AT;
+  const sourceTitle = s.source_layer ? SOURCE_TITLE[s.source_layer] : undefined;
   const fail = s.status === 'fail';
   const noSignal = noLiveStatus(s, now);
   // Fixed-size inline hint on line 2 (no new row, no layout shift when it appears).
@@ -137,7 +141,7 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
           className="flex min-w-0 items-center gap-1 pl-[22px] text-[11px] text-dim"
           title={s.git.worktree ? `Isolated worktree · ${s.git.worktree_path ?? ''}` : 'Main checkout'}
         >
-          <span data-part="agent" className="shrink-0 whitespace-nowrap">
+          <span data-part="agent" className="shrink-0 whitespace-nowrap" title={sourceTitle}>
             {agent}
           </span>
           <span className="mx-0.5 shrink-0 opacity-40 @max-[170px]:mx-0">·</span>
@@ -169,7 +173,9 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
         </div>
       ) : (
         <div className="truncate pl-[22px] text-[11px] text-dim">
-          {agent}
+          <span data-part="agent" title={sourceTitle}>
+            {agent}
+          </span>
           {hint}
         </div>
       )}
@@ -185,6 +191,36 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
           {s.git.pr && (
             <span data-part="pr" className="min-w-0 truncate rounded bg-black/5 px-1 text-[10px] dark:bg-white/10" title={prTitle(s.git.pr)}>
               {prLabel(s.git.pr)}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* Mod data (proto 5): own row, only when the mod reports a context share or a todo list. */}
+      {(s.context_pct !== undefined || hasTodo) && (
+        <div data-line="mod" className="flex min-w-0 items-center gap-2 pl-[22px] text-[11px] text-dim">
+          {s.context_pct !== undefined && (
+            <span
+              data-part="context"
+              className={`shrink-0 tabular-nums ${compactSoon ? 'text-orange' : ''}`}
+              title={`Context window ${clampPct(s.context_pct)}% used${compactSoon ? ': the agent compacts it soon' : ''}`}
+            >
+              ctx {clampPct(s.context_pct)}%{compactSoon && ' · compaction soon'}
+            </span>
+          )}
+          {hasTodo && s.todo && (
+            <span data-part="todo" className="flex min-w-0 items-center gap-1 tabular-nums" title={`${s.todo.done} of ${s.todo.total} todos done`}>
+              <span
+                role="progressbar"
+                aria-label="Todo"
+                aria-valuemin={0}
+                aria-valuemax={s.todo.total}
+                aria-valuenow={s.todo.done}
+                className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-line"
+              >
+                <span className="block h-full bg-blue" style={{ width: `${Math.min(100, (s.todo.done / s.todo.total) * 100)}%` }} />
+              </span>
+              {s.todo.done}/{s.todo.total}
             </span>
           )}
         </div>
@@ -248,12 +284,34 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
         </div>
       )}
       {showSubs &&
-        s.sub_agents.map((x) => (
-          <div key={x.id} data-sub-agent={x.id} className="mt-0.5 flex items-center gap-2 pl-[22px] text-[12px] text-dim">
-            <StatusGlyph status={x.status} size={12} />
-            <span className="min-w-0 truncate" title={x.name}>
-              {x.name}
-            </span>
+        orderSubAgents(s.sub_agents).map(({ agent: x, depth }) => (
+          <div key={x.id} data-sub-agent={x.id} data-depth={depth} className="mt-0.5 text-[12px] text-dim" style={{ paddingLeft: 22 + depth * 12 }}>
+            <div className="flex items-center gap-2">
+              <StatusGlyph status={x.status} size={12} />
+              <span className="min-w-0 truncate" title={x.name}>
+                {x.name}
+              </span>
+              {x.background && (
+                <span data-part="background" className="shrink-0 rounded bg-black/5 px-1 text-[10px] dark:bg-white/10" title="Runs in the background">
+                  bg
+                </span>
+              )}
+              {x.tokens !== undefined && (
+                <span
+                  data-part="usage"
+                  className="ml-auto shrink-0 text-[10px] tabular-nums"
+                  title={[x.model, `${x.tokens.toLocaleString('en-US')} tokens`, x.cost_usd !== undefined && formatCost(x.cost_usd)].filter(Boolean).join(' · ')}
+                >
+                  {formatTokens(x.tokens)}
+                  {x.cost_usd !== undefined && ` · ${formatCost(x.cost_usd)}`}
+                </span>
+              )}
+            </div>
+            {x.activity && (
+              <div data-part="activity" className="truncate pl-5 text-[11px] opacity-80" title={x.activity}>
+                {x.activity}
+              </div>
+            )}
           </div>
         ))}
     </div>
