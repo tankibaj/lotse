@@ -39,6 +39,8 @@ export type CommandId =
 export interface PaletteItem {
   key: string;
   label: string;
+  /** Sessions: the project name, shown dimmed before the label. */
+  project?: string;
   hint: string;
   status?: Status;
   /** Leading mark for commands. */
@@ -122,7 +124,8 @@ export function paletteItems(query: string, projects: Project[], sessions: Sessi
     .sort((a, b) => STATUS_RANK[b.status] - STATUS_RANK[a.status] || b.last_activity - a.last_activity)
     .map((s) => ({
       key: `s:${s.id}`,
-      label: `${s.title} · ${name.get(s.project_id) ?? '?'}`,
+      label: s.title,
+      project: name.get(s.project_id) ?? '?',
       hint: [AGENT_LABEL[s.agent], s.git.is_git ? s.git.branch : 'No git'].join(' · '),
       status: s.status,
       action: { type: 'session', sessionId: s.id },
@@ -142,5 +145,5 @@ export function paletteItems(query: string, projects: Project[], sessions: Sessi
     action: { type: 'command', id: c.id },
   }));
   const q = query.trim().toLowerCase();
-  return [...sessionItems, ...commandItems, ...projectItems].filter((i) => !q || `${i.label} ${i.hint}`.toLowerCase().includes(q));
+  return [...sessionItems, ...commandItems, ...projectItems].filter((i) => !q || `${i.project ?? ''} ${i.label} ${i.hint}`.toLowerCase().includes(q));
 }

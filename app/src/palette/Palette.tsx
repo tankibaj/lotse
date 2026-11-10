@@ -91,6 +91,9 @@ function PaletteView() {
     }
   };
 
+  // Project prefixes line up: pad them to the longest name.
+  const projectWidth = Math.max(0, ...items.map((i) => i.project?.length ?? 0));
+
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
@@ -133,7 +136,14 @@ function PaletteView() {
             onClick={() => run(i)}
           >
             <span className="flex w-4 justify-center" aria-hidden={!i.status}>{i.status ? <StatusGlyph status={i.status} /> : i.glyph}</span>
-            <span className="flex-1 truncate">{i.label}</span>
+            <span className="flex-1 truncate">
+              {i.project !== undefined && (
+                <>
+                  <span className="inline-block text-dim" style={{ minWidth: `${projectWidth + 2}ch` }}>{i.project} ›</span>{' '}
+                </>
+              )}
+              {i.label}
+            </span>
             <span className="font-mono text-[11px] text-dim">{i.hint}</span>
           </div>
         ))}

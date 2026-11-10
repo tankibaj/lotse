@@ -29,7 +29,7 @@ describe('Command palette', () => {
     expect(input).toHaveFocus();
     expect(input).toHaveAttribute('placeholder', 'Jump to session, project or command…');
     const first = labels();
-    expect(first[0]).toContain('Patient list → Signals · praxis-web'); // perm
+    expect(first[0]).toContain('praxis-web › Patient list → Signals'); // perm
     expect(first[1]).toContain('Bump Angular 20'); // fail
     fireEvent.keyDown(window, { code: 'KeyK', metaKey: true });
     expect(getOverlay()).toBeNull();
@@ -41,7 +41,7 @@ describe('Command palette', () => {
     mountWp5();
     await open();
     const all = labels().join('\n');
-    for (const s of ['Fix invoice rounding · billing-api', 'Scratch shell · notes', 'Next session that needs you', 'Add a Project…', 'New session…', 'Settings…', 'Pause notifications']) {
+    for (const s of ['billing-api › Fix invoice rounding', 'notes › Scratch shell', 'Next session that needs you', 'Add a Project…', 'New session…', 'Settings…', 'Pause notifications']) {
       expect(all).toContain(s);
     }
     expect(all).toContain('⇧⌘O');
@@ -133,6 +133,16 @@ describe('Command palette', () => {
     expect(getOpenPanel()).toBeNull();
     expect(getOverlay()).toBeNull();
     offs.forEach((off) => off());
+  });
+
+  it('session rows start with the project name, and typing the project name filters to its sessions', async () => {
+    mountWp5();
+    const input = await open();
+    expect(labels().some((l) => l.includes('billing-api › '))).toBe(true);
+    await userEvent.type(input, 'billing-api');
+    const rows = labels().filter((l) => l.includes(' › '));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((l) => l.includes('billing-api › '))).toBe(true);
   });
 
   it('filters by label or hint and reports no matches', async () => {
