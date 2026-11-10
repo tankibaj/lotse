@@ -167,6 +167,20 @@ describe('TerminalView', () => {
     expect(key({ key: 'a' })).toBe(true);
   });
 
+  it('sends Shift+Enter as ESC CR (a new line) instead of a submitting \\r', async () => {
+    const write = vi.spyOn(client, 'writePty');
+    mount();
+    await waitFor(() => expect(FakeTerminal.last.text).toContain('Claude Code'));
+    const handle = FakeTerminal.last.keyHandler;
+    expect(handle?.(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true }))).toBe(false);
+    expect(Array.from(write.mock.calls[0]?.[1] ?? [])).toEqual([0x1b, 13]);
+    // keyup and the other Enter chords are left alone
+    expect(handle?.(new KeyboardEvent('keyup', { key: 'Enter', shiftKey: true }))).toBe(false);
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(handle?.(new KeyboardEvent('keydown', { key: 'Enter' }))).toBe(true);
+    expect(handle?.(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, altKey: true }))).toBe(true);
+  });
+
   it('routes OSC 8 hyperlinks through openExternal: ⌘-click on http(s) only', () => {
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     mount();

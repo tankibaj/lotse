@@ -29,6 +29,8 @@ export interface TerminalViewProps {
   onFocus?: () => void;
 }
 
+/** Escape + carriage return: Alt+Enter, which prompts take as "insert a newline". */
+const SHIFT_ENTER = '\x1b\r';
 const SCROLLBACK_LINES = 10_000;
 const encoder = new TextEncoder();
 /** ⌘C / ⌘V / ⌘A / ⌘X stay with xterm (copy, paste, select all); every other ⌘ combo belongs to the app. */
@@ -109,6 +111,15 @@ export function TerminalView({
         if (e.type === 'keydown' && t.textarea) {
           e.preventDefault();
           moveFocusOut(t.textarea, e.shiftKey ? -1 : 1);
+        }
+        return false;
+      }
+      // Shift+Enter: a new line in the prompt, not a submit (xterm sends a plain \r). ESC + CR is what Claude Code
+      // and most TUIs read as "newline", like iTerm2 with Shift+Enter mapped to it.
+      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (e.type === 'keydown') {
+          e.preventDefault();
+          t.input(SHIFT_ENTER);
         }
         return false;
       }

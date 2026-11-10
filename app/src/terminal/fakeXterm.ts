@@ -66,6 +66,11 @@ export class FakeTerminal {
     return { dispose: () => (this.resize = this.resize.filter((x) => x !== l)) };
   }
 
+  /** Like xterm's `input`: as if typed, so it reaches `onData`. */
+  input(data: string): void {
+    this.type(data);
+  }
+
   // --- test helpers
   type(text: string): void {
     this.data.forEach((l) => l(text));
