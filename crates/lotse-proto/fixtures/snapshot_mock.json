@@ -88,7 +88,8 @@
           },
           "appearance": { "theme": "auto", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
           "scrollback_bytes": 4194304,
-          "external": { "pr_status": false, "mcp_live": false }
+          "external": { "pr_status": false, "mcp_live": false },
+          "agents_start_sessions_without_asking": false
         },
         "usage": { "input_tokens": 52000, "output_tokens": 38000, "cache_read_tokens": 300000, "cache_write_tokens": 22000, "cost_micros": 4180000 }
       }

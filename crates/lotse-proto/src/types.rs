@@ -493,6 +493,10 @@ pub struct Settings {
     /// Since proto 4.
     #[serde(default)]
     pub external: ExternalSettings,
+    /// "Agents may start sessions without asking": an agent's `lotse_start_session` skips the
+    /// approval card. Off by default. Since proto 5.
+    #[serde(default)]
+    pub agents_start_sessions_without_asking: bool,
 }
 
 impl Default for Settings {
@@ -503,6 +507,7 @@ impl Default for Settings {
             appearance: AppearanceSettings::default(),
             scrollback_bytes: 4 * 1024 * 1024,
             external: ExternalSettings::default(),
+            agents_start_sessions_without_asking: false,
         }
     }
 }

@@ -44,7 +44,8 @@
     },
     "appearance": { "theme": "light", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
     "scrollback_bytes": 4194304,
-    "external": { "pr_status": false, "mcp_live": false }
+    "external": { "pr_status": false, "mcp_live": false },
+    "agents_start_sessions_without_asking": false
   } } },
   { "type": "event", "body": { "event": "workspace_added", "data": { "id": "w2", "name": "Client work" } } },
   { "type": "event", "body": { "event": "workspace_updated", "data": { "id": "w2", "name": "Clients" } } },
@@ -78,5 +79,6 @@
   { "type": "event", "body": { "event": "session_start_requested", "data": {
     "id": "7d1e3b52-4c0a-4a5e-8c55-2f7a9d6e0b13", "parent_session": "a1", "project_id": "p1", "agent": "claude_code",
     "title": "Write the migration", "prompt": "Add the V43 Flyway migration", "worktree": { "branch": "lotse/v43" }, "at": 1793610890000
-  } } }
+  } } },
+  { "type": "event", "body": { "event": "session_start_withdrawn", "data": { "id": "7d1e3b52-4c0a-4a5e-8c55-2f7a9d6e0b13" } } }
 ]

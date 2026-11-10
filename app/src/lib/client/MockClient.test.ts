@@ -628,6 +628,28 @@ describe('proto 5: mod data and child sessions', () => {
     await expect(c.resolveSessionStart('nope', false)).rejects.toMatchObject({ code: 'not_found' });
   });
 
+  it('M0b: agents_start_sessions_without_asking is off by default and round-trips through updateSettings', async () => {
+    const c = make();
+    const events = collect(c);
+    const s = await c.getSettings();
+    expect(s.agents_start_sessions_without_asking).toBe(false);
+    expect((await c.getSnapshot()).settings.agents_start_sessions_without_asking).toBe(false);
+    await c.updateSettings({ ...s, agents_start_sessions_without_asking: true });
+    expect((await c.getSettings()).agents_start_sessions_without_asking).toBe(true);
+    expect(events.at(-1)).toMatchObject({ event: 'settings_changed', data: { agents_start_sessions_without_asking: true } });
+  });
+
+  it('M0b: withdrawSessionStart closes the card with session_start_withdrawn; the request can no longer be answered', async () => {
+    const c = make();
+    const id = c.requestSessionStart({ parent_session: 'a1', project_id: 'p1', agent: 'codex', title: null, prompt: 'x', worktree: null });
+    const events = collect(c);
+    c.withdrawSessionStart(id);
+    expect(events).toEqual([{ event: 'session_start_withdrawn', data: { id } }]);
+    await expect(c.resolveSessionStart(id, true)).rejects.toMatchObject({ code: 'not_found' });
+    expect(() => c.withdrawSessionStart(id)).toThrow(); // nothing left to withdraw
+    expect(events).toHaveLength(1);
+  });
+
   it('modAttached is cleared when the session closes and when the link drops or returns', async () => {
     const c = make();
     const events = collect(c);
