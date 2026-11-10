@@ -10,6 +10,7 @@ import { useDialogFocus } from '../sheets/ui';
 import { onMenuSettings } from './appMenu';
 import { applyAppearance } from './appearance';
 import { resetInstalledFonts } from './fonts';
+import { ChildSessionsSetting } from './ChildSessionsSetting';
 import { AgentsSection, AppearanceSection, NotificationsSection, PrivacySection, RemoteSection, ShortcutsSection } from './sections';
 import { useSettings } from './useSettings';
 
@@ -70,6 +71,7 @@ function SettingsView({ initial }: { initial: SettingsSection }) {
         <div className="mx-auto max-w-[680px] px-8 py-8">
           {draft.error && <div role="alert" className="mb-4 text-[12px] text-red">{draft.error}</div>}
           {section === 'Agents' && <AgentsSection draft={draft} />}
+          {section === 'Agents' && <ChildSessionsSetting draft={draft} />}
           {section === 'Notifications' && <NotificationsSection draft={draft} />}
           {section === 'Appearance' && <AppearanceSection draft={draft} />}
           {section === 'Remote' && <RemoteSection />}

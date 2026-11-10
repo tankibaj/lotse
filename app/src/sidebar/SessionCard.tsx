@@ -21,6 +21,13 @@ export interface SessionCardProps {
   selected: boolean;
   /** Coarse clock (changes only when a visible label changes). */
   now: number;
+  /** Title of the session that started this one (proto 5 `parent_session`): the card sits under it, "started by …". */
+  startedBy?: string;
+  /** Indent under the parent card. */
+  child?: boolean;
+  /** Children of this session that are done / failed: the badge. */
+  childrenDone?: number;
+  childrenFailed?: number;
   renaming: boolean;
   /** An Allow / Always / Deny is on its way to the daemon. */
   answering: boolean;
@@ -40,7 +47,7 @@ const mmss = (ms: number) => {
   return t >= 60 ? `${Math.floor(t / 60)}m ${String(t % 60).padStart(2, '0')}s` : `${t}s`;
 };
 
-function SessionCardImpl({ session: s, project, selected, now, renaming, answering, onSelect, onMenu, onResolve, onRetry, onRename, onCancelRename }: SessionCardProps) {
+function SessionCardImpl({ session: s, project, selected, now, startedBy, child, childrenDone = 0, childrenFailed = 0, renaming, answering, onSelect, onMenu, onResolve, onRetry, onRename, onCancelRename }: SessionCardProps) {
   const title = s.title || AGENT_LABEL[s.agent];
   const agent = AGENT_LABEL[s.agent];
   const age = sessionAge(s, now);
@@ -83,7 +90,7 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
       data-session-id={s.id}
       draggable
       aria-current={selected ? 'true' : undefined}
-      className={`group @container ml-4 mr-1 cursor-pointer rounded-md px-2 py-1.5 text-left has-focus-visible:ring-2 has-focus-visible:ring-blue ${
+      className={`group @container ${child ? 'ml-8' : 'ml-4'} mr-1 cursor-pointer rounded-md px-2 py-1.5 text-left has-focus-visible:ring-2 has-focus-visible:ring-blue ${
         selected ? 'bg-sel' : 'hover:bg-black/5 dark:hover:bg-white/5'
       }`}
       onClick={() => onSelect(s.id)}
@@ -177,6 +184,26 @@ function SessionCardImpl({ session: s, project, selected, now, renaming, answeri
             {agent}
           </span>
           {hint}
+        </div>
+      )}
+
+      {startedBy !== undefined && (
+        <div data-part="started-by" className="truncate pl-[22px] text-[11px] text-dim" title={`Started by ${startedBy}`}>
+          started by {startedBy}
+        </div>
+      )}
+      {(childrenDone > 0 || childrenFailed > 0) && (
+        <div data-part="child-badge" className="flex min-w-0 items-center gap-2 truncate pl-[22px] text-[11px]">
+          {childrenFailed > 0 && (
+            <span className="text-red" title="A child session failed">
+              ✕ {childrenFailed} child{childrenFailed === 1 ? '' : 'ren'} failed
+            </span>
+          )}
+          {childrenDone > 0 && (
+            <span className="text-green" title="A child session is done">
+              ✓ {childrenDone} child{childrenDone === 1 ? '' : 'ren'} done
+            </span>
+          )}
         </div>
       )}
 

@@ -335,6 +335,77 @@ fn a_session_one_two_levels_down_cannot_start_another() {
 }
 
 #[test]
+fn closing_the_parent_detaches_its_children_and_withdraws_its_open_cards() {
+    let mut r = rig();
+    let parent = agent_session(&mut r.app, &r.project);
+    let kid = child_of(&mut r, &parent);
+    assert_eq!(kid.parent_session.as_ref(), Some(&parent.id));
+    // an open card of the parent
+    let mut agent = mcp(&r.d, &parent.id);
+    let pending = agent.send(start_request(&r.project, "second"));
+    let (card_id, _) = card(&mut r.app);
+    r.app.expect_ok(Request::CloseSession {
+        session_id: parent.id.clone(),
+    });
+    let e = r
+        .app
+        .wait_event(|e| matches!(e, Event::SessionStartWithdrawn { .. }));
+    assert!(matches!(e, Event::SessionStartWithdrawn { id } if id == card_id));
+    assert_eq!(error_code(agent.response(pending)), ErrorCode::Unavailable);
+    let e = r.app.wait_event(
+        |e| matches!(e, Event::SessionUpdated(s) if s.id == kid.id && s.parent_session.is_none()),
+    );
+    assert!(matches!(e, Event::SessionUpdated(_)));
+    let kid_now = sessions(&mut r.app)
+        .into_iter()
+        .find(|s| s.id == kid.id)
+        .unwrap();
+    assert_eq!(kid_now.parent_session, None, "a top-level session now");
+}
+
+#[test]
+fn a_card_that_timed_out_or_whose_agent_left_is_withdrawn_for_the_app() {
+    let mut r = rig();
+    let parent = agent_session(&mut r.app, &r.project);
+    let mut agent = mcp(&r.d, &parent.id);
+    agent.send(start_request(&r.project, "x"));
+    let (card_id, _) = card(&mut r.app);
+    drop(agent);
+    let e = r
+        .app
+        .wait_event(|e| matches!(e, Event::SessionStartWithdrawn { .. }));
+    assert!(matches!(e, Event::SessionStartWithdrawn { id } if id == card_id));
+}
+
+#[test]
+fn with_the_toggle_on_a_start_in_the_parents_project_needs_no_card() {
+    let mut r = rig();
+    let parent = agent_session(&mut r.app, &r.project);
+    let Response::Settings(mut s) = r.app.request(Request::GetSettings) else {
+        panic!("settings")
+    };
+    assert!(!s.agents_start_sessions_without_asking, "off by default");
+    s.agents_start_sessions_without_asking = true;
+    assert!(matches!(
+        r.app.request(Request::UpdateSettings { settings: s }),
+        Response::Settings(_)
+    ));
+    let mut agent = mcp(&r.d, &parent.id);
+    let Response::Session(kid) = agent.request(start_request(&r.project, "go")) else {
+        panic!("started without a card")
+    };
+    assert_eq!(kid.parent_session.as_ref(), Some(&parent.id));
+    r.app.drain(Duration::from_millis(300));
+    assert!(
+        !r.app
+            .events
+            .iter()
+            .any(|e| matches!(e, Event::SessionStartRequested { .. })),
+        "no card"
+    );
+}
+
+#[test]
 fn at_most_five_live_children() {
     let mut r = rig();
     let parent = agent_session(&mut r.app, &r.project);
