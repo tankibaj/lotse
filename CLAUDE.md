@@ -21,7 +21,7 @@ cargo test --workspace
 cd app && npm ci
 cd app && npm run lint && npm run typecheck && npx vitest run && npm run build
 ```
-CI (`.github/workflows/ci.yml`, macos-14) runs exactly these.
+CI (`.github/workflows/ci.yml`, macos-26) runs exactly these.
 
 Alpha build and audits (not in CI):
 ```sh

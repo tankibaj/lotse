@@ -48,7 +48,7 @@ jobs:
   release:
     needs: check
     if: needs.check.outputs.needed == 'true'
-    runs-on: macos-14
+    runs-on: macos-26
     timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
