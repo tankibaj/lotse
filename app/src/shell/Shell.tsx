@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { Palette } from '../palette';
 import { Panes, TabStrip } from '../panes';
@@ -32,6 +32,10 @@ const SIDE_KEY = 'lotse-side';
 const STATUSBAR_KEY = 'lotse-statusbar';
 const TOPBAR_LOCK_KEY = 'lotse-topbar-lock';
 const SIDE_RIGHT_KEY = 'lotse-side-right';
+/** Full screen: how long the top bar stays after the pointer leaves it. */
+const HIDE_DELAY_MS = 400;
+/** Full screen in the app: the revealed bar sits below macOS's own title bar, which covers the top 32 px. */
+const NATIVE_TITLEBAR = 'translate-y-8';
 const SIDE_MIN = 200;
 const SIDE_MAX = 420;
 const SIDE_DEFAULT = 260;
@@ -114,12 +118,24 @@ function PanelToolbar() {
 function TopBarZone({ children }: { children: (peek: boolean) => ReactNode }) {
   const [hover, setHover] = useState(false);
   const [focusIn, setFocusIn] = useState(false);
+  // macOS slides its own title bar (and menu bar) over the window's top edge, which takes the pointer from the
+  // webview for a moment: the bar waits a little before it hides, so the pointer can cross it to reach the bar.
+  const leaveTimer = useRef<number>(0);
+  useEffect(() => () => window.clearTimeout(leaveTimer.current), []);
+  const enter = () => {
+    window.clearTimeout(leaveTimer.current);
+    setHover(true);
+  };
+  const leave = () => {
+    window.clearTimeout(leaveTimer.current);
+    leaveTimer.current = window.setTimeout(() => setHover(false), HIDE_DELAY_MS);
+  };
   return (
     <div
       className="relative z-30 h-1.5 shrink-0"
       data-testid="topbar-hover"
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
       onFocusCapture={() => setFocusIn(true)}
       onBlurCapture={() => setFocusIn(false)}
     >
@@ -218,27 +234,31 @@ export function Shell() {
     addEventListener('pointerup', up);
   };
 
+  // The button that brings the sidebar back sits on the side the sidebar belongs to.
+  const showSidebarButton = (extra: string) => (
+    <button className={`${iconButton} ${extra}`} aria-label="Show sidebar" title="Show sidebar ⌃⌘S" onClick={toggleSidebar}>
+      <SidebarIcon />
+    </button>
+  );
+
   const renderTopBar = (peek: boolean) => (
     <div
       className={`flex h-11 items-center border-b pt-px ${lightsInMain ? 'gap-2 px-3' : 'gap-1 px-2'} ${
         fullscreen ? 'absolute inset-x-0 top-0 bg-win shadow-lg transition-transform duration-150' : 'shrink-0'
-      } ${fullscreen && !peek ? '-translate-y-full' : ''}`}
+      } ${fullscreen ? (peek ? (inTauri() ? NATIVE_TITLEBAR : '') : '-translate-y-full') : ''}`}
       data-tauri-drag-region="deep"
     >
       {lightsInMain && (
         <>
           {!isFullscreen && <WindowControls />}
-          {hidden && (
-            <button className={`${iconButton} ${isFullscreen ? '' : 'ml-2'}`} aria-label="Show sidebar" title="Show sidebar ⌃⌘S" onClick={toggleSidebar}>
-              <SidebarIcon />
-            </button>
-          )}
+          {hidden && !sideRight && showSidebarButton(isFullscreen ? '' : 'ml-2')}
         </>
       )}
       <div data-slot="tabs" className="flex min-w-0 flex-1 items-center gap-1 self-stretch">
         <TabStrip />
       </div>
       <PanelToolbar />
+      {hidden && sideRight && showSidebarButton('')}
     </div>
   );
 

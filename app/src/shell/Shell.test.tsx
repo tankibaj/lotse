@@ -52,6 +52,23 @@ describe('Shell', () => {
     fireEvent(window, new MouseEvent('pointerup'));
   });
 
+  it('keeps the show-sidebar button on the right when the hidden sidebar belongs there', async () => {
+    localStorage.setItem('lotse-side-right', '1');
+    const { container } = mount();
+    await userEvent.click(screen.getByRole('button', { name: /Hide sidebar/ }));
+    const bar = container.querySelector('[data-slot="tabs"]')?.parentElement as HTMLElement;
+    const show = screen.getByRole('button', { name: 'Show sidebar' });
+    expect(bar.lastElementChild).toBe(show);
+  });
+
+  it('shows it on the left for a left sidebar', async () => {
+    const { container } = mount();
+    await userEvent.click(screen.getByRole('button', { name: /Hide sidebar/ }));
+    const tabs = container.querySelector('[data-slot="tabs"]') as HTMLElement;
+    const show = screen.getByRole('button', { name: 'Show sidebar' });
+    expect(show.compareDocumentPosition(tabs) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // before the tabs
+  });
+
   describe('full screen', () => {
     const setFullscreen = (on: boolean) => {
       Object.defineProperty(document, 'fullscreenElement', { value: on ? document.body : null, configurable: true });
@@ -69,7 +86,7 @@ describe('Shell', () => {
       await userEvent.hover(zone);
       expect(bar).not.toHaveClass('-translate-y-full');
       await userEvent.unhover(zone);
-      expect(bar).toHaveClass('-translate-y-full');
+      await waitFor(() => expect(bar).toHaveClass('-translate-y-full')); // after a short grace period
     });
 
     it('forgets a hover that ended without a mouseleave (lock toggled under the pointer)', async () => {
