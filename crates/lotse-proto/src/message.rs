@@ -551,6 +551,11 @@ pub enum Event {
         worktree: Option<WorktreeSpec>,
         at: UnixMs,
     },
+    /// The approval card for `id` is withdrawn: the asking agent gave up or its session closed.
+    /// Since proto 5.
+    SessionStartWithdrawn {
+        id: String,
+    },
 }
 
 impl Event {
@@ -574,6 +579,7 @@ impl Event {
         "notification",
         "mod_command",
         "session_start_requested",
+        "session_start_withdrawn",
     ];
 
     pub fn name(&self) -> &'static str {
@@ -597,6 +603,7 @@ impl Event {
             Event::Notification { .. } => "notification",
             Event::ModCommand { .. } => "mod_command",
             Event::SessionStartRequested { .. } => "session_start_requested",
+            Event::SessionStartWithdrawn { .. } => "session_start_withdrawn",
         }
     }
 }

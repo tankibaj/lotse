@@ -976,6 +976,36 @@ mod tests {
         assert_eq!(db.load_settings().unwrap(), s);
     }
 
+    #[test]
+    fn stored_settings_without_the_child_session_flag_load_as_off() {
+        let db = Db::open_in_memory().unwrap();
+        let mut old = serde_json::to_value(Settings::default()).unwrap();
+        old.as_object_mut()
+            .unwrap()
+            .remove("agents_start_sessions_without_asking")
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('settings', ?1)",
+                [old.to_string()],
+            )
+            .unwrap();
+        assert!(
+            !db.load_settings()
+                .unwrap()
+                .agents_start_sessions_without_asking
+        );
+
+        let mut s = Settings::default();
+        s.agents_start_sessions_without_asking = true;
+        db.save_settings(&s).unwrap();
+        assert!(
+            db.load_settings()
+                .unwrap()
+                .agents_start_sessions_without_asking
+        );
+    }
+
     fn ws(id: &str, name: &str) -> Workspace {
         Workspace {
             id: WorkspaceId::new(id),

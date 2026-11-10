@@ -320,6 +320,24 @@ fn v5_messages_have_the_documented_wire_shape() {
     );
 }
 
+/// M0b: the child-session setting and the withdrawn card are additive within proto 5.
+#[test]
+fn m0b_setting_and_withdrawn_event() {
+    use serde_json::json;
+    assert!(!Settings::default().agents_start_sessions_without_asking);
+    assert_eq!(
+        serde_json::to_value(Settings::default()).unwrap()["agents_start_sessions_without_asking"],
+        json!(false)
+    );
+
+    let ev = Event::SessionStartWithdrawn { id: "r-1".into() };
+    assert_eq!(ev.name(), "session_start_withdrawn");
+    assert!(Event::NAMES.contains(&"session_start_withdrawn"));
+    let wire = json!({"event": "session_start_withdrawn", "data": {"id": "r-1"}});
+    assert_eq!(serde_json::to_value(&ev).unwrap(), wire);
+    assert_eq!(serde_json::from_value::<Event>(wire).unwrap(), ev);
+}
+
 /// A v4-shaped message, without any field v5 added, still parses and takes the defaults.
 #[test]
 fn v4_shaped_json_without_the_new_fields_still_parses() {

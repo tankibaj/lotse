@@ -34,7 +34,8 @@ pub use types::*;
 /// 5: Mod and child sessions. `SubAgent` parent / activity / tokens / cost_usd / model / background;
 ///    `Session` context_pct / source_layer / parent_session / todo; `UsageToday::rate_limits`;
 ///    `NewSession` parent_session / requested_by_agent; `DetectSource::Mod`; requests `mod_attach`,
-///    `resolve_session_start`; events `mod_command`, `session_start_requested`. All additive.
+///    `resolve_session_start`; events `mod_command`, `session_start_requested`, `session_start_withdrawn`;
+///    `Settings::agents_start_sessions_without_asking`. All additive.
 pub const PROTO_VERSION: u32 = 5;
 
 #[cfg(test)]

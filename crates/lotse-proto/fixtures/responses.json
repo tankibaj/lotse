@@ -35,7 +35,8 @@
     },
     "appearance": { "theme": "auto", "interface_font": "System (SF Pro)", "interface_font_size": 13, "terminal_font": "SF Mono", "terminal_font_size": 13 },
     "scrollback_bytes": 4194304,
-    "external": { "pr_status": false, "mcp_live": false }
+    "external": { "pr_status": false, "mcp_live": false },
+    "agents_start_sessions_without_asking": false
   } } } },
   { "type": "response", "body": { "req_id": 24, "response": { "kind": "launch_commands", "data": [
     { "agent": "terminal", "default_command": "$SHELL -l", "command": "$SHELL -l", "found": true, "resolved_path": "/bin/zsh", "version": "zsh 5.9", "integration": null },

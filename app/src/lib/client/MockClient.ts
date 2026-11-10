@@ -890,6 +890,12 @@ export class MockClient implements DaemonClient {
     return id;
   }
 
+  /** The asking agent gave up (or its session closed): drops the open request and emits `session_start_withdrawn`. */
+  withdrawSessionStart(id: string): void {
+    if (!this.startRequests.delete(id)) throw new DaemonError({ code: 'not_found', message: `no session start request ${id}` });
+    this.emit({ event: 'session_start_withdrawn', data: { id } });
+  }
+
   async resolveSessionStart(id: string, approve: boolean): Promise<void> {
     const req = this.startRequests.get(id);
     if (!req) throw new DaemonError({ code: 'not_found', message: `no session start request ${id}` });

@@ -177,6 +177,11 @@ describe('reduceEvent', () => {
     const after = reduceEvent(before, { event: 'sub_agent_status', data: { session_id: 'zzz', sub_agent_id: 'x', status: 'done' } });
     expect(after).toBe(before);
   });
+
+  it('leaves the workspace state alone for session_start_withdrawn (proto 5, approval card only)', async () => {
+    const before = await base();
+    expect(reduceEvent(before, { event: 'session_start_withdrawn', data: { id: 'start-1' } })).toBe(before);
+  });
 });
 
 describe('workspace store', () => {

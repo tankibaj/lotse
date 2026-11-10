@@ -34,7 +34,8 @@
     },
     "appearance": { "theme": "dark", "interface_font": "Inter", "interface_font_size": 14, "terminal_font": "JetBrains Mono", "terminal_font_size": 15 },
     "scrollback_bytes": 8388608,
-    "external": { "pr_status": true, "mcp_live": true }
+    "external": { "pr_status": true, "mcp_live": true },
+    "agents_start_sessions_without_asking": true
   } } } } },
   { "type": "request", "body": { "req_id": 24, "request": { "method": "detect_launch_commands" } } },
   { "type": "request", "body": { "req_id": 25, "request": { "method": "get_git_info", "params": { "project_id": "p1", "session_id": "a1" } } } },

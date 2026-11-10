@@ -245,6 +245,8 @@ export interface Settings {
   appearance: AppearanceSettings;
   scrollback_bytes: number;
   external: ExternalSettings;
+  /** "Agents may start sessions without asking": a child-session request skips the approval card. Off by default (proto 5). */
+  agents_start_sessions_without_asking: boolean;
 }
 
 export interface DaemonInfo {
@@ -667,7 +669,9 @@ export type DaemonEvent =
         worktree: WorktreeSpec | null;
         at: UnixMs;
       };
-    };
+    }
+  /** The approval card for `id` is withdrawn: the asking agent gave up or its session closed (proto 5). */
+  | { event: 'session_start_withdrawn'; data: { id: string } };
 
 export type Message =
   | { type: 'hello'; body: Hello }
