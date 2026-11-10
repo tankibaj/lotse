@@ -1,9 +1,10 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { ReactNode } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient } from '../client';
 import type { DaemonEvent } from '../client/types';
 import { getSelectedSessionId, selectSession } from '../ui/selection';
+import { PERM_SHOW_DELAY } from './store';
 import { getStore, INITIAL_STATE, reduceEvent, resetUiState, subscribeNeedYouCount, useWorkspace } from './index';
 import type { WorkspaceState } from './index';
 
@@ -232,5 +233,45 @@ describe('workspace store', () => {
     await act(() => client.resolvePermission('a3', 'allow'));
     expect(counts).toEqual([2, 1]);
     off();
+  });
+});
+
+describe('permission delay', () => {
+  const setup = async () => {
+    selectSession(null);
+    resetUiState();
+    const client = new MockClient({ script: false });
+    const hook = renderHook(() => useWorkspace(), { wrapper: wrapper(client) });
+    await waitFor(() => expect(hook.result.current.loaded).toBe(true));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); // after the load: waitFor needs real timers
+    PERM_SHOW_DELAY.ms = 2500;
+    return { client, ...hook };
+  };
+  afterEach(() => {
+    PERM_SHOW_DELAY.ms = 0;
+    vi.useRealTimers();
+  });
+
+  it('keeps the old status for a request that closes within the delay (an auto-approved command)', async () => {
+    const { client, result } = await setup();
+    act(() => client.setStatus('a2', 'run'));
+    act(() => client.setStatus('a2', 'perm', perm));
+    expect(statusOf(result, 'a2')).toBe('run');
+    act(() => vi.advanceTimersByTime(1500));
+    act(() => client.setStatus('a2', 'run'));
+    act(() => vi.advanceTimersByTime(5000));
+    expect(statusOf(result, 'a2')).toBe('run');
+  });
+
+  it('shows a request that stays open, with its summary, once the delay is over', async () => {
+    const { client, result } = await setup();
+    act(() => client.setStatus('a2', 'run'));
+    act(() => client.setStatus('a2', 'perm', perm));
+    act(() => vi.advanceTimersByTime(2000));
+    act(() => client.setStatus('a2', 'perm', { tool: 'Bash', summary: 'rm -rf build' })); // updated: the clock keeps running
+    expect(statusOf(result, 'a2')).toBe('run');
+    act(() => vi.advanceTimersByTime(600));
+    expect(statusOf(result, 'a2')).toBe('perm');
+    expect(result.current.sessions.find((s) => s.id === 'a2')?.perm?.summary).toBe('rm -rf build');
   });
 });

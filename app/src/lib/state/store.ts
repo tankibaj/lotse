@@ -112,6 +112,13 @@ export function reduceEvent(state: WorkspaceState, e: DaemonEvent): WorkspaceSta
   }
 }
 
+/**
+ * A permission request shows only once it has stayed open this long. In auto mode Claude Code approves
+ * every command itself, but still signals one: each lasts a second or two and would flash ⚠ between
+ * spins. A real prompt waits for you far longer. 0 shows it at once (tests).
+ */
+export const PERM_SHOW_DELAY = { ms: 2500 };
+
 export class WorkspaceStore {
   private state: WorkspaceState = INITIAL_STATE;
   private readonly listeners = new Set<() => void>();
@@ -119,6 +126,8 @@ export class WorkspaceStore {
   /** Events that arrive while a snapshot is in flight; replayed on top of it. */
   private queue: DaemonEvent[] | null = null;
   private generation = 0;
+  /** A `status_changed` to `perm` that is waiting out `PERM_SHOW_DELAY`, per session. */
+  private readonly heldPerm = new Map<SessionId, { event: DaemonEvent; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(private readonly client: DaemonClient) {}
 
@@ -142,7 +151,7 @@ export class WorkspaceStore {
       w.__lotse = { ...w.__lotse, client: this.client };
     }
     this.stops = [
-      this.client.onEvent((e) => (this.queue ? this.queue.push(e) : this.commit(reduceEvent(this.state, e)))),
+      this.client.onEvent((e) => (this.queue ? this.queue.push(e) : this.onEvent(e))),
       this.client.onConnection((c) => {
         if (c === 'disconnected') this.commit({ ...this.state, connection: 'disconnected' });
         else void this.load(); // connected / reconnected: events were missed, refetch
@@ -152,9 +161,42 @@ export class WorkspaceStore {
     void this.load();
   }
 
+  /** Apply a live event; a new permission request waits `PERM_SHOW_DELAY`, and any newer status for the session cancels it. */
+  private onEvent(e: DaemonEvent): void {
+    if (e.event === 'status_changed') {
+      const id = e.data.session_id;
+      const held = this.heldPerm.get(id);
+      if (e.data.status === 'perm' && PERM_SHOW_DELAY.ms > 0) {
+        if (held) {
+          held.event = e; // the same request, updated: keep the clock running
+          return;
+        }
+        if (this.state.sessions.some((s) => s.id === id && s.status !== 'perm')) {
+          const timer = setTimeout(() => {
+            const due = this.heldPerm.get(id);
+            this.heldPerm.delete(id);
+            if (due) this.commit(reduceEvent(this.state, due.event));
+          }, PERM_SHOW_DELAY.ms);
+          this.heldPerm.set(id, { event: e, timer });
+          return;
+        }
+      }
+      this.dropHeld(id);
+    }
+    this.commit(reduceEvent(this.state, e));
+  }
+
+  private dropHeld(id: SessionId): void {
+    const held = this.heldPerm.get(id);
+    if (!held) return;
+    clearTimeout(held.timer);
+    this.heldPerm.delete(id);
+  }
+
   private stop(): void {
     this.generation++;
     this.queue = null;
+    for (const id of [...this.heldPerm.keys()]) this.dropHeld(id);
     this.stops.forEach((f) => f());
     this.stops = [];
   }
@@ -162,6 +204,7 @@ export class WorkspaceStore {
   private async load(): Promise<void> {
     const gen = ++this.generation;
     this.queue = [];
+    for (const id of [...this.heldPerm.keys()]) this.dropHeld(id); // the snapshot says where things stand
     try {
       const snap = await this.client.getSnapshot();
       if (gen !== this.generation) return;
