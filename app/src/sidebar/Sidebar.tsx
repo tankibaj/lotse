@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FolderGit2, Plus } from 'lucide-react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useClient } from '../lib/client/context';
 import type { PermDecision, ProjectId, SessionId } from '../lib/client/types';
@@ -8,6 +9,7 @@ import {
   groupSessions,
   groupWorkspaces,
   needYouCount,
+  shortBranch,
   timeSignature,
   toggleCollapsed,
   toggleNeedFilter,
@@ -25,6 +27,7 @@ import { childOutcome, nestChildren } from './children';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu } from './ContextMenu';
 import { projectMenu, sessionMenu, workspaceMenu } from './menus';
+import { groupByCheckout } from './checkouts';
 import { ProjectRow } from './ProjectRow';
 import { SessionCard } from './SessionCard';
 import { WorkspaceNameDialog } from './WorkspaceNameDialog';
@@ -226,15 +229,19 @@ export function Sidebar() {
     return p ? p.title || AGENT_LABEL[p.agent] : undefined;
   };
 
-  /** One project: its row, the "No sessions" hint and its cards. */
+  /** One project: its row, the new-session row of an empty project, and its cards. */
   const renderProject = ({ project, sessions: list }: ProjectGroup) => {
     const open = filterOn || !collapsed.has(project.id);
+    // One checkout (the common case): its branch and changes sit on the project row. More: each worktree gets a header.
+    const checkouts = groupByCheckout(list, (x) => nested.has(x.id));
+    const mainCheckout = checkouts.find((g) => g.main);
     return (
-      <div key={project.id} className="space-y-0.5" data-project={project.id}>
+      <div key={project.id} className="mt-3 space-y-0.5 first:mt-0" data-project={project.id}>
         <ProjectRow
           project={project}
           sessions={list}
           open={open}
+          main={mainCheckout?.summary ? { branch: mainCheckout.branch, ...mainCheckout.summary } : null}
           renaming={renaming?.kind === 'project' && renaming.id === project.id}
           onToggle={onToggle}
           onMenu={onProjectMenu}
@@ -242,41 +249,65 @@ export function Sidebar() {
           onCancelRename={cancelRename}
         />
         {open && list.length === 0 && (
-          <div className="py-1 pl-[38px] text-[12px] text-dim">
-            No sessions ·{' '}
+          // an empty project needs no message: one quiet action, lined up with where its session cards would be
+          <div className="ml-3">
             <button
-              className="text-blue"
+              className="ml-3 mr-1 flex w-[calc(100%-1rem)] items-center gap-1.5 rounded-md px-2 py-1 text-left text-[12px] text-dim hover:bg-black/5 hover:text-blue dark:hover:bg-white/5"
               aria-haspopup="menu"
               onClick={(e) => {
                 const r = e.currentTarget.getBoundingClientRect();
                 setMenu({ kind: 'newSession', id: project.id, x: r.left, y: r.bottom + 4 });
               }}
             >
+              <Plus size={12} strokeWidth={2} aria-hidden="true" />
               New session
             </button>
           </div>
         )}
         {open &&
-          list.map((s) => (
-            <SessionCard
-              key={s.id}
-              session={s}
-              project={project}
-              selected={s.id === selectedId}
-              now={now}
-              child={nested.has(s.id)}
-              startedBy={startedBy(s.parent_session)}
-              childrenDone={outcomes.get(s.id)?.done}
-              childrenFailed={outcomes.get(s.id)?.fail}
-              renaming={renaming?.kind === 'session' && renaming.id === s.id}
-              answering={answering.has(s.id)}
-              onSelect={onSelect}
-              onMenu={onSessionMenu}
-              onResolve={onResolve}
-              onRetry={onRetry}
-              onRename={onRenameSession}
-              onCancelRename={cancelRename}
-            />
+          checkouts.map((g) => (
+            <div key={g.key} className="ml-3 space-y-0.5">
+              {!g.main && (
+                // a worktree: its own branch and changes, so its sessions are told apart from the main checkout's
+                <div
+                  data-checkout={g.key}
+                  className="mt-1.5 flex min-w-0 items-center gap-1.5 px-2 text-[11px] text-dim"
+                  title={`Worktree: ${g.sessions[0]?.git.worktree_path ?? g.branch}`}
+                  aria-label={`Worktree ${g.branch}`}
+                >
+                  <FolderGit2 size={12} strokeWidth={2} className="flex-none" aria-hidden="true" />
+                  <span className="min-w-0 truncate font-mono" title={g.branch}>{shortBranch(g.branch)}</span>
+                  {g.summary && g.summary.dirty > 0 && <span className="shrink-0 tabular-nums">±{g.summary.dirty}</span>}
+                  {g.summary && (g.summary.added > 0 || g.summary.removed > 0) && (
+                    <span className="shrink-0 tabular-nums">
+                      <span className="text-green">+{g.summary.added}</span> <span className="text-red">−{g.summary.removed}</span>
+                    </span>
+                  )}
+                </div>
+              )}
+              {g.sessions.map((s, i) => (
+                <SessionCard
+                  key={s.id}
+                  session={s}
+                  project={project}
+                  selected={s.id === selectedId}
+                  now={now}
+                  child={nested.has(s.id)}
+                  lastChild={nested.has(s.id) && !(g.sessions[i + 1] && nested.has(g.sessions[i + 1]?.id ?? ''))}
+                  startedBy={startedBy(s.parent_session)}
+                  childrenDone={outcomes.get(s.id)?.done}
+                  childrenFailed={outcomes.get(s.id)?.fail}
+                  renaming={renaming?.kind === 'session' && renaming.id === s.id}
+                  answering={answering.has(s.id)}
+                  onSelect={onSelect}
+                  onMenu={onSessionMenu}
+                  onResolve={onResolve}
+                  onRetry={onRetry}
+                  onRename={onRenameSession}
+                  onCancelRename={cancelRename}
+                />
+              ))}
+            </div>
           ))}
       </div>
     );

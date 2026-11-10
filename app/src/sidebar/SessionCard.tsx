@@ -1,4 +1,5 @@
-import { FolderGit2, GitBranch, RotateCcw } from 'lucide-react';
+import { Bot, FolderGit2, GitBranch, RotateCcw, Sparkles, SquareTerminal } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { memo } from 'react';
 import type { MouseEvent as ReactMouseEvent } from 'react';
 import type { PermDecision, Project, Session, SessionId } from '../lib/client/types';
@@ -23,8 +24,10 @@ export interface SessionCardProps {
   now: number;
   /** Title of the session that started this one (proto 5 `parent_session`): the card sits under it, "started by …". */
   startedBy?: string;
-  /** Indent under the parent card. */
+  /** Indent under the parent card, joined to it by a line. */
   child?: boolean;
+  /** The last child of its parent: the line ends there. */
+  lastChild?: boolean;
   /** Children of this session that are done / failed: the badge. */
   childrenDone?: number;
   childrenFailed?: number;
@@ -47,7 +50,10 @@ const mmss = (ms: number) => {
   return t >= 60 ? `${Math.floor(t / 60)}m ${String(t % 60).padStart(2, '0')}s` : `${t}s`;
 };
 
-function SessionCardImpl({ session: s, project, selected, now, startedBy, child, childrenDone = 0, childrenFailed = 0, renaming, answering, onSelect, onMenu, onResolve, onRetry, onRename, onCancelRename }: SessionCardProps) {
+/** The agent as a small glyph on the git line: the label would take about 70 px of a narrow line. */
+const AGENT_GLYPH: Record<Session['agent'], LucideIcon> = { terminal: SquareTerminal, claude_code: Sparkles, codex: Bot, opencode: Bot };
+
+function SessionCardImpl({ session: s, project, selected, now, startedBy, child, lastChild = false, childrenDone = 0, childrenFailed = 0, renaming, answering, onSelect, onMenu, onResolve, onRetry, onRename, onCancelRename }: SessionCardProps) {
   const title = s.title || AGENT_LABEL[s.agent];
   const agent = AGENT_LABEL[s.agent];
   const age = sessionAge(s, now);
@@ -74,6 +80,36 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
       </span>
     </>
   ) : null;
+  const AgentGlyph = AGENT_GLYPH[s.agent];
+  const diffstat = hasDiffstat && (
+    <span data-part="diffstat" className="shrink-0 tabular-nums" title="Lines added and removed by the uncommitted changes">
+      <span className="text-green">+{s.git.added ?? 0}</span> <span className="text-red">−{s.git.removed ?? 0}</span>
+    </span>
+  );
+  const context = s.context_pct !== undefined && (
+    <span
+      data-part="context"
+      className={`inline-flex shrink-0 items-center gap-1 tabular-nums ${compactSoon ? 'text-orange' : ''}`}
+      title={`Context window ${clampPct(s.context_pct)}% used${compactSoon ? ': the agent compacts it soon' : ''}`}
+    >
+      <span aria-hidden="true" className="h-1 w-6 overflow-hidden rounded-full bg-line">
+        <span className={`block h-full ${compactSoon ? 'bg-orange' : 'bg-dim'}`} style={{ width: `${clampPct(s.context_pct)}%` }} />
+      </span>
+      <span className="sr-only">ctx </span>
+      {clampPct(s.context_pct)}%
+    </span>
+  );
+  // A tree of one-line rows: the details (agent, branch, changes, context) open on the selected session and on one
+  // that needs you; the others carry them in the tooltip.
+  const expanded = selected || s.status === 'perm' || s.status === 'fail' || answering || noSignal;
+  const detailTitle = [
+    title,
+    [agent, isGit ? shortBranch(s.git.branch || 'HEAD') : ''].filter(Boolean).join(' · '),
+    hasDiffstat ? `+${s.git.added ?? 0} −${s.git.removed ?? 0}` : '',
+    s.context_pct !== undefined ? `ctx ${clampPct(s.context_pct)}%` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
   const timeTitle =
     s.status === 'run' && s.running_since !== null
       ? `Running ${mmss(now - s.running_since)} · details in Usage & time (⇧⌘U)`
@@ -90,7 +126,7 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
       data-session-id={s.id}
       draggable
       aria-current={selected ? 'true' : undefined}
-      className={`group @container ${child ? 'ml-8' : 'ml-4'} mr-1 cursor-pointer rounded-md px-2 py-1.5 text-left has-focus-visible:ring-2 has-focus-visible:ring-blue ${
+      className={`group @container relative ${child ? 'ml-8' : 'ml-3'} mr-1 cursor-pointer rounded-md px-2 py-1.5 text-left has-focus-visible:ring-2 has-focus-visible:ring-blue ${
         selected ? 'bg-sel' : 'hover:bg-black/5 dark:hover:bg-white/5'
       }`}
       onClick={() => onSelect(s.id)}
@@ -104,6 +140,13 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
         e.dataTransfer.effectAllowed = 'copy';
       }}
     >
+      {child && (
+        <>
+          {/* the elbow from the parent's line to this row, and the line down to the next sibling */}
+          <span aria-hidden="true" className="pointer-events-none absolute top-[-3px] -left-[5px] h-5 w-[11px] rounded-bl-md border-b border-l border-line" />
+          {!lastChild && <span aria-hidden="true" className="pointer-events-none absolute top-[17px] -bottom-0.5 -left-[5px] border-l border-line" />}
+        </>
+      )}
       <div className="flex items-center gap-2">
         <StatusGlyph status={displayStatus(s)} label={noSignal ? 'Detecting… no live status yet' : undefined} />
         {renaming ? (
@@ -113,7 +156,7 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
             type="button"
             data-card-main
             className="min-w-0 flex-1 cursor-pointer truncate text-left outline-none"
-            title={title}
+            title={expanded ? title : detailTitle}
             aria-current={selected ? 'true' : undefined}
           >
             {title}
@@ -142,16 +185,16 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
         )}
       </div>
 
-      {isGit ? (
+      {expanded && (isGit ? (
         <div
           data-line="git"
-          className="flex min-w-0 items-center gap-1 pl-[22px] text-[11px] text-dim"
+          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0 pl-[22px] text-[11px] text-dim/80"
           title={s.git.worktree ? `Isolated worktree · ${s.git.worktree_path ?? ''}` : 'Main checkout'}
         >
-          <span data-part="agent" className="shrink-0 whitespace-nowrap" title={sourceTitle}>
-            {agent}
+          <span data-part="agent" className="inline-flex shrink-0 items-center whitespace-nowrap" title={sourceTitle}>
+            <AgentGlyph size={11} strokeWidth={2} aria-hidden="true" />
+            <span className="sr-only">{agent}</span>
           </span>
-          <span className="mx-0.5 shrink-0 opacity-40 @max-[170px]:mx-0">·</span>
           {/* In a very narrow sidebar the branch icon yields first, so the agent and the counts stay whole. */}
           {s.git.worktree ? (
             <FolderGit2 size={11} strokeWidth={2} className="flex-none @max-[170px]:hidden" aria-hidden="true" />
@@ -176,23 +219,26 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
               ±{s.git.dirty}
             </span>
           )}
+          {/* Changes and context share this line while they fit; in a narrow sidebar they wrap below the branch. */}
+          {diffstat}
+          {context}
           {hint}
         </div>
       ) : (
-        <div className="truncate pl-[22px] text-[11px] text-dim">
+        <div className="truncate pl-[22px] text-[11px] text-dim/80">
           <span data-part="agent" title={sourceTitle}>
             {agent}
           </span>
           {hint}
         </div>
-      )}
+      ))}
 
-      {startedBy !== undefined && (
-        <div data-part="started-by" className="truncate pl-[22px] text-[11px] text-dim" title={`Started by ${startedBy}`}>
+      {startedBy !== undefined && expanded && (
+        <div data-part="started-by" className="truncate pl-[22px] text-[11px] text-dim/80" title={`Started by ${startedBy}`}>
           started by {startedBy}
         </div>
       )}
-      {(childrenDone > 0 || childrenFailed > 0) && (
+      {expanded && (childrenDone > 0 || childrenFailed > 0) && (
         <div data-part="child-badge" className="flex min-w-0 items-center gap-2 truncate pl-[22px] text-[11px]">
           {childrenFailed > 0 && (
             <span className="text-red" title="A child session failed">
@@ -207,14 +253,9 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
         </div>
       )}
 
-      {/* Own row: with the branch, the counts and these together the line would not fit the sidebar's default width. */}
-      {isGit && (hasDiffstat || s.git.pr) && (
-        <div data-line="diff" className="flex min-w-0 items-center gap-1.5 pl-[22px] text-[11px] text-dim">
-          {hasDiffstat && (
-            <span data-part="diffstat" className="shrink-0 tabular-nums" title="Lines added and removed by the uncommitted changes">
-              <span className="text-green">+{s.git.added ?? 0}</span> <span className="text-red">−{s.git.removed ?? 0}</span>
-            </span>
-          )}
+      {/* The pull request badge: its own row. */}
+      {expanded && isGit && s.git.pr && (
+        <div data-line="diff" className="flex min-w-0 items-center gap-1.5 pl-[22px] text-[11px] text-dim/80">
           {s.git.pr && (
             <span data-part="pr" className="min-w-0 truncate rounded bg-black/5 px-1 text-[10px] dark:bg-white/10" title={prTitle(s.git.pr)}>
               {prLabel(s.git.pr)}
@@ -223,18 +264,10 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
         </div>
       )}
 
-      {/* Mod data (proto 5): own row, only when the mod reports a context share or a todo list. */}
-      {(s.context_pct !== undefined || hasTodo) && (
-        <div data-line="mod" className="flex min-w-0 items-center gap-2 pl-[22px] text-[11px] text-dim">
-          {s.context_pct !== undefined && (
-            <span
-              data-part="context"
-              className={`shrink-0 tabular-nums ${compactSoon ? 'text-orange' : ''}`}
-              title={`Context window ${clampPct(s.context_pct)}% used${compactSoon ? ': the agent compacts it soon' : ''}`}
-            >
-              ctx {clampPct(s.context_pct)}%{compactSoon && ' · compaction soon'}
-            </span>
-          )}
+      {/* Mod data (proto 5): the todo list, and the context share of a session with no git line. */}
+      {expanded && ((!isGit && s.context_pct !== undefined) || hasTodo) && (
+        <div data-line="mod" className="flex min-w-0 items-center gap-2 pl-[22px] text-[11px] text-dim/80">
+          {!isGit && context}
           {hasTodo && s.todo && (
             <span data-part="todo" className="flex min-w-0 items-center gap-1 tabular-nums" title={`${s.todo.done} of ${s.todo.total} todos done`}>
               <span
@@ -258,7 +291,7 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
           answered". So no buttons: the one place to answer it is the terminal. */}
       {s.status === 'perm' && s.perm?.always === undefined && (
         <div
-          className="mt-1.5 flex h-[22px] items-center pl-[22px] text-[11px] italic text-dim"
+          className="mt-1.5 flex h-[22px] items-center pl-[22px] text-[11px] italic text-dim/80"
           role="group"
           aria-label={`Permission: ${title}`}
           title={s.perm ? `${s.perm.tool}: ${s.perm.summary}` : undefined}
@@ -305,7 +338,7 @@ function SessionCardImpl({ session: s, project, selected, now, startedBy, child,
       )}
 
       {!showSubs && s.sub_agents.length > 0 && (
-        <div className="pl-[22px] text-[11px] text-dim">
+        <div className="pl-[22px] text-[11px] text-dim/80">
           {s.sub_agents.length} sub-agent{s.sub_agents.length > 1 ? 's' : ''}
           {running > 0 ? ` · ${running} running` : ''}
         </div>

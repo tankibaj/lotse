@@ -37,7 +37,8 @@ describe('context %', () => {
     expect(part('a1', 'context')).not.toHaveTextContent('compaction soon');
     act(() => client.setSessionMeta('a1', { context_pct: 91 }));
     expect(part('a1', 'context')).toHaveTextContent('91%');
-    expect(part('a1', 'context')).toHaveTextContent('compaction soon');
+    expect(part('a1', 'context')).toHaveAttribute('title', expect.stringContaining('compacts it soon'));
+    expect(part('a1', 'context')).toHaveClass('text-orange');
     act(() => client.setSessionMeta('a1', { context_pct: undefined }));
     expect(part('a1', 'context')).toBeNull();
   });

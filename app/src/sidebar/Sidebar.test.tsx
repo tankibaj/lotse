@@ -48,6 +48,7 @@ describe('tree', () => {
     expect(a1.getByText('fix-rounding')).toHaveAttribute('title', 'lotse/fix-rounding');
     expect(a1.getByText('↑2')).toBeInTheDocument();
     expect(a1.getByText('±3')).toBeInTheDocument();
+    act(() => selectSession('a7')); // the details open on the selected session
     const a7 = within(card('a7'));
     expect(a7.getByText('Terminal')).toBeInTheDocument();
     expect(card('a7').querySelector('.font-mono')).toBeNull();
@@ -87,13 +88,14 @@ describe('tree', () => {
     expect(card('a1')).toBeInTheDocument();
   });
 
-  it('"No sessions · New session" opens the new-session dropdown for that project, not the current one', async () => {
+  it('the empty project\'s "New session" row opens the new-session dropdown for that project, not the current one', async () => {
     const { client } = await ready();
     const sheet = vi.fn();
     const off = onUiCommand('openNewSession', sheet);
     const create = vi.spyOn(client, 'createSession');
     const empty = await act(() => client.addProject({ path: '/x/empty', name: 'empty', color: null, icon: null }));
-    expect(await screen.findByText(/No sessions/)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'New session' })).toBeInTheDocument();
+    expect(screen.queryByText(/No sessions/)).toBeNull();
     expect(getSelectedSessionId()).toBe('a1'); // billing-api is current, the empty project is not
     await userEvent.click(screen.getByRole('button', { name: 'New session' }));
     expect(sheet).not.toHaveBeenCalled(); // a dropdown, not the modal
@@ -545,10 +547,14 @@ describe('truncation', () => {
     expect(title.className).toMatch(/\btruncate\b/);
     expect(title.className).toMatch(/\bmin-w-0\b/);
 
-    const branch = screen.getByText(longBranch.replace('lotse/', ''));
-    expect(branch).toHaveAttribute('title', longBranch);
-    expect(branch.className).toMatch(/\btruncate\b/);
-    expect(branch.className).toMatch(/\bmin-w-0\b/);
+    // the branch shows on the worktree's header and on the card of the session that needs you; both cut it
+    const branches = screen.getAllByText(longBranch.replace('lotse/', ''));
+    expect(branches).toHaveLength(2);
+    for (const branch of branches) {
+      expect(branch).toHaveAttribute('title', longBranch);
+      expect(branch.className).toMatch(/\btruncate\b/);
+      expect(branch.className).toMatch(/\bmin-w-0\b/);
+    }
 
     // the list never scrolls sideways and cards never exceed it
     expect(screen.getByRole('navigation', { name: 'Projects' }).className).toMatch(/overflow-x-hidden/);

@@ -2,6 +2,7 @@ import { act, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { Session } from '../lib/client/types';
 import { childOutcome, nestChildren } from './children';
+import { selectSession } from '../lib/ui/selection';
 import { Sidebar } from './Sidebar';
 import { mount } from './testUtils';
 
@@ -64,7 +65,8 @@ describe('sidebar', () => {
     const el = await screen.findByText('Child task').then(() => card(kid.id));
     expect(el).not.toBeNull();
     expect(el?.previousElementSibling?.getAttribute('data-sid')).toBe('a1');
-    expect(el?.querySelector('[data-part="started-by"]')).toHaveTextContent(`started by ${parent?.title}`);
+    act(() => selectSession(kid.id)); // the details open on the selected session
+    expect(card(kid.id)?.querySelector('[data-part="started-by"]')).toHaveTextContent(`started by ${parent?.title}`);
     act(() => client.setSessionMeta(kid.id, { parent_session: undefined }));
     expect(card(kid.id)?.querySelector('[data-part="started-by"]')).toBeNull();
   });
