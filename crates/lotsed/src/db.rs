@@ -491,6 +491,32 @@ impl Db {
         Ok(())
     }
 
+    /// A tool call an auto-allow rule let through: one row, asked and allowed at `at`, `via` unset.
+    /// Unlike [`Self::insert_perm_event`] it leaves the session's open questions alone.
+    pub fn insert_auto_allow(
+        &self,
+        session: &SessionId,
+        prompt_id: &str,
+        tool: &str,
+        summary: &str,
+        at: UnixMs,
+    ) -> DbResult<()> {
+        self.conn().execute(
+            "INSERT OR IGNORE INTO perm_events
+                 (session_id, prompt_id, tool, summary, asked_at, decided_at, decision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6)",
+            params![
+                session.as_str(),
+                prompt_id,
+                tool,
+                summary,
+                at as i64,
+                enum_str(&PermDecision::Allow)
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Stamp the decision and where it came from on the prompt it answered (`prompt_id`, else the
     /// session's latest one without a decision). `decided_at` keeps an earlier stamp (the prompt went
     /// away first). `false` when no such prompt is on record.

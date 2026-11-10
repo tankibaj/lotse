@@ -26,6 +26,7 @@
 #![deny(unsafe_code)]
 
 pub mod agent_env;
+pub mod autoallow;
 pub mod child_policy;
 pub mod child_sessions;
 pub mod config;

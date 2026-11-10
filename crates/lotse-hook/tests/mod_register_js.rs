@@ -282,6 +282,110 @@ fn a_permission_ask_for_a_person_is_reported_and_the_verdict_is_untouched() {
     );
 }
 
+/// `world` whose `lotse-hook mod-allow` prints `stdout` (and throws when `stdout` is `THROW`).
+fn allow_world(stdout: &str) -> String {
+    format!(
+        r#"
+        const w = world({{ {ATTACHED} }})
+        const run = w.$.process.run
+        w.$.process.run = async (argv, init) => {{
+          await run(argv, init)
+          if (argv[1] !== 'mod-allow') return {{ stdout: '' }}
+          if ({stdout:?} === 'THROW') throw new Error('boom')
+          return {{ stdout: {stdout:?} }}
+        }}
+        await start(w.$)
+        await settle()
+        const asks = () => w.calls.run.filter(c => c.argv[1] === 'mod-allow')
+        const ask = (e, verdict = {{ decision: 'ask', why: 'x' }}) => hooks['tool.check'](w.$, {{ approver: 'person', ...e }}, async () => verdict)
+        "#
+    )
+}
+
+#[test]
+fn an_ask_becomes_an_allow_only_when_the_daemon_said_allow_and_nothing_is_reported() {
+    let body = format!(
+        r#"{}
+        const long = 'git status ' + 'a'.repeat(500)
+        const r = await ask({{ tool: 'Bash', command: long, agentId: 'g1', old_string: 'secret', content: 'secret' }})
+        await settle()
+        out({{ r, asks: asks().map(c => JSON.parse(c.stdin)), argv: asks().map(c => c.argv), perms: w.sent().filter(l => l.t === 'perm').length }})"#,
+        allow_world("allow\n")
+    );
+    let Some(got) = scenario(&body) else { return };
+    assert_eq!(
+        got["r"],
+        serde_json::json!({"decision": "allow", "why": "x"})
+    );
+    assert_eq!(got["argv"], serde_json::json!([["/bin/lh", "mod-allow"]]));
+    let asked = &got["asks"][0];
+    assert_eq!(asked["tool"], "Bash");
+    // the whole command (a capped one could match a shorter rule); no file contents or edits
+    assert_eq!(asked["input"]["command"].as_str().unwrap().len(), 511);
+    assert_eq!(asked["input"].as_object().unwrap().len(), 1);
+    assert_eq!(got["perms"], 0, "an allowed call raises no permission");
+}
+
+#[test]
+fn any_other_answer_leaves_the_ask_to_the_person() {
+    for stdout in [
+        "",
+        "no\n",
+        "allowed",
+        "ALLOW",
+        "deny",
+        "allow allow",
+        "THROW",
+    ] {
+        let body = format!(
+            r#"{}
+            const verdict = {{ decision: 'ask' }}
+            const r = await ask({{ tool: 'Bash', command: 'ls' }}, verdict)
+            await settle()
+            out({{ same: r === verdict, perms: w.sent().filter(l => l.t === 'perm').length }})"#,
+            allow_world(stdout)
+        );
+        let Some(got) = scenario(&body) else { return };
+        assert_eq!(
+            got,
+            serde_json::json!({"same": true, "perms": 1}),
+            "{stdout:?}"
+        );
+    }
+}
+
+#[test]
+fn only_an_ask_for_a_person_is_put_to_the_daemon() {
+    let body = format!(
+        r#"{}
+        await ask({{ tool: 'Bash', command: 'ls' }}, {{ decision: 'allow' }})
+        await ask({{ tool: 'Bash', command: 'ls' }}, {{ decision: 'deny' }})
+        await ask({{ tool: 'Bash', command: 'ls', approver: 'classifier' }})
+        await hooks['tool.call'](w.$, {{ tool: 'Bash', command: 'ls' }}, async e => e)
+        await hooks['turn.complete'](w.$, {{ usage: {{ model: 'm' }} }}, async e => e)
+        await settle()
+        out({{ asks: asks().length }})"#,
+        allow_world("allow\n")
+    );
+    let Some(got) = scenario(&body) else { return };
+    assert_eq!(got, serde_json::json!({"asks": 0}));
+}
+
+#[test]
+fn a_mod_that_is_not_running_never_asks_the_daemon() {
+    let Some(got) = scenario(
+        r#"
+        const w = world({ version: '2.1.310' })
+        w.$.process.run = async (argv) => { w.calls.run.push({ argv }); return { stdout: 'allow\n' } }
+        await start(w.$)
+        const r = await hooks['tool.check'](w.$, { tool: 'Bash', command: 'ls', approver: 'person' }, async () => ({ decision: 'ask' }))
+        out({ r, run: w.calls.run.length })"#,
+    ) else {
+        return;
+    };
+    assert_eq!(got, serde_json::json!({"r": {"decision": "ask"}, "run": 0}));
+}
+
 #[test]
 fn a_finished_turn_reports_its_model_and_token_counts() {
     let body = format!(

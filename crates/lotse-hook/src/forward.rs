@@ -2,7 +2,9 @@
 //!
 //! Contract with the agent (Claude Code runs this as a hook command): print **nothing** (hook stdout
 //! can be fed back to the model, e.g. for `UserPromptSubmit`), exit 0 whatever happens, and finish
-//! fast. Alpha never answers permission decisions, so no decision JSON is ever written either.
+//! fast. The one exception is auto-allow (off until the user sets rules): for a `PreToolUse` call of
+//! a pane's injected hook the daemon is asked whether a rule lets it skip its prompt, and only its
+//! `ok` makes the hook print [`ALLOW_OUTPUT`]. No other decision JSON is ever written.
 //!
 //! Wire: `hello` (token from the token file, client `hook`) then `hook_event` request, one
 //! connection per hook call, see `lotse-proto`. The whole exchange is bounded by `Config::deadline`.
@@ -115,6 +117,55 @@ impl Config {
 
 /// Read the hook payload from `stdin` and send it. Errors mean "not delivered"; callers ignore them.
 pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
+    run_answer(cfg, stdin).map(|(outcome, _)| outcome)
+}
+
+/// What a PreToolUse hook prints to let the call skip its permission prompt (an auto-allow rule).
+pub const ALLOW_OUTPUT: &str = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Lotse auto-allow rule"}}"#;
+
+/// `payload.kind` of the question "may this call skip its prompt?" (see `lotsed::autoallow`).
+pub const AUTOALLOW_KIND: &str = "lotse_autoallow";
+
+/// The tool input a rule can match on; everything else (file contents, edits) stays behind.
+const AUTOALLOW_INPUT_KEYS: [&str; 5] = [
+    "command",
+    "file_path",
+    "notebook_path",
+    "path",
+    "dangerouslyDisableSandbox",
+];
+
+/// The auto-allow question for a Claude `PreToolUse` payload, or `None` when it must not be asked:
+/// another event, or a permission mode other than `default` (`plan` must never be talked out of its
+/// restrictions, and the other modes do not prompt anyway).
+pub fn autoallow_query(
+    raw: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    let named = |key: &str, want: &str| raw.get(key).and_then(Value::as_str) == Some(want);
+    if !named("hook_event_name", "PreToolUse") || !named("permission_mode", "default") {
+        return None;
+    }
+    let tool = raw.get("tool_name")?.as_str()?;
+    let input = raw.get("tool_input")?.as_object()?;
+    Some(autoallow_question(tool, input))
+}
+
+/// The question for `tool` and the keys of `input` a rule can match on.
+pub fn autoallow_question(
+    tool: &str,
+    input: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let kept: serde_json::Map<String, serde_json::Value> = AUTOALLOW_INPUT_KEYS
+        .iter()
+        .filter_map(|k| Some((k.to_string(), input.get(*k)?.clone())))
+        .collect();
+    serde_json::json!({"kind": AUTOALLOW_KIND, "tool_name": tool, "tool_input": kept})
+}
+
+/// [`run`], and what the hook should print: [`ALLOW_OUTPUT`] only when the daemon answered `ok` to an
+/// auto-allow question (it wrote the decision to history first). Any failure: print nothing.
+pub fn run_answer(cfg: &Config, stdin: impl Read) -> Result<(Outcome, Option<&'static str>)> {
     // Always drain stdin, even outside Lotse, so the agent never sees a broken pipe.
     let mut raw = Vec::new();
     stdin
@@ -122,15 +173,20 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
         .read_to_end(&mut raw)
         .context("reading stdin")?;
     let Some(session_id) = cfg.session_id.as_deref().filter(|s| !s.is_empty()) else {
-        return Ok(Outcome::NoSession);
+        return Ok((Outcome::NoSession, None));
     };
     if raw.len() as u64 > MAX_STDIN_BYTES {
-        return Ok(Outcome::BadInput);
+        return Ok((Outcome::BadInput, None));
     }
     let mut payload: serde_json::Value = match serde_json::from_slice(&raw) {
         Ok(v @ serde_json::Value::Object(_)) => v,
-        _ => return Ok(Outcome::BadInput),
+        _ => return Ok((Outcome::BadInput, None)),
     };
+    // only the pane's own injected hook asks, and only a Claude one
+    let query = payload
+        .as_object()
+        .filter(|_| cfg.injected && cfg.agent == AgentKind::ClaudeCode)
+        .and_then(autoallow_query);
     // Tool output can be huge and no adapter reads it: leave it out of the frame, except the few
     // flags of an Agent call's answer (did the agent launch in the background, under which id).
     if let Some(fields) = payload.as_object_mut() {
@@ -156,7 +212,28 @@ pub fn run(cfg: &Config, stdin: impl Read) -> Result<Outcome> {
         payload,
     };
     deliver(cfg, request)?;
-    Ok(Outcome::Sent)
+    let allow = query.and_then(|payload| {
+        let ask = Request::HookEvent {
+            agent: cfg.agent,
+            session_id: Some(SessionId::new(session_id)),
+            payload,
+        };
+        matches!(round_trip(cfg, ask), Ok(Response::Ok)).then_some(ALLOW_OUTPUT)
+    });
+    Ok((Outcome::Sent, allow))
+}
+
+/// Ask the daemon whether `payload` (an [`autoallow_query`]) may skip its prompt: `true` only on `ok`.
+pub fn ask_autoallow(cfg: &Config, payload: serde_json::Value) -> bool {
+    let Some(session_id) = cfg.session_id.as_deref().filter(|s| !s.is_empty()) else {
+        return false;
+    };
+    let request = Request::HookEvent {
+        agent: cfg.agent,
+        session_id: Some(SessionId::new(session_id)),
+        payload,
+    };
+    matches!(round_trip(cfg, request), Ok(Response::Ok))
 }
 
 /// Fields of a Claude Code hook payload that carry conversation text; the adapter never reads them
@@ -302,7 +379,7 @@ fn notification_digest(text: &str) -> Option<String> {
 }
 
 /// Run the exchange on a worker thread so even a connect that hangs cannot outlive the deadline.
-fn deliver(cfg: &Config, request: Request) -> Result<()> {
+fn round_trip(cfg: &Config, request: Request) -> Result<Response> {
     let (tx, rx) = mpsc::channel();
     let worker_cfg = cfg.clone();
     std::thread::spawn(move || {
@@ -314,7 +391,15 @@ fn deliver(cfg: &Config, request: Request) -> Result<()> {
     }
 }
 
-fn exchange(cfg: &Config, request: Request) -> Result<()> {
+/// [`round_trip`], where an error answer is an error.
+fn deliver(cfg: &Config, request: Request) -> Result<()> {
+    match round_trip(cfg, request)? {
+        Response::Error(e) => bail!("daemon refused the event: {:?}: {}", e.code, e.message),
+        _ => Ok(()),
+    }
+}
+
+fn exchange(cfg: &Config, request: Request) -> Result<Response> {
     let token = std::fs::read_to_string(&cfg.token_file)
         .with_context(|| format!("reading {}", cfg.token_file.display()))?
         .trim()
@@ -347,14 +432,7 @@ fn exchange(cfg: &Config, request: Request) -> Result<()> {
             Frame::Control(Message::Response(ResponseEnvelope {
                 req_id: 1,
                 response,
-            })) => {
-                return match response {
-                    Response::Error(e) => {
-                        bail!("daemon refused the event: {:?}: {}", e.code, e.message)
-                    }
-                    _ => Ok(()),
-                };
-            }
+            })) => return Ok(response),
             Frame::Control(Message::Response(ResponseEnvelope {
                 response: Response::Error(e),
                 ..
@@ -694,6 +772,191 @@ mod tests {
             started.elapsed() < Duration::from_millis(2500),
             "{:?}",
             started.elapsed()
+        );
+    }
+
+    /// Fake daemon of an injected PreToolUse hook: serves `connections` connections (the event, then the
+    /// auto-allow question), answering the question as scripted and everything else `ok`.
+    fn autoallow_daemon(
+        question_answer: Response,
+        connections: usize,
+    ) -> (tempfile::TempDir, Receiver<Request>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("token"), "t\n").unwrap();
+        let listener = UnixListener::bind(dir.path().join("lotsed.sock")).unwrap();
+        let (tx, received) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..connections {
+                let Ok((mut conn, _)) = listener.accept() else {
+                    return;
+                };
+                let Ok(Some(Frame::Control(Message::Hello(_)))) = read_frame(&mut conn) else {
+                    return;
+                };
+                let Ok(Some(Frame::Control(Message::Request(req)))) = read_frame(&mut conn) else {
+                    return;
+                };
+                let is_question = matches!(
+                    &req.request,
+                    Request::HookEvent { payload, .. } if payload["kind"] == AUTOALLOW_KIND
+                );
+                let _ = tx.send(req.request.clone());
+                let response = if is_question {
+                    question_answer.clone()
+                } else {
+                    Response::Ok
+                };
+                let mut reply =
+                    |m| lotse_proto::write_frame(&mut conn, &Frame::Control(m)).unwrap();
+                reply(Message::HelloOk(lotse_proto::HelloOk {
+                    proto_version: PROTO_VERSION,
+                    daemon_version: "test".into(),
+                }));
+                reply(Message::Response(ResponseEnvelope {
+                    req_id: req.req_id,
+                    response,
+                }));
+            }
+        });
+        (dir, received)
+    }
+
+    const PRE_TOOL: &[u8] = br#"{"hook_event_name":"PreToolUse","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"git status","description":"x","dangerouslyDisableSandbox":false,"timeout":5},"cwd":"/p"}"#;
+
+    fn injected(dir: &tempfile::TempDir) -> Config {
+        let mut cfg = Config::in_data_dir(dir.path(), AgentKind::ClaudeCode, Some("a1".into()));
+        cfg.deadline = Duration::from_millis(800);
+        cfg.injected = true;
+        cfg
+    }
+
+    fn refused() -> Response {
+        Response::Error(ProtoError {
+            code: ErrorCode::Conflict,
+            message: "no auto-allow rule applies".into(),
+        })
+    }
+
+    #[test]
+    fn the_hook_prints_the_allow_decision_only_when_the_daemon_says_ok() {
+        let (dir, received) = autoallow_daemon(Response::Ok, 2);
+        let (outcome, answer) = run_answer(&injected(&dir), PRE_TOOL).unwrap();
+        assert_eq!((outcome, answer), (Outcome::Sent, Some(ALLOW_OUTPUT)));
+        // the event first, untouched by the question; then the question, with what a rule matches on
+        let Request::HookEvent { payload: event, .. } = received.recv().unwrap() else {
+            panic!("expected the event");
+        };
+        assert_eq!(event["hook_event_name"], "PreToolUse");
+        let Request::HookEvent {
+            payload: question,
+            session_id,
+            ..
+        } = received.recv().unwrap()
+        else {
+            panic!("expected the question");
+        };
+        assert_eq!(session_id, Some(SessionId::new("a1")));
+        assert_eq!(
+            question,
+            serde_json::json!({
+                "kind": AUTOALLOW_KIND,
+                "tool_name": "Bash",
+                "tool_input": {"command": "git status", "dangerouslyDisableSandbox": false},
+            })
+        );
+        assert!(serde_json::from_str::<serde_json::Value>(ALLOW_OUTPUT).is_ok());
+
+        let (dir, _received) = autoallow_daemon(refused(), 2);
+        assert_eq!(
+            run_answer(&injected(&dir), PRE_TOOL).unwrap(),
+            (Outcome::Sent, None),
+            "a refusal prints nothing"
+        );
+    }
+
+    #[test]
+    fn no_answer_to_the_question_is_no_allow() {
+        // the daemon serves the event, then is gone: the question cannot be asked, so nothing is allowed
+        let (dir, _received) = autoallow_daemon(Response::Ok, 1);
+        let started = Instant::now();
+        assert_eq!(
+            run_answer(&injected(&dir), PRE_TOOL).unwrap(),
+            (Outcome::Sent, None)
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+    }
+
+    #[test]
+    fn only_a_pre_tool_use_of_an_injected_claude_hook_in_default_mode_asks() {
+        let no_question = |cfg: Config, raw: &[u8]| {
+            let (dir, received) = autoallow_daemon(Response::Ok, 2);
+            let mut cfg = cfg;
+            cfg.socket = dir.path().join("lotsed.sock");
+            cfg.token_file = dir.path().join("token");
+            let result = run_answer(&cfg, raw).unwrap();
+            assert_eq!(
+                result,
+                (Outcome::Sent, None),
+                "{}",
+                String::from_utf8_lossy(raw)
+            );
+            assert!(
+                received.recv().is_ok(),
+                "the event itself is still forwarded"
+            );
+            assert!(
+                received.recv_timeout(Duration::from_millis(200)).is_err(),
+                "no question"
+            );
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let base = injected(&dir);
+        let not_injected = Config {
+            injected: false,
+            ..base.clone()
+        };
+        let codex = Config {
+            agent: AgentKind::Codex,
+            ..base.clone()
+        };
+        no_question(not_injected, PRE_TOOL);
+        no_question(codex, PRE_TOOL);
+        for mode in [
+            "plan",
+            "acceptEdits",
+            "bypassPermissions",
+            "auto",
+            "dontAsk",
+        ] {
+            let raw =
+                String::from_utf8_lossy(PRE_TOOL).replace("\"default\"", &format!("\"{mode}\""));
+            no_question(base.clone(), raw.as_bytes());
+        }
+        let no_mode =
+            String::from_utf8_lossy(PRE_TOOL).replace("\"permission_mode\":\"default\",", "");
+        no_question(base.clone(), no_mode.as_bytes());
+        let others: [&[u8]; 4] = [
+            br#"{"hook_event_name":"PostToolUse","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+            br#"{"hook_event_name":"PermissionRequest","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+            br#"{"hook_event_name":"PreToolUse","permission_mode":"default","tool_input":{"command":"ls"}}"#,
+            br#"{"hook_event_name":"PreToolUse","permission_mode":"default","tool_name":"Bash"}"#,
+        ];
+        for other in others {
+            no_question(base.clone(), other);
+        }
+    }
+
+    #[test]
+    fn the_mod_question_is_built_from_the_tool_and_its_input() {
+        let input = serde_json::json!({"command": "ls", "file_path": "/p/a", "content": "secret", "path": "/p"});
+        let question = autoallow_question("Bash", input.as_object().unwrap());
+        assert_eq!(
+            question,
+            serde_json::json!({
+                "kind": AUTOALLOW_KIND,
+                "tool_name": "Bash",
+                "tool_input": {"command": "ls", "file_path": "/p/a", "path": "/p"},
+            })
         );
     }
 

@@ -245,6 +245,41 @@ pub fn run_send(cfg: &Config, stdin: impl Read) -> Result<usize> {
     }
 }
 
+/// The auto-allow question for the line the mod sends to `mod-allow`
+/// (`{"tool":"Bash","input":{"command":…}}`), or `None` when the line is not one.
+pub fn allow_question(line: &str) -> Option<Value> {
+    if line.len() > MAX_LINE_BYTES {
+        return None;
+    }
+    let Value::Object(fields) = serde_json::from_str(line.trim()).ok()? else {
+        return None;
+    };
+    let tool = fields.get("tool")?.as_str()?;
+    let input = fields.get("input")?.as_object()?;
+    Some(crate::forward::autoallow_question(tool, input))
+}
+
+/// `lotse-hook mod-allow`: the mod's `tool.check` asks whether an auto-allow rule lets a call skip its
+/// prompt. Prints `allow` when the daemon said `ok` (it logged the decision first), else nothing; exits
+/// 0 whatever happens.
+pub fn main_allow() -> ExitCode {
+    let Some(cfg) = Config::from_env(lotse_proto::AgentKind::ClaudeCode, |name| {
+        std::env::var_os(name)
+    }) else {
+        return ExitCode::SUCCESS;
+    };
+    let mut raw = String::new();
+    let _ = std::io::stdin()
+        .take(MAX_LINE_BYTES as u64 + 1)
+        .read_to_string(&mut raw);
+    if let Some(question) = allow_question(&raw)
+        && crate::forward::ask_autoallow(&cfg, question)
+    {
+        println!("allow");
+    }
+    ExitCode::SUCCESS
+}
+
 /// Entry of `lotse-hook mod-bridge` (`send_only` false) and `lotse-hook mod-status` (true).
 /// `mod-status` never fails; the bridge exits 1 when it could not stay attached.
 pub fn main(send_only: bool) -> ExitCode {

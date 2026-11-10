@@ -127,6 +127,8 @@ pub struct State {
     pub(crate) starts: StartRequests,
     /// The connection of each session's Claude mod (`Event::ModCommand` goes to it only).
     mods: ModAttachments,
+    /// Auto-allow rules (off until set), asked by the hook and the mod.
+    autoallow: crate::autoallow::AutoAllow,
 }
 
 impl State {
@@ -167,11 +169,16 @@ impl State {
             pr_seen: AtomicU64::new(0),
             starts: StartRequests::default(),
             mods: ModAttachments::default(),
+            autoallow: crate::autoallow::AutoAllow::load(&data_dir),
         }))
     }
 
     pub(crate) fn mods(&self) -> &ModAttachments {
         &self.mods
+    }
+
+    pub fn autoallow(&self) -> &crate::autoallow::AutoAllow {
+        &self.autoallow
     }
 
     pub(crate) fn usage_tracker(&self) -> &UsageTracker {
@@ -468,6 +475,13 @@ impl State {
                 }
             }
             Request::ModAttach { session_id } => mod_source::attach(self, client, session_id),
+            Request::HookEvent {
+                session_id,
+                payload,
+                ..
+            } if crate::autoallow::is_query(&payload) => {
+                self.autoallow_query(&client.name, session_id.as_ref(), &payload)
+            }
             Request::HookEvent { payload, .. }
                 if lotse_detect::claude_mod::is_mod_line(&payload)
                     && client.name != mod_source::MOD_CLIENT =>

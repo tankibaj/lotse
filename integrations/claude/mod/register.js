@@ -5,7 +5,8 @@
 // bridge below is attached. In: `lotse-hook mod-bridge` runs for the session's life and writes the
 // daemon's commands to its stdout, one JSON line each (today only `ping`). Neither carries a secret:
 // the binary finds the socket and its credential file itself. Every hook here only observes: it
-// answers what `next` answers, so a failure in Lotse never changes what Claude does.
+// answers what `next` answers, so a failure in Lotse never changes what Claude does. The one exception
+// is `tool.check`: an ask for a person becomes an allow when an auto-allow rule says so (off by default).
 //
 // Loader rules (`claude plugin validate`): `$` goes only to top-level functions, `$.env.get` takes a
 // literal name, no dynamic imports.
@@ -16,6 +17,7 @@ const HEARTBEAT_MS = 10000
 const MAX_SUMMARY = 200
 const MAX_FAST_DEATHS = 5 // a bridge that dies this many times in a row, each within MIN_LIFE_MS, is given up on
 const MIN_LIFE_MS = 5000
+const ALLOW_KEYS = ['command', 'file_path', 'notebook_path', 'path', 'dangerouslyDisableSandbox'] // what a rule can match on
 const SUMMARY_KEYS = ['command', 'file_path', 'notebook_path', 'path', 'url', 'pattern', 'query', 'description']
 
 // state of this load of the module (a reload starts it over)
@@ -52,6 +54,25 @@ async function flush($) {
     }
   } finally {
     live.flushing = false
+  }
+}
+
+// Auto-allow (Settings, off until the user sets rules). The daemon holds the rules and decides; `lotse-hook
+// mod-allow` prints `allow` only after the daemon said yes and logged it. Anything else (no rules, no
+// daemon, a timeout, an error) is "no": the person is asked as usual. The input goes whole, never capped:
+// a truncated command must not match a shorter rule.
+async function autoAllowed($, e) {
+  if (!live.on) return false
+  const input = {}
+  for (const key of ALLOW_KEYS) {
+    if (e[key] !== undefined) input[key] = e[key]
+  }
+  try {
+    const stdin = JSON.stringify({ tool: String(e.tool), input }) + '\n'
+    const out = await $.process.run([live.bin, 'mod-allow'], { stdin, timeoutMs: 2000 })
+    return String(out?.stdout ?? '').trim() === 'allow'
+  } catch {
+    return false
   }
 }
 
@@ -155,6 +176,8 @@ export const register = on => {
   on('tool.check', async ($, e, next) => {
     const verdict = await next(e)
     if (e.approver === 'person' && verdict.decision === 'ask') {
+      // the one place the mod answers for the person: only when an auto-allow rule says so
+      if (await autoAllowed($, e)) return { ...verdict, decision: 'allow' }
       emit($, { t: 'perm', agent_id: e.agentId, tool: String(e.tool), summary: summarize(e) })
     }
     return verdict

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { AgentKind, AppearanceSettings, EventPrefs, NotificationSettings } from '../lib/client/types';
+import { AutoAllowPanel } from './AutoAllowPanel';
 import { integrationBridge } from './integration';
 import type { IntegrationId, IntegrationState } from './integration';
 import { setTheme, getThemePref } from '../theme';
@@ -107,6 +108,7 @@ export function AgentsSection({ draft }: { draft: SettingsDraft }) {
           </div>
         );
       })}
+      <AutoAllowPanel />
     </section>
   );
 }
