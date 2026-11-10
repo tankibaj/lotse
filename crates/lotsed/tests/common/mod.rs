@@ -204,6 +204,11 @@ pub struct Client {
 }
 
 impl Client {
+    /// Close the connection (dropping alone leaves it open: the reader thread holds a clone).
+    pub fn hang_up(self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     pub fn connect(socket: &Path, token: &str) -> Self {
         Self::connect_as(socket, token, "test")
     }

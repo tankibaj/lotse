@@ -370,7 +370,7 @@ fn a_card_that_timed_out_or_whose_agent_left_is_withdrawn_for_the_app() {
     let mut agent = mcp(&r.d, &parent.id);
     agent.send(start_request(&r.project, "x"));
     let (card_id, _) = card(&mut r.app);
-    drop(agent);
+    agent.hang_up();
     let e = r
         .app
         .wait_event(|e| matches!(e, Event::SessionStartWithdrawn { .. }));

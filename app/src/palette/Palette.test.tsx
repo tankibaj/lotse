@@ -122,9 +122,12 @@ describe('Command palette', () => {
     mountWp5();
     const got: unknown[] = [];
     const offs = (['openReview'] as const).map((c) => onUiCommand(c, () => got.push(c)));
+    await new Promise((r) => setTimeout(r, 50)); // the sidebar's initial selection lands with the snapshot
+    act(() => selectSession(null));
     for (const query of ['open review', 'show transcript', 'show changes']) {
       act(() => void emitUiCommand('openPalette'));
       await userEvent.type(await screen.findByRole('combobox'), `${query}{Enter}`);
+      act(() => selectSession(null)); // a session item may match the query and take the selection
     }
     expect(got).toEqual([]);
     expect(getOpenPanel()).toBeNull();
