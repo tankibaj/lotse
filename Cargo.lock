@@ -2099,7 +2099,7 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
 name = "lotse-app"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "block2",
@@ -2122,7 +2122,7 @@ dependencies = [
 
 [[package]]
 name = "lotse-detect"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "lotse-proto",
  "regex",
@@ -2136,7 +2136,7 @@ dependencies = [
 
 [[package]]
 name = "lotse-git"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "dirs",
  "lotse-proto",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "lotse-hook"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "lotse-proto"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "lotsed"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
