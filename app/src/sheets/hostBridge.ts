@@ -91,7 +91,7 @@ const tauriDrops: HostBridge['watchDrops'] = (region, { onHover, onDrop }) => {
     });
     if (stopped) un();
     else off = un;
-  });
+  }).catch(() => {}); // no webview API (tests, odd hosts): no drops
   return () => {
     stopped = true;
     off?.();

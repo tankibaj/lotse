@@ -5,8 +5,10 @@ import { WebglAddon } from '@xterm/addon-webgl';
 import { Terminal } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useClient } from '../lib/client';
+import { hostBridge, inTauri } from '../sheets/hostBridge';
 import type { SessionId } from '../lib/client';
 import { DEFAULT_FONT_SIZE, FONT_WEIGHT, FONT_WEIGHT_BOLD, LINE_HEIGHT, terminalFontFamily } from './font';
+import { droppedPathsText } from './dropPaths';
 import { moveFocusOut } from './focus';
 import { isLinkClick, openExternal } from './links';
 import { registerTerminal } from './registry';
@@ -158,6 +160,18 @@ export function TerminalView({
       t.onBinary((data) => live && client.writePty(sessionId, Uint8Array.from(data, (c) => c.charCodeAt(0)))),
       t.onResize(({ cols, rows }) => live && void client.resize(sessionId, cols, rows).catch(() => {})),
     ];
+    // Files dropped from Finder: type their escaped paths at the prompt (iTerm2 does the same).
+    // Only in the app: a browser exposes no real paths (its bridge returns placeholders).
+    const offDrops = inTauri()
+      ? hostBridge().watchDrops(() => el, {
+          onHover: () => {},
+          onDrop: (paths) => {
+            if (!paths.length) return;
+            t.paste(droppedPathsText(paths));
+            t.focus();
+          },
+        })
+      : () => {};
     const start = window.setTimeout(() => void attach(), 0);
     // The link came back after a drop: output was missed, so start from the daemon's replay again.
     const offConn = client.onConnection((state) => {
@@ -175,6 +189,7 @@ export function TerminalView({
       resizeObserver?.disconnect();
       theme.disconnect();
       offConn();
+      offDrops();
       offData();
       disposables.forEach((d) => d.dispose());
       if (requested) void client.detach(sessionId).catch(() => {});
