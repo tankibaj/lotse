@@ -20,15 +20,18 @@ const SWATCH: Record<string, string> = {
   tan: '#C2A88A',
 };
 
-/** The project's colour tile (mock `folder()`), decorative. TODO(WP3): other project icons once the sidebar's icon map is shared; every icon renders as a folder here. */
+/** The swatch colour of a project colour key (gray for an unknown key). */
+export const swatchColor = (key: string): string => SWATCH[key] ?? SWATCH.gray ?? '#8E8E93';
+
+/** The project's colour as an outlined folder (mock `folder()`), decorative. TODO(WP3): other project icons once the sidebar's icon map is shared; every icon renders as a folder here. */
 export function ProjectTile({ project, size = 13 }: { project: Pick<Project, 'color'>; size?: number }) {
   return (
     <span
-      className="inline-grid shrink-0 place-items-center rounded-[5px] text-white"
-      style={{ width: size, height: size, background: SWATCH[project.color] ?? SWATCH.gray }}
+      className="inline-grid shrink-0 place-items-center"
+      style={{ width: size, height: size, color: SWATCH[project.color] ?? SWATCH.gray }}
       aria-hidden="true"
     >
-      <Folder size={Math.round(size * 0.68)} strokeWidth={2.4} />
+      <Folder size={size} strokeWidth={1.8} />
     </span>
   );
 }

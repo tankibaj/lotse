@@ -23,9 +23,9 @@ export function StatusGlyph({ status }: { status: Status }) {
       )}
       {status === 'perm' && (
         <>
-          <path d="M8 1.8 14.8 13.8H1.2z" fill="var(--orange)" stroke="var(--orange)" strokeWidth="1.4" strokeLinejoin="round" />
-          <path d="M8 6v3.4" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" />
-          <circle cx="8" cy="11.6" r=".9" fill="#fff" />
+          <path d="M8 2 14.6 13.6H1.4z" fill="none" stroke="var(--orange)" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M8 6.2v3.2" stroke="var(--orange)" strokeWidth="1.5" strokeLinecap="round" />
+          <circle cx="8" cy="11.5" r=".85" fill="var(--orange)" />
         </>
       )}
       {status === 'fail' && (
@@ -36,8 +36,8 @@ export function StatusGlyph({ status }: { status: Status }) {
       )}
       {status === 'done' && (
         <>
-          <circle cx="8" cy="8" r="7" fill="var(--green)" />
-          <path d="M4.9 8.2l2.1 2.1 4.2-4.4" fill="none" stroke="#fff" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="8" cy="8" r="6.25" fill="none" stroke="var(--green)" strokeWidth="1.5" />
+          <path d="M5 8.2l2 2 4-4.2" fill="none" stroke="var(--green)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </>
       )}
       {(status === 'idle' || status === 'unknown') && (

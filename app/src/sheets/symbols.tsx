@@ -66,8 +66,10 @@ const symbolName = (key: string): string | null => symbolEntry(key)?.sf ?? (key.
  * macOS and used as a CSS mask; in the browser build, or when the Mac has no such symbol, the
  * Lucide stand-in (the folder for a name nobody knows).
  */
-export function ProjectIcon({ name, size = 20, strokeWidth = 1.8 }: { name: string; size?: number; strokeWidth?: number }) {
-  const sf = nativeSymbolsAvailable() ? symbolName(name) : null;
+export function ProjectIcon({ name, size = 20, strokeWidth = 1.8, outline = false }: { name: string; size?: number; strokeWidth?: number; outline?: boolean }) {
+  // `outline`: the symbol without its `.fill` variant (when the Mac has no such symbol the Lucide outline stands in)
+  const sfFull = nativeSymbolsAvailable() ? symbolName(name) : null;
+  const sf = outline && sfFull ? sfFull.replace(/\.fill$/, '') : sfFull;
   const scale = symbolScale();
   // `undefined` until the host has answered, `null` when it has no such symbol
   const png = sf ? peekSymbol(sf, size, scale) : null;

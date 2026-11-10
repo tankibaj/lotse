@@ -46,6 +46,29 @@ describe('ProjectIcon without a native host (browser, Mock)', () => {
 });
 
 describe('ProjectIcon with a native host', () => {
+  it('draws the outline variant when asked: the symbol without .fill', async () => {
+    const png = vi.fn(async () => 'iVBORw0KGgo=');
+    setSymbolBackend({ png });
+    const { container } = render(<ProjectIcon name="folder" size={16} outline />);
+    const glyph = await waitFor(() => {
+      const el = container.querySelector('[data-symbol]');
+      expect(el).toBeInTheDocument();
+      return el as HTMLElement;
+    });
+    expect(glyph).toHaveAttribute('data-symbol', 'folder');
+    expect(png).toHaveBeenCalledWith('folder', 16, 1);
+  });
+
+  it('falls back to the Lucide outline when the Mac has no outline variant', async () => {
+    const png = vi.fn(async (): Promise<string> => {
+      throw new Error('unknown SF Symbol: folder');
+    });
+    setSymbolBackend({ png });
+    const { container } = render(<ProjectIcon name="folder" size={16} outline />);
+    await waitFor(() => expect(png).toHaveBeenCalled());
+    await waitFor(() => expect(container.querySelector('svg')).toBeInTheDocument());
+  });
+
   it('asks for the SF Symbol and draws it as a mask in the text colour', async () => {
     const png = vi.fn(async () => 'iVBORw0KGgo=');
     setSymbolBackend({ png });

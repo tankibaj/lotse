@@ -108,15 +108,15 @@ export const PROJECT_ICONS: Record<string, LucideIcon> = {
   key: Key,
 };
 
-/** Coloured rounded square with the project's symbol (16 px in the sidebar): SF Symbol in the app, Lucide in the browser. */
+/** The project's symbol in its colour, outlined with no fill (16 px in the sidebar): SF Symbol in the app, Lucide in the browser. */
 export function ProjectTile({ color, icon, size = 16 }: { color: string; icon: string; size?: number }) {
   return (
     <span
-      className="inline-grid flex-none place-items-center rounded-[5px] text-white"
-      style={{ width: size, height: size, background: SWATCHES[color] ?? SWATCHES.gray }}
+      className="inline-grid flex-none place-items-center"
+      style={{ width: size, height: size, color: SWATCHES[color] ?? SWATCHES.gray }}
       aria-hidden="true"
     >
-      <ProjectIcon name={icon} size={Math.round(size * 0.68)} strokeWidth={2.4} />
+      <ProjectIcon name={icon} size={size} strokeWidth={1.8} outline />
     </span>
   );
 }
