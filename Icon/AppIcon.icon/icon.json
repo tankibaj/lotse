@@ -1,0 +1,9 @@
+{
+  "fill" : { "solid" : "srgb:0.06000,0.06500,0.06500,1.00000" },
+  "groups" : [
+    { "layers" : [ { "glass" : true, "image-name" : "front.svg", "name" : "front" } ],
+      "shadow" : { "kind" : "neutral", "opacity" : 0.6 },
+      "translucency" : { "enabled" : true, "value" : 0.5 } }
+  ],
+  "supported-platforms" : { "squares" : [ "macOS" ] }
+}
