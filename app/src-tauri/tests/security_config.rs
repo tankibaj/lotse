@@ -132,6 +132,7 @@ fn capability_set_is_exact() {
             "core:event:allow-unlisten",
             "core:window:allow-current-monitor",
             "core:window:allow-internal-toggle-maximize",
+            "core:window:allow-is-fullscreen",
             "core:window:allow-start-dragging",
             "dialog:allow-open",
         ]
