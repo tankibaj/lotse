@@ -1,0 +1,139 @@
+name: Release
+
+# Builds and releases when the version in app/src-tauri/tauri.conf.json changes on main (or on demand). The tag is
+# created by the release itself, after build, signing and packaging succeeded, so a failed build never leaves a tag.
+# Version policy: bump `version` in tauri.conf.json, Cargo.toml (workspace) and app/package.json together, push to main.
+on:
+  push:
+    branches: [main]
+    paths: ["app/src-tauri/tauri.conf.json"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional: must equal the tauri.conf.json version (default). Re-runs a release that has no tag yet."
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      needed: ${{ steps.v.outputs.needed }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          v="$(jq -r .version app/src-tauri/tauri.conf.json)"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$ ]] || { echo "bad version: $v"; exit 1; }
+          cargo_v="$(sed -nE '/^\[workspace\.package\]/,/^\[/ s/^version *= *"([^"]+)".*/\1/p' Cargo.toml)"
+          npm_v="$(jq -r .version app/package.json)"
+          if [[ "$cargo_v" != "$v" || "$npm_v" != "$v" ]]; then
+            echo "version mismatch: tauri.conf.json=$v Cargo.toml=$cargo_v package.json=$npm_v"; exit 1
+          fi
+          if [[ -n "${INPUT_VERSION#v}" && "${INPUT_VERSION#v}" != "$v" ]]; then
+            echo "input $INPUT_VERSION differs from tauri.conf.json version $v"; exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$v" >/dev/null 2>&1; then
+            echo "v$v already released; nothing to do"; echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CARGO_TERM_COLOR: always
+      APP: target/release/bundle/macos/Lotse.app
+      BUNDLE_ID: dev.tankibaj.lotse
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        env:
+          CHECKED_VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          echo "VERSION=$CHECKED_VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$CHECKED_VERSION" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Rust toolchain
+        run: rustup toolchain install 1.95.0 --profile minimal
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-release-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: npm ci
+        working-directory: app
+        run: npm ci
+
+      # Builds lotsed + lotse-hook + the .app and ad-hoc signs the bundle. The launch smoke test is skipped on the
+      # runner (no GUI session guarantee); bundle checks below cover the artifact.
+      - name: Build and sign
+        run: sh scripts/build-app.sh --no-smoke
+
+      - name: Verify bundle (id, version, arm64, helpers)
+        run: |
+          plist="$APP/Contents/Info.plist"
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")" == "$BUNDLE_ID" ]]
+          [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")" == "$VERSION" ]]
+          for bin in "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")" lotsed lotse-hook; do
+            lipo -archs "$APP/Contents/MacOS/$bin" | grep -qx arm64
+          done
+          codesign --verify --deep --strict "$APP"
+
+      - name: Package
+        run: |
+          mkdir dist
+          ZIP="dist/Lotse-$VERSION-arm64.zip"
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          (cd dist && shasum -a 256 "Lotse-$VERSION-arm64.zip" > "Lotse-$VERSION-arm64.zip.sha256")
+          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "SHA256=$(shasum -a 256 "$ZIP" | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release
+        run: |
+          prerelease=""
+          [[ "$VERSION" == *-* ]] && prerelease="--prerelease"
+          gh release create "$TAG" "$ZIP" "$ZIP.sha256" \
+            --title "Lotse $VERSION" --generate-notes --target "$GITHUB_SHA" $prerelease \
+            || gh release upload "$TAG" "$ZIP" "$ZIP.sha256" --clobber
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: tankibaj/homebrew-tap
+          token: ${{ secrets.TAP_GITHUB_TOKEN }} # PAT, contents:write on the tap repo only
+          path: tap
+
+      - name: Update cask
+        run: |
+          mkdir -p tap/Casks
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256@/$SHA256/g" packaging/homebrew/lotse.rb > tap/Casks/lotse.rb
+          ruby -c tap/Casks/lotse.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/lotse.rb
+          if git diff --cached --quiet; then echo "cask unchanged"; exit 0; fi
+          git commit -m "lotse $VERSION"
+          git push
