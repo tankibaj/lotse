@@ -1,3 +1,5 @@
+import { Bot, Sparkles, SquareTerminal } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { useClient } from '../lib/client/context';
@@ -10,12 +12,23 @@ import { ConfirmDialog } from '../sidebar/ConfirmDialog';
 import { ContextMenu } from '../sidebar/ContextMenu';
 import { InlineEdit } from '../sidebar/InlineEdit';
 import { sessionMenu } from '../sidebar/menus';
-import { ProjectTile } from './ProjectTile';
+import { AGENT_LABEL, shortBranch } from '../lib/state/selectors';
+import { swatchColor } from './ProjectTile';
 import { dragTabOverPanes } from './splitBus';
 import { StatusGlyph } from './StatusGlyph';
 import { useSessions } from './useSessions';
 
 const noop = () => {};
+
+const AGENT_GLYPH: Record<Session['agent'], LucideIcon> = { terminal: SquareTerminal, claude_code: Sparkles, codex: Bot, opencode: Bot };
+
+/** What a tab says: the session's title, or for a fresh one (no real title yet) "Claude Code · main". */
+export function tabLabel(s: Session): string {
+  const title = s.title.trim();
+  if (title && title !== 'New session') return title;
+  const branch = s.git.is_git ? shortBranch(s.git.branch || 'HEAD') : '';
+  return branch ? `${AGENT_LABEL[s.agent]} · ${branch}` : AGENT_LABEL[s.agent];
+}
 
 /** A tab follows the pointer only after it moved this far, so a plain click never reorders. */
 const DRAG_PX = 4;
@@ -50,6 +63,11 @@ export function TabStrip() {
   const [renaming, setRenaming] = useState<SessionId | null>(null);
   const [confirm, setConfirm] = useState<SessionId | null>(null);
   const [drop, setDrop] = useState<Drop | null>(null);
+
+  // More tabs than fit: the open one scrolls into view.
+  useEffect(() => {
+    if (selected) listRef.current?.querySelector<HTMLElement>(`[data-tab="${selected}"]`)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }, [selected]);
 
   const tabEl = (id: SessionId) => listRef.current?.querySelector<HTMLElement>(`[data-tab="${id}"]`);
 
@@ -89,13 +107,14 @@ export function TabStrip() {
   /** Which tab the pointer is left of (`null`: past the last one), and where to draw the insertion bar. */
   const dropAt = (x: number, moving: SessionId): Pick<Drop, 'before' | 'left'> => {
     const box = listRef.current?.getBoundingClientRect();
+    const scroll = listRef.current?.scrollLeft ?? 0; // the bar is drawn inside the scrolled strip
     const others = [...(listRef.current?.querySelectorAll<HTMLElement>('[data-tab]') ?? [])].filter((el) => el.dataset.tab !== moving);
     for (const el of others) {
       const r = el.getBoundingClientRect();
-      if (x < r.left + r.width / 2) return { before: el.dataset.tab ?? null, left: r.left - (box?.left ?? 0) - 2 };
+      if (x < r.left + r.width / 2) return { before: el.dataset.tab ?? null, left: r.left - (box?.left ?? 0) - 2 + scroll };
     }
     const last = others.at(-1)?.getBoundingClientRect();
-    return { before: null, left: last ? last.right - (box?.left ?? 0) + 2 : 0 };
+    return { before: null, left: last ? last.right - (box?.left ?? 0) + 2 + scroll : 0 };
   };
 
   // Mouse down selects the tab at once (like a browser's); moving on from there drags it to a new place.
@@ -154,7 +173,7 @@ export function TabStrip() {
     <>
       <div
         ref={listRef}
-        className="relative flex min-w-0 items-stretch gap-1 self-stretch"
+        className="relative flex min-w-0 items-stretch gap-1 self-stretch overflow-x-auto [scrollbar-width:none]"
         role="tablist"
         aria-label={project ? `Sessions in ${project.name}` : 'Sessions'}
         onKeyDown={onKeyDown}
@@ -162,21 +181,29 @@ export function TabStrip() {
         {tabs.map((s) => {
           const active = s.id === selected;
           // Bottom-attached and as tall as the bar's content (42 px), so the label sits on the bar's centre line.
-          const cls = `flex min-w-0 items-center gap-2 rounded-t-md border border-b-0 px-3 text-[12px] ${
-            active ? 'border-line bg-term' : 'border-transparent opacity-60 hover:opacity-100'
+          // The open tab is the bright one, with the terminal's background; the others are dim until hovered.
+          const cls = `relative flex w-[180px] min-w-[110px] max-w-[220px] shrink items-center gap-1.5 rounded-t-md border border-b-0 px-3 text-[12px] ${
+            active ? 'border-line bg-term text-txt' : 'border-transparent text-dim hover:bg-black/5 hover:text-txt dark:hover:bg-white/5'
           } ${drop?.id === s.id ? '!opacity-40' : ''}`;
+          const AgentGlyph = AGENT_GLYPH[s.agent];
+          const label = tabLabel(s);
           const body = (
             <>
+              {project && (
+                <span
+                  aria-hidden="true"
+                  data-testid="tab-accent"
+                  className="absolute inset-x-0 top-0 h-0.5 rounded-t-md"
+                  style={{ background: swatchColor(project.color), opacity: active ? 1 : 0.4 }}
+                />
+              )}
               <StatusGlyph status={s.status} />
+              <AgentGlyph size={12} strokeWidth={2} className="flex-none opacity-70" aria-hidden="true" />
               {renaming === s.id ? (
                 <InlineEdit className="w-[160px] flex-none !text-[12px]" value={s.title} label="Session title" onCommit={(t) => rename(s.id, t)} onCancel={() => endRename(s.id)} />
               ) : (
-                <span className="max-w-[200px] truncate">{s.title}</span>
-              )}
-              {project && (
-                <span className="inline-flex shrink-0 items-center gap-1 text-tdim">
-                  <ProjectTile project={project} />
-                  {project.name}
+                <span className={`min-w-0 flex-1 truncate text-left ${active ? 'font-semibold' : ''}`} title={label}>
+                  {label}
                 </span>
               )}
             </>

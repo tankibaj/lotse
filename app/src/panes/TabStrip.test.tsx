@@ -2,12 +2,13 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClientProvider, MockClient } from '../lib/client';
+import type { Session } from '../lib/client/types';
 import { onUiCommand } from '../lib/ui/commands';
 import { getSelectedSessionId, selectSession } from '../lib/ui/selection';
 import { closeOverlay, getOverlay } from '../sheets/overlay';
 import { onTabDrag } from './splitBus';
 import type { TabDrag } from './splitBus';
-import { TabStrip } from './TabStrip';
+import { TabStrip, tabLabel } from './TabStrip';
 
 let client: MockClient;
 const mount = async (tabs = 1) => {
@@ -49,7 +50,8 @@ describe('TabStrip', () => {
   it("shows one tab per session of the selected session's project, the selected one marked", async () => {
     await mount();
     const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((t) => t.textContent)).toEqual(['In progressFix invoice roundingbilling-api', 'IdleFlyway migration V42billing-api']);
+    expect(tabs.map((t) => t.textContent)).toEqual(['In progressFix invoice rounding', 'IdleFlyway migration V42']); // the project is the same for all: it is not repeated per tab
+    expect(screen.getAllByTestId('tab-accent')).toHaveLength(2); // its colour is the strip on top of each tab
     expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
     expect(tabs[1]).toHaveAttribute('aria-selected', 'false');
     expect(screen.getByRole('tablist')).toHaveAccessibleName('Sessions in billing-api');
@@ -417,5 +419,19 @@ describe('drag to reorder', () => {
     pointer('pointermove', 290);
     pointer('pointerup', 290);
     expect(tabNames()).toEqual(['Flyway migration V42', 'Third', 'Fix invoice rounding']);
+  });
+});
+
+describe('tabLabel', () => {
+  const base = { title: '', agent: 'claude_code', git: { is_git: true, branch: 'main' } } as unknown as Session;
+  it('keeps a real title', () => {
+    expect(tabLabel({ ...base, title: 'features' })).toBe('features');
+  });
+  it('names a fresh session by its agent and branch', () => {
+    expect(tabLabel({ ...base, title: 'New session' })).toBe('Claude Code · main');
+    expect(tabLabel({ ...base, title: '  ', agent: 'terminal' })).toBe('Terminal · main');
+  });
+  it('is just the agent without git', () => {
+    expect(tabLabel({ ...base, title: 'New session', git: { is_git: false } as Session['git'] })).toBe('Claude Code');
   });
 });
