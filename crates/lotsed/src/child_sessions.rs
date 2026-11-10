@@ -74,8 +74,28 @@ impl StartRequests {
     }
 
     /// The agent's connection ended: its cards are withdrawn, their tool calls are gone.
-    pub fn client_gone(&self, client_id: u64) {
-        self.lock().retain(|_, p| p.client_id != client_id);
+    /// Returns the ids of the withdrawn cards.
+    pub fn client_gone(&self, client_id: u64) -> Vec<String> {
+        self.take(|p| p.client_id == client_id)
+    }
+
+    /// `parent` was closed: its open cards are withdrawn (the waiting calls see a closed channel).
+    /// Returns the ids of the withdrawn cards.
+    pub fn withdraw_parent(&self, parent: &SessionId) -> Vec<String> {
+        self.take(|p| &p.parent == parent)
+    }
+
+    fn take(&self, pred: impl Fn(&Pending) -> bool) -> Vec<String> {
+        let mut open = self.lock();
+        let ids: Vec<String> = open
+            .iter()
+            .filter(|(_, p)| pred(p))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            open.remove(id);
+        }
+        ids
     }
 
     pub async fn enter(&self) -> tokio::sync::MutexGuard<'_, ()> {
@@ -88,10 +108,10 @@ impl StartRequests {
     }
 }
 
-/// The Settings toggle "Let agents start sessions without asking". Proto 5 has no field for it
-/// yet, so it is off: every start shows its card. (Request to the orchestrator: a `Settings` field.)
-fn start_without_asking(_settings: &Settings) -> bool {
-    false
+/// The Settings toggle "Agents may start sessions without asking" (off by default): a start in
+/// the requesting session's project then skips the card.
+fn start_without_asking(settings: &Settings) -> bool {
+    settings.agents_start_sessions_without_asking
 }
 
 fn refuse(code: ErrorCode, message: impl Into<String>) -> Response {
@@ -148,6 +168,24 @@ impl State {
                 self.close_session(&session_id)
             }
             _ => refuse(ErrorCode::Unauthorized, "not available to agents"),
+        }
+    }
+
+    /// Tell the apps these approval cards are gone.
+    pub(crate) fn announce_withdrawn(&self, ids: Vec<String>) {
+        for id in ids {
+            self.hub.broadcast(Event::SessionStartWithdrawn { id });
+        }
+    }
+
+    /// `parent` was closed: its open cards are withdrawn and its children become top-level
+    /// sessions (the desktop app's `detached`).
+    pub(crate) fn parent_closed(&self, parent: &SessionId) {
+        self.announce_withdrawn(self.starts.withdraw_parent(parent));
+        for h in self.handles() {
+            if let Some(meta) = h.detach_from_parent(parent) {
+                self.hub.broadcast(Event::SessionUpdated(meta));
+            }
         }
     }
 
@@ -230,6 +268,8 @@ impl State {
                 Ok(Err(_)) => return refuse(ErrorCode::Unavailable, "the request was withdrawn"),
                 Err(_) => {
                     self.starts.withdraw(&id);
+                    self.hub
+                        .broadcast(Event::SessionStartWithdrawn { id: id.clone() });
                     tracing::info!("agent {caller}: start {id} timed out");
                     return refuse(ErrorCode::Unavailable, "nobody answered the start request");
                 }
@@ -328,7 +368,20 @@ mod tests {
     }
 
     #[test]
-    fn the_toggle_is_off_until_the_proto_has_a_field_for_it() {
-        assert!(!start_without_asking(&Settings::default()));
+    fn the_toggle_follows_the_setting_and_is_off_by_default() {
+        let mut s = Settings::default();
+        assert!(!start_without_asking(&s));
+        s.agents_start_sessions_without_asking = true;
+        assert!(start_without_asking(&s));
+    }
+
+    #[test]
+    fn cards_of_a_closed_parent_are_returned_for_withdrawal() {
+        let starts = StartRequests::default();
+        let (a, _r1) = starts.open(1, sid("a"));
+        let (b, _r2) = starts.open(2, sid("b"));
+        assert_eq!(starts.withdraw_parent(&sid("a")), vec![a]);
+        assert_eq!(starts.count_for(&sid("a")), 0);
+        assert_eq!(starts.client_gone(2), vec![b]);
     }
 }

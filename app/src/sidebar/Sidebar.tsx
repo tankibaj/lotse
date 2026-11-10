@@ -3,6 +3,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useClient } from '../lib/client/context';
 import type { PermDecision, ProjectId, SessionId } from '../lib/client/types';
 import {
+  AGENT_LABEL,
   filterGroups,
   groupSessions,
   groupWorkspaces,
@@ -20,6 +21,7 @@ import { emitUiCommand } from '../lib/ui/commands';
 import { NewSessionMenu } from '../lib/ui/NewSessionMenu';
 import { hostBridge } from '../sheets/hostBridge';
 import { selectSession, useSelectedSessionId } from '../lib/ui/selection';
+import { childOutcome, nestChildren } from './children';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ContextMenu } from './ContextMenu';
 import { projectMenu, sessionMenu, workspaceMenu } from './menus';
@@ -59,7 +61,24 @@ export function Sidebar() {
 
   const needCount = needYouCount(sessions);
   const filterOn = needFilter && needCount > 0;
-  const groups = useMemo(() => groupSessions(projects, sessions), [projects, sessions]);
+  // Child sessions sit under their parent ("started by …"); `nested` are the ones indented under a parent card.
+  const { groups, nested } = useMemo(() => {
+    const nested = new Set<SessionId>();
+    const groups = groupSessions(projects, sessions).map((g) => ({
+      project: g.project,
+      sessions: nestChildren(g.sessions).map((n) => {
+        if (n.child) nested.add(n.session.id);
+        return n.session;
+      }),
+    }));
+    return { groups, nested };
+  }, [projects, sessions]);
+  const sessionById = useMemo(() => new Map(sessions.map((s) => [s.id, s])), [sessions]);
+  const outcomes = useMemo(() => {
+    const m = new Map<SessionId, { done: number; fail: number }>();
+    for (const s of sessions) if (s.parent_session && !m.has(s.parent_session)) m.set(s.parent_session, childOutcome(s.parent_session, sessions));
+    return m;
+  }, [sessions]);
   const shown = useMemo(() => filterGroups(groups, filterOn), [groups, filterOn]);
   const projectById = useMemo(() => new Map(projects.map((p) => [p.id, p])), [projects]);
   // Workspace headers appear only when there is more than one workspace: with one, the tree is the mock's.
@@ -202,6 +221,11 @@ export function Sidebar() {
   const confirmWorkspace = confirm?.kind === 'workspace' ? workspaces.find((w) => w.id === confirm.id) : undefined;
   const confirmWorkspaceProjects = confirmWorkspace ? projects.filter((p) => p.workspace_id === confirmWorkspace.id).length : 0;
 
+  const startedBy = (parent?: SessionId) => {
+    const p = parent ? sessionById.get(parent) : undefined;
+    return p ? p.title || AGENT_LABEL[p.agent] : undefined;
+  };
+
   /** One project: its row, the "No sessions" hint and its cards. */
   const renderProject = ({ project, sessions: list }: ProjectGroup) => {
     const open = filterOn || !collapsed.has(project.id);
@@ -240,6 +264,10 @@ export function Sidebar() {
               project={project}
               selected={s.id === selectedId}
               now={now}
+              child={nested.has(s.id)}
+              startedBy={startedBy(s.parent_session)}
+              childrenDone={outcomes.get(s.id)?.done}
+              childrenFailed={outcomes.get(s.id)?.fail}
               renaming={renaming?.kind === 'session' && renaming.id === s.id}
               answering={answering.has(s.id)}
               onSelect={onSelect}

@@ -282,7 +282,7 @@ impl State {
     /// A client connection ended: stop streaming to it.
     pub fn client_gone(&self, client_id: u64) {
         self.hub.remove(client_id);
-        self.starts.client_gone(client_id);
+        self.announce_withdrawn(self.starts.client_gone(client_id));
         self.mods.forget_client(client_id);
         for h in self.handles() {
             h.detach(client_id);
@@ -986,6 +986,7 @@ impl State {
         self.hub.broadcast(Event::SessionClosed {
             session_id: id.clone(),
         });
+        self.parent_closed(id);
         Response::Ok
     }
 

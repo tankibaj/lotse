@@ -1095,6 +1095,19 @@ impl SessionHandle {
         queue_input(self.lock().live.as_ref(), data)
     }
 
+    /// The parent session closed: this session becomes top-level. The new meta when it was a child
+    /// of `parent`.
+    pub fn detach_from_parent(&self, parent: &SessionId) -> Option<Session> {
+        {
+            let mut g = self.lock();
+            if g.meta.parent_session.as_ref() != Some(parent) {
+                return None;
+            }
+            g.meta.parent_session = None;
+        }
+        Some(self.snapshot())
+    }
+
     /// User edit of the title; switches the automatic title off. `None` when the title is empty.
     pub fn rename(&self, title: &str) -> Option<Session> {
         let title = derive_title(title)?;

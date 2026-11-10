@@ -8,6 +8,7 @@ import { NewSessionSheet } from './NewSessionSheet';
 import { openOverlay, openProjectStylePicker, toggleOverlay, useOverlay } from './overlay';
 import { ProjectStylePicker } from './ProjectStylePicker';
 import { ShortcutsSheet } from './ShortcutsSheet';
+import { StartRequestCards } from './StartRequestCards';
 import { TranscriptSheet } from './TranscriptSheet';
 
 /**
@@ -92,6 +93,7 @@ export function Sheets() {
 
   return (
     <>
+      <StartRequestCards />
       {overlay?.name === 'newSession' && <NewSessionSheet key={overlay.projectId ?? ''} />}
       {overlay?.name === 'addProject' && <AddProjectSheet key={overlay.repos?.root ?? 'home'} />}
       {overlay?.name === 'shortcuts' && <ShortcutsSheet />}
