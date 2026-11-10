@@ -18,10 +18,32 @@ export function pasteBytes(text: string, bracketed: boolean): string {
 export class NotSubmitted extends Error {}
 
 /**
- * Send a prompt to a session: the text as a paste (bracketed when the pane's terminal asked for it), then, as its own
- * write after `SUBMIT_DELAY_MS`, the CR that submits it. Trailing line breaks are dropped so only one submit goes out.
+ * Starts a send meant for the Claude mod: `lotsed` hands the text after it to the mod (`$.prompt.submit`), or types it
+ * as a paste and a Return itself when the mod cannot take it. Must equal `SUBMIT_MARKER` in
+ * `crates/lotsed/src/two_way.rs` (a Rust test checks this file for it). Stands in for a `submit_prompt` request that
+ * proto 5 does not have.
  */
-export async function sendPrompt(client: Pick<DaemonClient, 'sendInput'>, sessionId: SessionId, text: string): Promise<void> {
+export const SUBMIT_MARKER = '\u0000lotse-submit\u0000';
+
+/** Line breaks as LF, no control characters but tab and LF (so no second marker), no trailing line breaks. */
+function submitBody(text: string): string {
+  const kept = [...text.replace(/\r\n?/g, '\n')].filter((c) => {
+    const n = c.codePointAt(0) ?? 0;
+    return n === 9 || n === 10 || (n >= 32 && n !== 127);
+  });
+  return kept.join('').replace(/\n+$/, '');
+}
+
+/**
+ * Send a prompt to a session. With the Claude mod live (`viaMod`): one write the daemon routes to the mod. Otherwise the
+ * text as a paste (bracketed when the pane's terminal asked for it), then, as its own write after `SUBMIT_DELAY_MS`, the
+ * CR that submits it. Trailing line breaks are dropped so only one submit goes out.
+ */
+export async function sendPrompt(client: Pick<DaemonClient, 'sendInput'>, sessionId: SessionId, text: string, viaMod = false): Promise<void> {
+  if (viaMod) {
+    await client.sendInput(sessionId, SUBMIT_MARKER + submitBody(text));
+    return;
+  }
   await client.sendInput(sessionId, pasteBytes(text.replace(/[\r\n]+$/, ''), bracketedPasteOn(sessionId)));
   await new Promise((resolve) => setTimeout(resolve, SUBMIT_DELAY_MS));
   try {

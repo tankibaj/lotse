@@ -127,6 +127,8 @@ pub struct State {
     pub(crate) starts: StartRequests,
     /// The connection of each session's Claude mod (`Event::ModCommand` goes to it only).
     mods: ModAttachments,
+    /// Held permission requests and unreported composer sends of the mod (`two_way`).
+    two_way: crate::two_way::TwoWay,
 }
 
 impl State {
@@ -167,11 +169,16 @@ impl State {
             pr_seen: AtomicU64::new(0),
             starts: StartRequests::default(),
             mods: ModAttachments::default(),
+            two_way: crate::two_way::TwoWay::default(),
         }))
     }
 
     pub(crate) fn mods(&self) -> &ModAttachments {
         &self.mods
+    }
+
+    pub(crate) fn two_way(&self) -> &crate::two_way::TwoWay {
+        &self.two_way
     }
 
     pub(crate) fn usage_tracker(&self) -> &UsageTracker {
@@ -310,6 +317,10 @@ impl State {
         // an agent's tool process (`lotse-hook mcp`): the allowlist, nothing else
         if let ClientKind::Mcp(caller) = child_policy::classify(&client.name) {
             return Some(self.handle_mcp(client, caller, req).await);
+        }
+        // the app's Allow/Deny and composer send, through the Claude mod while it can take them
+        if let Some(done) = crate::two_way::intercept(self, &client.name, &req) {
+            return Some(done);
         }
         Some(match req {
             Request::Ping => Response::Pong,
@@ -486,6 +497,9 @@ impl State {
                 Some(id) => match self.session(&id) {
                     None => not_found("session"),
                     Some(h) => {
+                        if lotse_detect::claude_mod::is_mod_line(&payload) {
+                            crate::two_way::observe(self, &id, &payload);
+                        }
                         h.on_hook(agent, payload);
                         Response::Ok
                     }

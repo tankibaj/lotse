@@ -181,6 +181,49 @@ fn the_bridge_attaches_with_the_token_and_relays_only_its_sessions_commands() {
 }
 
 #[test]
+fn an_answer_is_relayed_with_its_decision_and_the_hold_lines_reach_the_daemon_as_status() {
+    let d = fake_daemon(
+        "s3cret",
+        Script {
+            attach: Ok(()),
+            push: vec![mod_command(
+                "a1",
+                ModCommand::Answer {
+                    prompt_id: Some("p-1".into()),
+                    decision: lotse_proto::PermDecision::Deny,
+                },
+            )],
+            expect_requests: 3,
+        },
+    );
+    let out = Sink::default();
+    let stdin = Cursor::new(
+        "{\"t\":\"perm_hold\",\"tool\":\"Bash\"}\n{\"t\":\"perm_release\"}\n{\"t\":\"submit_result\",\"ok\":false}\n",
+    );
+    run_bridge(&cfg(&d, Some("a1")), stdin, out.clone()).unwrap();
+    assert_eq!(
+        out.lines(),
+        [
+            json!({"bridge": "attached"}),
+            json!({"cmd": "answer", "prompt_id": "p-1", "decision": "deny"}),
+        ]
+    );
+    d.hello.recv().unwrap();
+    d.requests.recv().unwrap(); // the attach
+    let kinds: Vec<String> = (0..3)
+        .map(|_| match d.requests.recv().unwrap().request {
+            Request::HookEvent { payload, .. } => {
+                assert_eq!(payload["kind"], "lotse_mod");
+                payload["t"].as_str().unwrap().to_owned()
+            }
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(kinds, ["perm_hold", "perm_release", "submit_result"]);
+    d.handle.join().unwrap();
+}
+
+#[test]
 fn status_lines_on_stdin_reach_the_daemon_as_this_sessions_lotse_mod_events() {
     let d = fake_daemon(
         "t",
