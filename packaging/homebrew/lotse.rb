@@ -10,13 +10,13 @@ cask "lotse" do
   homepage "https://github.com/tankibaj/lotse"
 
   depends_on arch: :arm64
+  depends_on :macos
 
   app "Lotse.app"
 
   # The build is ad-hoc signed and not notarized: drop quarantine so Gatekeeper does not block launch.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Lotse.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Lotse.app"]
   end
 
   zap trash: [
