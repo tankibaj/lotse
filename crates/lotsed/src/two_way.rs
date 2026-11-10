@@ -2,7 +2,7 @@
 //!
 //! - **Allow / Deny** (`Request::ResolvePermission`): while the mod holds the session's
 //!   `PermissionRequest` hook (`perm_hold` … `perm_release` status lines; the hook is cut at 10 s, so
-//!   the mod holds 7.5 s and this side [`HOLD_WINDOW`] 7 s), the answer goes to the mod as
+//!   the mod holds 7.5 s and this side [`HOLD_WINDOW`] 4.5 s: the `perm_hold` line may reach the daemon up to ~3 s after the mod started holding), the answer goes to the mod as
 //!   `ModCommand::Answer` and the hook returns it. Outside the window, for Always, for another prompt
 //!   than the held one, and with no mod, the keystroke path (`perm_answer`) answers as before.
 //! - **Composer send**: `Request::SendInput` whose text starts with [`SUBMIT_MARKER`] goes to the mod as
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 pub const SUBMIT_MARKER: &str = "\u{0}lotse-submit\u{0}";
 
 /// How long after `perm_hold` an answer still goes to the mod. The mod holds the hook 7.5 s.
-pub const HOLD_WINDOW: Duration = Duration::from_millis(7000);
+pub const HOLD_WINDOW: Duration = Duration::from_millis(4500);
 /// How long a submit waits for the mod's `submit_result` before it is forgotten.
 const RESULT_WINDOW: Duration = Duration::from_secs(10);
 /// The mod refuses longer texts (it counts UTF-16 units, so this is the safe side of 100 000).
@@ -205,6 +205,11 @@ fn resolve(
     let perm = snapshot.perm.filter(|_| at_prompt)?;
     if prompt_id.is_some_and(|id| perm.id.as_deref() != Some(id)) {
         return None; // the keystroke path says "stale prompt"
+    }
+    // a sub-agent asking too: the prompt on screen may not be the request the mod holds, so the
+    // keystroke path answers what is actually on screen
+    if snapshot.sub_agents.iter().any(|a| a.status == Status::Perm) {
+        return None;
     }
     if !state
         .two_way()

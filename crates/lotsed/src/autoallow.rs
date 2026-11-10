@@ -127,6 +127,10 @@ const DESTRUCTIVE_FLAGS: &[&str] = &[
     "--hard",
     "--no-verify",
     "--force-with-lease",
+    "--output",
+    "-o",
+    "-i",
+    "--in-place",
 ];
 
 /// One auto-allow rule.
@@ -240,6 +244,16 @@ fn is_sensitive(name: &str) -> bool {
             | ".claude"
             | ".lotse"
             | ".git-credentials"
+            | ".github"
+            | ".husky"
+            | ".vscode"
+            | ".gitlab-ci.yml"
+            | ".zshrc"
+            | ".bashrc"
+            | ".profile"
+            | "makefile"
+            | "package.json"
+            | "build.rs"
     ) || n.starts_with(".env")
         || n.starts_with("id_rsa")
         || n.starts_with("id_ed25519")
@@ -811,7 +825,6 @@ mod tests {
             "cat src/a.rs",
             "cat README.md",
             "ls -la docs",
-            "ls .github",
             "cat .gitignore",
         ] {
             assert!(runs(&auto, ok), "{ok:?}");
@@ -1035,7 +1048,9 @@ mod tests {
         ] {
             assert!(!read(&auto, &at(bad)), "{bad:?}");
         }
-        assert!(read(&auto, &at(".gitignore")) && read(&auto, &at(".github/ci.yml")));
+        assert!(read(&auto, &at(".gitignore")));
+        // files that run later (CI, hooks, build scripts) need an explicit rule too
+        assert!(!read(&auto, &at(".github/ci.yml")) && !read(&auto, &at("package.json")));
         let mut explicit = path_rule("r", "Read", "");
         explicit.allow_destructive = true;
         let auto = auto_with(on(vec![explicit]));
