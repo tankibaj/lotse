@@ -4,6 +4,7 @@
 //! lotse-hook [claude|codex|opencode] [--injected]    hook mode: stdin JSON -> lotsed (default claude)
 //! lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]
 //! lotse-hook mod-bridge | mod-status    the Claude mod's channel to lotsed (see `lotse_hook::mod_bridge`)
+//! lotse-hook mod-allow                  the mod asks whether an auto-allow rule lets a call skip its prompt
 //! lotse-hook mcp                                     the `lotse` MCP server on stdio (child sessions)
 //! ```
 //! Hook mode reads `LOTSE_SESSION_ID`, `LOTSE_SOCKET` and `LOTSE_TOKEN_FILE` (set by the daemon on
@@ -23,7 +24,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]\n       lotse-hook mod-bridge | mod-status\n       lotse-hook mcp";
+const USAGE: &str = "usage: lotse-hook [claude|codex|opencode] [--injected]\n       lotse-hook integration claude|opencode uninstall|status [--config-dir DIR]\n       lotse-hook mod-bridge | mod-status | mod-allow\n       lotse-hook mcp";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,6 +32,7 @@ fn main() -> ExitCode {
         Some("integration") => integration(&args[1..]),
         Some("mod-bridge") => mod_bridge::main(false),
         Some("mod-status") => mod_bridge::main(true),
+        Some("mod-allow") => mod_bridge::main_allow(),
         Some("mcp") => match lotse_hook::mcp::run_stdio(|name| std::env::var_os(name)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -73,10 +75,11 @@ fn hook(agent_arg: &str, injected: bool) {
         return;
     };
     cfg.injected = injected;
-    if let Err(e) = forward::run(&cfg, std::io::stdin().lock())
-        && debug
-    {
-        eprintln!("lotse-hook: {e:#}");
+    match forward::run_answer(&cfg, std::io::stdin().lock()) {
+        Ok((_, Some(answer))) => println!("{answer}"),
+        Ok(_) => {}
+        Err(e) if debug => eprintln!("lotse-hook: {e:#}"),
+        Err(_) => {}
     }
 }
 

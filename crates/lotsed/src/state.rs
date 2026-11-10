@@ -129,6 +129,8 @@ pub struct State {
     mods: ModAttachments,
     /// Held permission requests and unreported composer sends of the mod (`two_way`).
     two_way: crate::two_way::TwoWay,
+    /// Auto-allow rules (off until set), asked by the hook and the mod.
+    autoallow: crate::autoallow::AutoAllow,
 }
 
 impl State {
@@ -170,6 +172,7 @@ impl State {
             starts: StartRequests::default(),
             mods: ModAttachments::default(),
             two_way: crate::two_way::TwoWay::default(),
+            autoallow: crate::autoallow::AutoAllow::load(&data_dir),
         }))
     }
 
@@ -179,6 +182,10 @@ impl State {
 
     pub(crate) fn two_way(&self) -> &crate::two_way::TwoWay {
         &self.two_way
+    }
+
+    pub fn autoallow(&self) -> &crate::autoallow::AutoAllow {
+        &self.autoallow
     }
 
     pub(crate) fn usage_tracker(&self) -> &UsageTracker {
@@ -479,6 +486,13 @@ impl State {
                 }
             }
             Request::ModAttach { session_id } => mod_source::attach(self, client, session_id),
+            Request::HookEvent {
+                session_id,
+                payload,
+                ..
+            } if crate::autoallow::is_query(&payload) => {
+                self.autoallow_query(&client.name, session_id.as_ref(), &payload)
+            }
             Request::HookEvent { payload, .. }
                 if lotse_detect::claude_mod::is_mod_line(&payload)
                     && client.name != mod_source::MOD_CLIENT =>
