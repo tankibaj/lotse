@@ -1,10 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { PointerEvent as ReactPointerEvent } from 'react';
+import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import { Palette } from '../palette';
 import { Panes, TabStrip } from '../panes';
 import { SettingsPage } from '../settings';
 import { Sheets } from '../sheets';
 import { Sidebar } from '../sidebar';
+import { useFullscreen } from './useFullscreen';
+import { usePersistedFlag } from './usePersistedFlag';
+import {
+  SIDEBAR_SIDE_ITEM_ID,
+  STATUSBAR_ITEM_ID,
+  TOPBAR_LOCK_ITEM_ID,
+  onMenuSidebarSide,
+  onMenuStatusBar,
+  onMenuTopBarLock,
+} from '../settings/appMenu';
 import { StatusBar } from '../statusbar';
 import { Composer } from '../composer';
 import { RightPanel } from '../panels';
@@ -19,6 +29,9 @@ import { getSelectedSessionId } from '../lib/ui/selection';
 // shell-owned `data-slot` wrapper, so UI WPs fill their folder and never edit this file.
 
 const SIDE_KEY = 'lotse-side';
+const STATUSBAR_KEY = 'lotse-statusbar';
+const TOPBAR_LOCK_KEY = 'lotse-topbar-lock';
+const SIDE_RIGHT_KEY = 'lotse-side-right';
 const SIDE_MIN = 200;
 const SIDE_MAX = 420;
 const SIDE_DEFAULT = 260;
@@ -94,12 +107,44 @@ function PanelToolbar() {
   );
 }
 
+/**
+ * Full screen: a thin strip at the top edge that shows the bar (rendered by `children(peek)`) while the pointer is
+ * over it or focus is inside. Its state dies with it, so a hover cut short by an unmount cannot linger.
+ */
+function TopBarZone({ children }: { children: (peek: boolean) => ReactNode }) {
+  const [hover, setHover] = useState(false);
+  const [focusIn, setFocusIn] = useState(false);
+  return (
+    <div
+      className="relative z-30 h-1.5 shrink-0"
+      data-testid="topbar-hover"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      onFocusCapture={() => setFocusIn(true)}
+      onBlurCapture={() => setFocusIn(false)}
+    >
+      {children(hover || focusIn)}
+    </div>
+  );
+}
+
 export function Shell() {
   const [width, setWidth] = useState(loadWidth);
   const [hidden, setHidden] = useState(false);
 
   const toggleSidebar = useCallback(() => setHidden((h) => !h), []);
-
+  // View menu choices, saved in localStorage and mirrored as menu checkmarks. The footer status bar starts hidden.
+  // On the right the native traffic lights sit over the main column's bar. Full screen hides the top bar until the
+  // pointer reaches the top edge, unless it is locked.
+  const [statusBar, toggleStatusBar] = usePersistedFlag(STATUSBAR_KEY, STATUSBAR_ITEM_ID);
+  const [sideRight, toggleSideRight] = usePersistedFlag(SIDE_RIGHT_KEY, SIDEBAR_SIDE_ITEM_ID);
+  const [topBarLocked, toggleTopBarLock] = usePersistedFlag(TOPBAR_LOCK_KEY, TOPBAR_LOCK_ITEM_ID);
+  useEffect(() => onMenuStatusBar(toggleStatusBar), [toggleStatusBar]);
+  useEffect(() => onMenuSidebarSide(toggleSideRight), [toggleSideRight]);
+  useEffect(() => onMenuTopBarLock(toggleTopBarLock), [toggleTopBarLock]);
+  const lightsInMain = hidden || sideRight;
+  const isFullscreen = useFullscreen(); // macOS draws no traffic lights in full screen
+  const fullscreen = isFullscreen && !topBarLocked;
   const review = useReview();
 
   useEffect(() => onUiCommand('toggleSidebar', toggleSidebar), [toggleSidebar]);
@@ -155,7 +200,7 @@ export function Shell() {
     document.body.style.userSelect = 'none';
     document.body.style.cursor = 'col-resize';
     const move = (ev: PointerEvent) => {
-      latest = Math.min(SIDE_MAX, Math.max(SIDE_MIN, w0 + ev.clientX - x0));
+      latest = Math.min(SIDE_MAX, Math.max(SIDE_MIN, w0 + (sideRight ? x0 - ev.clientX : ev.clientX - x0)));
       setWidth(latest);
     };
     const up = () => {
@@ -173,20 +218,44 @@ export function Shell() {
     addEventListener('pointerup', up);
   };
 
+  const renderTopBar = (peek: boolean) => (
+    <div
+      className={`flex h-11 items-center border-b pt-px ${lightsInMain ? 'gap-2 px-3' : 'gap-1 px-2'} ${
+        fullscreen ? 'absolute inset-x-0 top-0 bg-win shadow-lg transition-transform duration-150' : 'shrink-0'
+      } ${fullscreen && !peek ? '-translate-y-full' : ''}`}
+      data-tauri-drag-region="deep"
+    >
+      {lightsInMain && (
+        <>
+          {!isFullscreen && <WindowControls />}
+          {hidden && (
+            <button className={`${iconButton} ${isFullscreen ? '' : 'ml-2'}`} aria-label="Show sidebar" title="Show sidebar ⌃⌘S" onClick={toggleSidebar}>
+              <SidebarIcon />
+            </button>
+          )}
+        </>
+      )}
+      <div data-slot="tabs" className="flex min-w-0 flex-1 items-center gap-1 self-stretch">
+        <TabStrip />
+      </div>
+      <PanelToolbar />
+    </div>
+  );
+
   return (
     <div className="relative flex h-screen min-h-[560px] flex-col bg-win text-txt" data-testid="shell">
-      <div className="flex min-h-0 flex-1">
+      <div className={`flex min-h-0 flex-1 ${sideRight ? 'flex-row-reverse' : ''}`}>
         {!hidden && (
           <>
             <aside
-              className="flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden border-r bg-side lotse-glass"
+              className={`flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden ${sideRight ? 'border-l' : 'border-r'} bg-side lotse-glass`}
               style={{ width }}
               aria-label="Sidebar"
               data-testid="sidebar-region"
             >
               <div className="flex h-11 shrink-0 items-center gap-2 px-3" data-tauri-drag-region="deep">
-                <WindowControls />
-                <span className="ml-2 font-semibold">Lotse</span>
+                {sideRight ? <span className="w-0" /> : <WindowControls />}
+                <span className={sideRight ? 'font-semibold' : 'ml-2 font-semibold'}>Lotse</span>
                 <button
                   className={`${iconButton} ml-auto`}
                   aria-label="Settings"
@@ -212,7 +281,7 @@ export function Shell() {
               </div>
             </aside>
             <div
-              className="z-10 -ml-0.5 w-1 cursor-col-resize hover:bg-blue/40"
+              className={`z-10 w-1 cursor-col-resize hover:bg-blue/40 ${sideRight ? '-mr-0.5' : '-ml-0.5'}`}
               role="separator"
               aria-label="Resize sidebar"
               aria-orientation="vertical"
@@ -220,27 +289,17 @@ export function Shell() {
             />
           </>
         )}
-        <main className="flex min-w-0 flex-1 flex-col">
+        <main className="relative flex min-w-0 flex-1 flex-col">
           {/* Everything in this row is centred on y = 22 px, the traffic lights' centre line (`pt-px` offsets the 1 px
               border). Sidebar hidden: the lights sit over the row's start, so it starts like the sidebar header
               (controls or their spacer, then the toggle where the title would begin). Tabs stay bottom-attached. */}
-          <div
-            className={`flex h-11 shrink-0 items-center border-b pt-px ${hidden ? 'gap-2 px-3' : 'gap-1 px-2'}`}
-            data-tauri-drag-region="deep"
-          >
-            {hidden && (
-              <>
-                <WindowControls />
-                <button className={`${iconButton} ml-2`} aria-label="Show sidebar" title="Show sidebar ⌃⌘S" onClick={toggleSidebar}>
-                  <SidebarIcon />
-                </button>
-              </>
-            )}
-            <div data-slot="tabs" className="flex min-w-0 flex-1 items-center gap-1 self-stretch">
-              <TabStrip />
-            </div>
-            <PanelToolbar />
-          </div>
+          {/* Full screen: the bar leaves the layout and slides in over the content while the pointer is at the top edge
+              (or focus is inside it). */}
+          {fullscreen ? (
+            <TopBarZone>{renderTopBar}</TopBarZone>
+          ) : (
+            renderTopBar(true)
+          )}
           <div className="flex min-h-0 flex-1">
             {/* A column: the panes take what the composer leaves, so an open composer shrinks (and refits) the terminals
                 instead of covering the bottom of them. */}
@@ -258,7 +317,8 @@ export function Shell() {
           </div>
         </main>
       </div>
-      <div data-slot="statusbar" className="contents">
+      {/* Hidden, not unmounted: the status bar also owns the ⌘T / ⌥⌘T session shortcuts and the daemon retry. */}
+      <div data-slot="statusbar" className={statusBar ? 'contents' : 'hidden'}>
         <StatusBar />
       </div>
       <div data-slot="sheets" className="contents">

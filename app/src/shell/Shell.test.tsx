@@ -30,7 +30,63 @@ describe('Shell', () => {
     }
     expect(screen.getByTestId('terminal-placeholder')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'New session' })).toBeInTheDocument();
-    expect(screen.getByRole('contentinfo')).toHaveTextContent('LAN Off');
+    // the status bar starts hidden but stays mounted (it owns the ⌘T session shortcuts)
+    expect(container.querySelector('[data-slot="statusbar"]')).toHaveClass('hidden');
+    expect(screen.getByRole('contentinfo', { hidden: true })).toHaveTextContent('LAN Off');
+  });
+
+  it('shows the status bar when the View menu choice was saved', () => {
+    localStorage.setItem('lotse-statusbar', '1');
+    const { container } = mount();
+    expect(container.querySelector('[data-slot="statusbar"]')).toHaveClass('contents');
+  });
+
+  it('drags the sidebar width the other way when it is on the right', () => {
+    localStorage.setItem('lotse-side-right', '1');
+    mount();
+    const w = () => Number.parseInt(screen.getByTestId('sidebar-region').style.width, 10);
+    const w0 = w();
+    fireEvent.pointerDown(screen.getByRole('separator'), { clientX: 1000 });
+    fireEvent(window, new MouseEvent('pointermove', { clientX: 960 }));
+    expect(w()).toBe(w0 + 40); // dragging left widens a right-hand sidebar
+    fireEvent(window, new MouseEvent('pointerup'));
+  });
+
+  describe('full screen', () => {
+    const setFullscreen = (on: boolean) => {
+      Object.defineProperty(document, 'fullscreenElement', { value: on ? document.body : null, configurable: true });
+      act(() => void document.dispatchEvent(new Event('fullscreenchange')));
+    };
+    afterEach(() => setFullscreen(false));
+
+    it('slides the top bar in on hover at the top edge', async () => {
+      mount();
+      expect(screen.queryByTestId('topbar-hover')).toBeNull();
+      setFullscreen(true);
+      const zone = screen.getByTestId('topbar-hover');
+      const bar = zone.firstElementChild as HTMLElement;
+      expect(bar).toHaveClass('-translate-y-full');
+      await userEvent.hover(zone);
+      expect(bar).not.toHaveClass('-translate-y-full');
+      await userEvent.unhover(zone);
+      expect(bar).toHaveClass('-translate-y-full');
+    });
+
+    it('forgets a hover that ended without a mouseleave (lock toggled under the pointer)', async () => {
+      mount();
+      setFullscreen(true);
+      await userEvent.hover(screen.getByTestId('topbar-hover'));
+      setFullscreen(false);
+      setFullscreen(true);
+      expect(screen.getByTestId('topbar-hover').firstElementChild).toHaveClass('-translate-y-full');
+    });
+
+    it('keeps the top bar in the layout when locked from the View menu', () => {
+      localStorage.setItem('lotse-topbar-lock', '1');
+      mount();
+      setFullscreen(true);
+      expect(screen.queryByTestId('topbar-hover')).toBeNull();
+    });
   });
 
   it('both title bars drag the window from any non-button spot (title text, empty tab strip)', () => {

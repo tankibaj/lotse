@@ -55,6 +55,7 @@ pub fn run() {
             daemon::daemon_connect,
             daemon::daemon_request,
             daemon::daemon_pty_write,
+            menu::set_menu_check,
             notify::set_badge,
             notify::set_focused_session,
             host::scan_repos,
