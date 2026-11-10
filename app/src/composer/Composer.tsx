@@ -9,7 +9,8 @@ import { NotSubmitted, sendPrompt } from './send';
 
 /**
  * The prompt composer: a multi-line box under the panes, for the focused (selected) session.
- * Return sends the text as a paste (`send.ts`), then a carriage return of its own; ⇧Return adds a line, Esc closes. One draft per
+ * Return sends the text as a paste (`send.ts`), then a carriage return of its own (with the Claude mod live: one write the
+ * daemon hands to the mod); ⇧Return adds a line, Esc closes. One draft per
  * session survives closing; a sent draft is gone. A plain `<textarea>`, so macOS Dictation and input methods work.
  * Opened by the `openComposer` command (⌘⇧Return in the shell); focus returns to where it was when it closes.
  */
@@ -58,7 +59,9 @@ export function Composer() {
     const id = sessionId;
     setText(id, '');
     close();
-    sendPrompt(client, id, text).catch((e: unknown) => {
+    // with the Claude mod live the daemon submits through it (and types it when the mod cannot)
+    const viaMod = sessions.find((s) => s.id === id)?.source_layer === 'mod';
+    sendPrompt(client, id, text, viaMod).catch((e: unknown) => {
       const message = e instanceof Error ? e.message : 'Could not send';
       if (e instanceof NotSubmitted) {
         // the words are already in the agent's input: no draft to restore, just say Return did not follow

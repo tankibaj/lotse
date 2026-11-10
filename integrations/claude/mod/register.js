@@ -3,9 +3,14 @@
 //
 // Out: status lines (JSON, one per line) go to Lotse through `lotse-hook mod-status`, only while the
 // bridge below is attached. In: `lotse-hook mod-bridge` runs for the session's life and writes the
-// daemon's commands to its stdout, one JSON line each (today only `ping`). Neither carries a secret:
-// the binary finds the socket and its credential file itself. Every hook here only observes: it
-// answers what `next` answers, so a failure in Lotse never changes what Claude does.
+// daemon's commands to its stdout, one JSON line each (`ping`, `submit`, `answer`). Neither carries a
+// secret: the binary finds the socket and its credential file itself. Every hook here but one only
+// observes: it answers what `next` answers, so a failure in Lotse never changes what Claude does.
+//
+// The exception is the two-way part. `submit` hands the composer's text to `$.prompt.submit`. A
+// `PermissionRequest` is held for at most HOLD_MS while the sidebar's Allow/Deny may arrive as `answer`;
+// after that (or with no bridge, or with another request already held) it goes on to the dialog, and
+// Lotse answers by keystrokes. Claude cuts a hook at 10 s and ignores a late allow, hence the margin.
 //
 // Loader rules (`claude plugin validate`): `$` goes only to top-level functions, `$.env.get` takes a
 // literal name, no dynamic imports.
@@ -14,12 +19,15 @@ const MOD_VERSION = 1
 const MIN_VERSION = [2, 1, 311] // the early-access module API; older builds get hooks and screen only
 const HEARTBEAT_MS = 10000
 const MAX_SUMMARY = 200
+const HOLD_MS = 7500 // Lotse's window to answer a permission request; the daemon's own is a little shorter
+const MAX_SUBMIT = 100000
 const MAX_FAST_DEATHS = 5 // a bridge that dies this many times in a row, each within MIN_LIFE_MS, is given up on
 const MIN_LIFE_MS = 5000
 const SUMMARY_KEYS = ['command', 'file_path', 'notebook_path', 'path', 'url', 'pattern', 'query', 'description']
 
 // state of this load of the module (a reload starts it over)
-const live = { on: false, up: false, flushing: false, bin: 'lotse-hook', queue: [] }
+// `hold`: resolves the permission request being held with Lotse's decision, `null` when none is held
+const live = { on: false, up: false, flushing: false, bin: 'lotse-hook', queue: [], hold: null }
 
 const cap = text => (typeof text === 'string' ? text.slice(0, MAX_SUMMARY) : undefined)
 
@@ -97,8 +105,39 @@ async function onBridgeLine($, text) {
     await beat($)
   } else if (message?.cmd === 'ping') {
     await beat($)
+  } else if (message?.cmd === 'answer') {
+    // only Allow and Deny: "always" changes what Claude may do later, so it stays a keystroke answer
+    if (live.hold && (message.decision === 'allow' || message.decision === 'deny')) live.hold(message.decision)
+  } else if (message?.cmd === 'submit' && live.up) {
+    await submit($, message.text)
   }
-  // other commands (`submit`, `answer`) are not handled yet
+}
+
+// The composer's text into the prompt; Lotse types it itself when this says it did not work.
+async function submit($, text) {
+  if (typeof text !== 'string' || text === '' || text.length > MAX_SUBMIT) return
+  let ok = false
+  try {
+    await $.prompt.submit(text)
+    ok = true
+  } catch {}
+  emit($, { t: 'submit_result', ok })
+}
+
+// Hold a permission request for Lotse's answer. One at a time: an answer names no agent, so with two
+// held it could land on the wrong one.
+async function holdPermission($, e, next) {
+  if (!live.on || !live.up || live.hold) return next(e)
+  const answered = new Promise(resolve => {
+    live.hold = resolve
+  })
+  emit($, { t: 'perm_hold', agent_id: e.agent_id ?? e.agentId, tool: String(e.tool_name ?? e.tool ?? '') })
+  const decision = await Promise.race([answered, $.clock.sleep(HOLD_MS).then(() => null)])
+  live.hold = null
+  emit($, { t: 'perm_release' })
+  if (decision === 'allow') return { decision: { behavior: 'allow' } }
+  if (decision === 'deny') return { decision: { behavior: 'deny', message: 'Denied from Lotse' } }
+  return next(e)
 }
 
 // Keeps `lotse-hook mod-bridge` running; its stdout is the daemon's commands.
@@ -159,6 +198,8 @@ export const register = on => {
     }
     return verdict
   })
+
+  on('classic.PermissionRequest', ($, e, next) => holdPermission($, e, next))
 
   on('turn.complete', ($, e, next) => {
     const u = e.usage

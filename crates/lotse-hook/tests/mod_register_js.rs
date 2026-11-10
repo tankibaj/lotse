@@ -24,7 +24,9 @@ const hooks = {}
 register((ev, a, b) => { hooks[ev] = b ?? a }, {})
 const settle = () => new Promise(r => setTimeout(r, 40))
 function world(o = {}) {
-  const calls = { run: [], spawn: [], every: [] }
+  const calls = { run: [], spawn: [], every: [], sleeps: [] }
+  const fed = []
+  let wake
   let now = 1000
   const env = { LOTSE_SESSION_ID: 'a1', LOTSE_HOOK_BIN: '/bin/lh', ...(o.env ?? {}) }
   const $ = {
@@ -40,7 +42,11 @@ function world(o = {}) {
     agent: { list: async () => [{ id: 'g1', type: 'general-purpose', description: 'Count', status: 'running', name: 'n' }] },
     clock: {
       now: async () => (now += o.tick ?? 0),
-      sleep: async () => {},
+      // a sleep of the hold's length (7.5 s, under the hook's 10 s cut) waits for `expire()`; any other returns at once
+      sleep: ms => {
+        calls.sleeps.push(ms)
+        return ms === 7500 ? new Promise(r => { calls.expire = r }) : Promise.resolve()
+      },
       every: (ms, fn) => { calls.every.push({ ms, fn }); return () => {} },
     },
     process: {
@@ -53,13 +59,20 @@ function world(o = {}) {
         calls.spawn.push(req)
         return (async function* () {
           for (const text of o.chunks ?? []) yield { stream: 'stdout', text }
-          if (!o.ends || calls.spawn.length > 8) await new Promise(() => {})
+          if (o.ends && calls.spawn.length <= 8) return
+          for (;;) {
+            while (fed.length) yield { stream: 'stdout', text: fed.shift() }
+            await new Promise(r => { wake = r })
+          }
         })()
       },
     },
   }
   const sent = () => calls.run.flatMap(c => (c.stdin ?? '').split('\n').filter(Boolean).map(l => JSON.parse(l)))
-  return { $, calls, sent }
+  // a line the bridge prints after the start (`feed('{"cmd":"ping"}\n')`)
+  const feed = text => { fed.push(text); wake?.() }
+  const expire = () => calls.expire?.()
+  return { $, calls, sent, feed, expire }
 }
 const start = ($, e = { cwd: '/p' }) => hooks['session.start']($, e, async x => ({ started: true }))
 const out = v => { console.log(JSON.stringify(v)); process.exit(0) }
@@ -107,6 +120,7 @@ fn the_mod_registers_its_hooks_and_nothing_else() {
     assert_eq!(
         got,
         serde_json::json!([
+            "classic.PermissionRequest",
             "session.end",
             "session.start",
             "tool.call",
@@ -379,4 +393,207 @@ fn session_end_stops_the_reporting() {
     );
     let Some(got) = scenario(&body) else { return };
     assert_eq!(got, serde_json::json!({"r": {"ended": true}, "after": 0}));
+}
+
+/// A held `PermissionRequest` (`held()`, its answer pending) and what it falls through to (`next`).
+const HOLD: &str = r#"
+        const next = async e => ({ passed: 'on' })
+        const held = (e = { tool_name: 'Bash', agent_id: 'g1' }) => hooks['classic.PermissionRequest'](w.$, e, next)"#;
+
+fn held_scenario(world: &str, body: &str) -> Option<Value> {
+    scenario(&format!(
+        r#"
+        const w = world({{ {world} }})
+        await start(w.$)
+        await settle()
+        {HOLD}
+        {body}"#
+    ))
+}
+
+#[test]
+fn an_allow_from_lotse_answers_the_held_permission_request_and_releases_it() {
+    let Some(got) = held_scenario(
+        ATTACHED,
+        r#"
+        const pending = held()
+        await settle()
+        const mid = w.sent().filter(l => l.t === 'perm_hold')
+        w.feed('{"cmd":"answer","prompt_id":"p1","decision":"allow"}\n')
+        const r = await pending
+        await settle()
+        out({ mid, r, release: w.sent().filter(l => l.t === 'perm_release'),
+              waits: w.calls.sleeps.filter(ms => ms === 7500).length })"#,
+    ) else {
+        return;
+    };
+    assert_eq!(
+        got["mid"],
+        serde_json::json!([{"t": "perm_hold", "agent_id": "g1", "tool": "Bash"}])
+    );
+    assert_eq!(
+        got["r"],
+        serde_json::json!({"decision": {"behavior": "allow"}})
+    );
+    assert_eq!(got["release"], serde_json::json!([{"t": "perm_release"}]));
+    assert_eq!(
+        got["waits"], 1,
+        "it waits 7.5 s at most, under the hook's 10 s cut"
+    );
+}
+
+#[test]
+fn a_deny_from_lotse_denies_with_a_message() {
+    let Some(got) = held_scenario(
+        ATTACHED,
+        r#"
+        const pending = held()
+        await settle()
+        w.feed('{"cmd":"answer","prompt_id":null,"decision":"deny"}\n')
+        out(await pending)"#,
+    ) else {
+        return;
+    };
+    assert_eq!(got["decision"]["behavior"], "deny");
+    assert!(
+        got["decision"]["message"]
+            .as_str()
+            .is_some_and(|m| !m.is_empty())
+    );
+}
+
+#[test]
+fn without_an_answer_the_request_goes_on_after_the_wait_and_a_late_answer_is_ignored() {
+    let Some(got) = held_scenario(
+        ATTACHED,
+        r#"
+        const pending = held()
+        await settle()
+        w.expire()
+        const r = await pending
+        await settle()
+        w.feed('{"cmd":"answer","decision":"allow"}\n')
+        await settle()
+        out({ r, release: w.sent().filter(l => l.t === 'perm_release').length })"#,
+    ) else {
+        return;
+    };
+    assert_eq!(got["r"], serde_json::json!({"passed": "on"}));
+    assert_eq!(got["release"], 1);
+}
+
+#[test]
+fn a_request_is_not_held_while_the_bridge_is_not_attached() {
+    let Some(got) = held_scenario(
+        "chunks: []",
+        r#"
+        const r = await held()
+        await settle()
+        out({ r, sent: w.sent().length })"#,
+    ) else {
+        return;
+    };
+    assert_eq!(got, serde_json::json!({"r": {"passed": "on"}, "sent": 0}));
+}
+
+#[test]
+fn only_one_request_is_held_at_a_time() {
+    let Some(got) = held_scenario(
+        ATTACHED,
+        r#"
+        const first = held({ tool_name: 'Bash' })
+        await settle()
+        const second = await held({ tool_name: 'Edit' })
+        w.feed('{"cmd":"answer","decision":"allow"}\n')
+        out({ second, first: await first, holds: w.sent().filter(l => l.t === 'perm_hold').length })"#,
+    ) else {
+        return;
+    };
+    assert_eq!(got["second"], serde_json::json!({"passed": "on"}));
+    assert_eq!(
+        got["first"],
+        serde_json::json!({"decision": {"behavior": "allow"}})
+    );
+    assert_eq!(got["holds"], 1);
+}
+
+#[test]
+fn an_answer_other_than_allow_or_deny_is_not_taken() {
+    let Some(got) = held_scenario(
+        ATTACHED,
+        r#"
+        const pending = held()
+        await settle()
+        w.feed('{"cmd":"answer","decision":"always"}\n{"cmd":"answer"}\n')
+        await settle()
+        w.expire()
+        out(await pending)"#,
+    ) else {
+        return;
+    };
+    assert_eq!(got, serde_json::json!({"passed": "on"}));
+}
+
+#[test]
+fn a_submit_from_lotse_goes_to_the_prompt_and_is_reported() {
+    let Some(got) = scenario(&format!(
+        r#"
+        const w = world({{ {ATTACHED} }})
+        const submitted = []
+        w.$.prompt = {{ submit: async text => {{ submitted.push(text) }} }}
+        await start(w.$)
+        await settle()
+        w.feed('{{"cmd":"submit","text":"run the tests\\nthen lint"}}\n')
+        await settle()
+        out({{ submitted, results: w.sent().filter(l => l.t === 'submit_result') }})"#
+    )) else {
+        return;
+    };
+    assert_eq!(
+        got["submitted"],
+        serde_json::json!(["run the tests\nthen lint"])
+    );
+    assert_eq!(
+        got["results"],
+        serde_json::json!([{"t": "submit_result", "ok": true}])
+    );
+}
+
+#[test]
+fn a_submit_that_throws_is_reported_failed() {
+    let Some(got) = scenario(&format!(
+        r#"
+        const w = world({{ {ATTACHED} }})
+        w.$.prompt = {{ submit: async () => {{ throw new Error('busy') }} }}
+        await start(w.$)
+        await settle()
+        w.feed('{{"cmd":"submit","text":"x"}}\n')
+        await settle()
+        out(w.sent().filter(l => l.t === 'submit_result'))"#
+    )) else {
+        return;
+    };
+    assert_eq!(
+        got,
+        serde_json::json!([{"t": "submit_result", "ok": false}])
+    );
+}
+
+#[test]
+fn a_submit_without_a_prompt_api_is_reported_failed_and_an_empty_one_is_ignored() {
+    let Some(got) = scenario(&format!(
+        r#"
+        const w = world({{ {ATTACHED} }})
+        await start(w.$)
+        await settle()
+        w.feed('{{"cmd":"submit","text":"x"}}\n{{"cmd":"submit","text":""}}\n{{"cmd":"submit"}}\n')
+        await settle()
+        out(w.sent().filter(l => l.t === 'submit_result'))"#
+    )) else {
+        return;
+    };
+    assert_eq!(
+        got,
+        serde_json::json!([{"t": "submit_result", "ok": false}])
+    );
 }
