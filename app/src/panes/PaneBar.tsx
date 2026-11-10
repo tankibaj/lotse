@@ -60,7 +60,7 @@ export function PaneBar({ session: s, project, focused, onClose, onCollapse, onH
   const Agent = AGENT_ICON[s.agent];
   return (
     <div
-      className="flex h-7 shrink-0 items-center gap-2 border-b px-3 text-[12px]"
+      className="flex h-7 shrink-0 items-center gap-2 border-b px-3 text-[12px] group-data-[topbar-hidden]/panes:hidden"
       style={focused ? { boxShadow: 'inset 0 2px 0 var(--blue)' } : undefined}
       data-testid="pane-status"
       data-focused={focused}

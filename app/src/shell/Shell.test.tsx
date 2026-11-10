@@ -188,6 +188,27 @@ describe('Shell', () => {
     expect(screen.getByLabelText('Sidebar')).toBeInTheDocument();
   });
 
+  it('⌃⌘Z toggles focus mode: sidebar, tab bar and status bar are hidden, then back', () => {
+    localStorage.setItem('lotse-statusbar', '1');
+    mount();
+    const bars = () => [
+      screen.queryByLabelText('Sidebar'),
+      screen.getByTestId('shell').querySelector('[data-slot="tabs"]')?.parentElement,
+      screen.getByTestId('shell').querySelector('[data-slot="statusbar"]'),
+    ];
+    const key = () => fireEvent.keyDown(window, { code: 'KeyZ', metaKey: true, ctrlKey: true });
+    key();
+    const [side, top, status] = bars();
+    expect(side).toBeNull();
+    expect(top).toHaveClass('hidden');
+    expect(status).toHaveClass('hidden');
+    key();
+    const [side2, top2, status2] = bars();
+    expect(side2).toBeInTheDocument();
+    expect(top2).not.toHaveClass('hidden');
+    expect(status2).toHaveClass('contents');
+  });
+
   it('restores a saved sidebar width and rejects out-of-range values', () => {
     localStorage.setItem('lotse-side', '320');
     const first = mount();

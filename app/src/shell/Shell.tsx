@@ -149,6 +149,9 @@ export function Shell() {
   const [hidden, setHidden] = useState(false);
 
   const toggleSidebar = useCallback(() => setHidden((h) => !h), []);
+  // Focus mode (⌃⌘Z): only the terminals; sidebar, top bar, pane bars and status bar are hidden until toggled back.
+  const [focus, setFocus] = useState(false);
+  const toggleFocus = useCallback(() => setFocus((f) => !f), []);
   // View menu choices, saved in localStorage and mirrored as menu checkmarks. The footer status bar starts hidden.
   // On the right the native traffic lights sit over the main column's bar. Full screen hides the top bar until the
   // pointer reaches the top edge, unless it is locked.
@@ -191,7 +194,11 @@ export function Shell() {
         e.preventDefault();
         fn();
       };
-      if (e.ctrlKey) return e.code === 'KeyS' ? handled(toggleSidebar) : undefined;
+      if (e.ctrlKey) {
+        if (e.code === 'KeyS') return handled(toggleSidebar);
+        if (e.code === 'KeyZ') return handled(toggleFocus);
+        return;
+      }
       // ⇧⌘ + letter: the panels. ⌘⇧Return: the composer. ⇧⌘R: review the selected session's changes
       // (⌥⌘D is macOS's own Show/Hide Dock: the OS takes it before the app sees it).
       if (e.shiftKey && !e.altKey) {
@@ -206,7 +213,7 @@ export function Shell() {
     };
     addEventListener('keydown', onKey);
     return () => removeEventListener('keydown', onKey);
-  }, [toggleSidebar]);
+  }, [toggleSidebar, toggleFocus]);
 
   const startResize = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -245,7 +252,7 @@ export function Shell() {
     <div
       className={`flex h-11 items-center border-b pt-px ${lightsInMain ? 'gap-2 px-3' : 'gap-1 px-2'} ${
         fullscreen ? 'absolute inset-x-0 top-0 bg-win shadow-lg transition-transform duration-150' : 'shrink-0'
-      } ${fullscreen ? (peek ? (inTauri() ? NATIVE_TITLEBAR : '') : '-translate-y-full') : ''}`}
+      } ${focus ? 'hidden' : ''} ${fullscreen ? (peek ? (inTauri() ? NATIVE_TITLEBAR : '') : '-translate-y-full') : ''}`}
       data-tauri-drag-region="deep"
     >
       {lightsInMain && (
@@ -265,7 +272,7 @@ export function Shell() {
   return (
     <div className="relative flex h-screen min-h-[560px] flex-col bg-win text-txt" data-testid="shell">
       <div className={`flex min-h-0 flex-1 ${sideRight ? 'flex-row-reverse' : ''}`}>
-        {!hidden && (
+        {!hidden && !focus && (
           <>
             <aside
               className={`flex min-h-0 min-w-0 shrink-0 flex-col overflow-hidden ${sideRight ? 'border-l' : 'border-r'} bg-side lotse-glass`}
@@ -315,7 +322,7 @@ export function Shell() {
               (controls or their spacer, then the toggle where the title would begin). Tabs stay bottom-attached. */}
           {/* Full screen: the bar leaves the layout and slides in over the content while the pointer is at the top edge
               (or focus is inside it). */}
-          {fullscreen ? (
+          {fullscreen && !focus ? (
             <TopBarZone>{renderTopBar}</TopBarZone>
           ) : (
             renderTopBar(true)
@@ -323,7 +330,11 @@ export function Shell() {
           <div className="flex min-h-0 flex-1">
             {/* A column: the panes take what the composer leaves, so an open composer shrinks (and refits) the terminals
                 instead of covering the bottom of them. */}
-            <div data-slot="panes" className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <div
+              data-slot="panes"
+              data-topbar-hidden={fullscreen || focus || undefined}
+              className="group/panes relative flex min-h-0 min-w-0 flex-1 flex-col"
+            >
               <div className="flex min-h-0 min-w-0 flex-1">
                 <Panes />
               </div>
@@ -338,7 +349,7 @@ export function Shell() {
         </main>
       </div>
       {/* Hidden, not unmounted: the status bar also owns the ⌘T / ⌥⌘T session shortcuts and the daemon retry. */}
-      <div data-slot="statusbar" className={statusBar ? 'contents' : 'hidden'}>
+      <div data-slot="statusbar" className={statusBar && !focus ? 'contents' : 'hidden'}>
         <StatusBar />
       </div>
       <div data-slot="sheets" className="contents">
