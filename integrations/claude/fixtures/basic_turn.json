@@ -1,0 +1,13 @@
+{
+  "description": "One prompt/response turn: idle → run → done → run → idle (mock: a plain Claude Code session).",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "session_start.startup_resume_clear", "at": 1000, "payload": {"session_id": "c0ffee", "cwd": "/work/billing-api", "hook_event_name": "SessionStart", "source": "startup"}, "update": true, "status": "idle", "running_since": null},
+    {"row": "prompt", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "fix invoice rounding"}, "update": true, "status": "run", "running_since": 2000},
+    {"row": "pre_tool.lead", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": "/work/billing-api/src/invoice.rs"}, "tool_use_id": "t1"}, "update": false, "status": "run"},
+    {"row": "post_tool.lead", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "PostToolUse", "tool_name": "Read", "tool_input": {"file_path": "/work/billing-api/src/invoice.rs"}, "tool_use_id": "t1"}, "update": false, "status": "run"},
+    {"row": "stop", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop", "stop_hook_active": false}, "update": true, "status": "done", "running_since": null},
+    {"row": "prompt", "at": 6000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "now add a test"}, "update": true, "status": "run", "running_since": 6000},
+    {"row": "session_end", "at": 7000, "payload": {"session_id": "c0ffee", "hook_event_name": "SessionEnd", "reason": "prompt_input_exit"}, "update": true, "status": "idle", "running_since": null}
+  ]
+}

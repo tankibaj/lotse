@@ -1,0 +1,68 @@
+name: Bug report
+description: Something in Lotse is wrong (status, terminal, sidebar, hooks, notifications).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste tokens, `.env` values, the contents of `~/Library/Application Support/Lotse/token`, or session transcripts. Redact paths and project names if you need to.
+  - type: input
+    id: version
+    attributes:
+      label: Lotse version
+      description: Git commit of the build (`git rev-parse --short HEAD`) or the version in Lotse.app.
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.1 (Apple Silicon)"
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Claude Code
+        - Codex
+        - OpenCode
+        - Shell
+        - Not agent related
+    validations:
+      required: true
+  - type: input
+    id: agent_version
+    attributes:
+      label: Agent version
+      description: Output of `claude --version`, `codex --version` or `opencode --version`.
+  - type: dropdown
+    id: hooks
+    attributes:
+      label: Hooks or plugin installed (Settings › Agents)?
+      options:
+        - "Yes"
+        - "No"
+        - Not sure
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. New session › Claude Code in project X
+        2. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual
+      description: For a wrong status, say what the card showed (run, perm, fail, done, idle) and what the agent was really doing.
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshot (check it shows no secrets), or the last lines of `~/Library/Application Support/Lotse/lotsed.log` with secrets removed.

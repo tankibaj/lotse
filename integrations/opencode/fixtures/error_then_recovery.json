@@ -1,0 +1,21 @@
+{
+  "description": "A failed turn shows fail once OpenCode is idle again; the next turn starts clean; a user abort (Esc) is not a failure and sends nothing.",
+  "provenance": "Authored, not recorded: event names and fields follow Orca's OpenCode status plugin; the session.error shape (error.name, error.data.message) is Unverified against a live OpenCode.",
+  "events": [
+    { "type": "session.created", "properties": { "info": { "id": "ses_1", "title": "New session" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "busy" } } },
+    { "type": "session.error", "properties": { "sessionID": "ses_1", "error": { "name": "APIError", "data": { "message": "rate limited" } } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "idle" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "busy" } } },
+    { "type": "session.error", "properties": { "sessionID": "ses_1", "error": { "name": "MessageAbortedError", "data": { "message": "aborted by the user" } } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "idle" } } }
+  ],
+  "payloads": [
+    { "payload": { "hook_event_name": "SessionCreated", "session_id": "ses_1", "title": "New session" }, "expect": "idle" },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "busy" }, "expect": "run" },
+    { "payload": { "hook_event_name": "SessionError", "session_id": "ses_1", "message": "rate limited" }, "expect": "run" },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "idle" }, "expect": "fail" },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "busy" }, "expect": "run" },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "idle" }, "expect": "done" }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "description": "Mock session c1: Esc cancels a turn. Codex fires Interrupt, and no Stop.",
+  "provenance": "shaped like the hook payloads of Codex 0.162.1 (fields read from the binary and from Orca's Codex hook handling), authored, not recorded from a live agent",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "019a7c1e-0000-7000-8000-000000000001", "turn_id": "019a7c1e-1111-7000-8000-000000000002", "transcript_path": "/Users/dev/.codex/sessions/2026/11/02/rollout-2026-11-02T10-00-00-019a7c1e-0000-7000-8000-000000000001.jsonl", "model": "gpt-5.5", "permission_mode": "default", "hook_event_name": "UserPromptSubmit"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "interrupt", "at": 2000, "payload": {"session_id": "019a7c1e-0000-7000-8000-000000000001", "turn_id": "019a7c1e-1111-7000-8000-000000000002", "transcript_path": "/Users/dev/.codex/sessions/2026/11/02/rollout-2026-11-02T10-00-00-019a7c1e-0000-7000-8000-000000000001.jsonl", "model": "gpt-5.5", "permission_mode": "default", "hook_event_name": "Interrupt"}, "update": true, "status": "done", "running_since": null},
+    {"row": "interrupt", "at": 2500, "payload": {"session_id": "019a7c1e-0000-7000-8000-000000000001", "turn_id": "019a7c1e-1111-7000-8000-000000000002", "transcript_path": "/Users/dev/.codex/sessions/2026/11/02/rollout-2026-11-02T10-00-00-019a7c1e-0000-7000-8000-000000000001.jsonl", "model": "gpt-5.5", "permission_mode": "default", "hook_event_name": "Interrupt"}, "update": false, "status": "done"}
+  ]
+}

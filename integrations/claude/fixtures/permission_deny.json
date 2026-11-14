@@ -1,0 +1,11 @@
+{
+  "description": "Permission denied in the terminal: no PostToolUse fires, the next PreToolUse clears the prompt; a multi-line command shows its first line.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "prompt", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "UserPromptSubmit", "prompt": "refactor"}, "update": true, "status": "run", "running_since": 1000},
+    {"row": "perm_request.lead", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "PermissionRequest", "tool_name": "Write", "tool_input": {"file_path": "/work/app/src/a.ts", "content": "export {}\n"}}, "update": true, "status": "perm", "perm": {"tool": "Write", "summary": "/work/app/src/a.ts"}},
+    {"row": "perm.cleared_by_next_pre_tool", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PreToolUse", "tool_name": "Read", "tool_input": {"file_path": "/work/app/src/b.ts"}, "tool_use_id": "t2"}, "update": true, "status": "run", "perm": null, "running_since": 3000},
+    {"row": "perm_request.lead", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "git push origin main\n# then tag\ngit push --tags"}}, "update": true, "status": "perm", "perm": {"tool": "Bash", "summary": "git push origin main"}},
+    {"row": "stop", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "Stop"}, "update": true, "status": "done", "perm": null}
+  ]
+}

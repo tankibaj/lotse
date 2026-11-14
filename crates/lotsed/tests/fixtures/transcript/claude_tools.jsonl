@@ -1,0 +1,7 @@
+{"type":"summary","summary":"Fixture: tests and a failing sub-agent"}
+{"type":"user","timestamp":"2026-11-03T09:00:00.000Z","message":{"role":"user","content":"Run the tests, then ask the explorer who calls round_cents"}}
+{"type":"assistant","timestamp":"2026-11-03T09:00:05.000Z","message":{"role":"assistant","model":"claude-opus-4-5","content":[{"type":"text","text":"Running the tests."},{"type":"tool_use","id":"toolu_01","name":"Bash","input":{"command":"cargo test"}}]}}
+{"type":"user","timestamp":"2026-11-03T09:00:20.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_01","content":"test result: ok. 12 passed; 0 failed"}]}}
+{"type":"assistant","timestamp":"2026-11-03T09:00:30.000Z","message":{"role":"assistant","model":"claude-opus-4-5","content":[{"type":"tool_use","id":"toolu_02","name":"Task","input":{"subagent_type":"explorer","description":"Find callers of round_cents","prompt":"List every caller of round_cents."}}]}}
+{"type":"user","timestamp":"2026-11-03T09:00:40.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_02","is_error":true,"content":[{"type":"text","text":"explorer failed: boom"}]}]}}
+{"type":"assistant","timestamp":"2026-11-03T09:00:50.000Z","message":{"role":"assistant","model":"claude-opus-4-5","content":[{"type":"text","text":"Starting a long task."},{"type":"tool_use","id":"toolu_03","name":"Bash","input":{"command":"sleep 600"}}]}}

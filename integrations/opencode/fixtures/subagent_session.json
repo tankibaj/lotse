@@ -1,0 +1,26 @@
+{
+  "description": "A child session (the task tool's sub-agent): it holds the card open after the lead idles, asks for a permission, finishes, and is dropped when the next turn starts.",
+  "provenance": "Authored, not recorded: event names and fields follow Orca's OpenCode status plugin (child sessions carry info.parentID); not checked against a live OpenCode.",
+  "events": [
+    { "type": "session.created", "properties": { "info": { "id": "ses_1", "title": "Fix tests" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "busy" } } },
+    { "type": "session.created", "properties": { "info": { "id": "ses_c", "parentID": "ses_1", "title": "Explore repo" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_c", "status": { "type": "busy" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "idle" } } },
+    { "type": "permission.asked", "properties": { "id": "per_c", "sessionID": "ses_c", "permission": "edit", "patterns": ["src/a.ts"] } },
+    { "type": "permission.replied", "properties": { "sessionID": "ses_c", "requestID": "per_c" } },
+    { "type": "session.status", "properties": { "sessionID": "ses_c", "status": { "type": "idle" } } },
+    { "type": "session.status", "properties": { "sessionID": "ses_1", "status": { "type": "busy" } } }
+  ],
+  "payloads": [
+    { "payload": { "hook_event_name": "SessionCreated", "session_id": "ses_1", "title": "Fix tests" }, "expect": "idle", "sub_agents": [] },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "busy" }, "expect": "run", "sub_agents": [] },
+    { "payload": { "hook_event_name": "SessionCreated", "session_id": "ses_c", "parent_id": "ses_1", "title": "Explore repo" }, "expect": "run", "sub_agents": [{ "id": "ses_c", "name": "Explore repo", "status": "idle" }] },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_c", "parent_id": "ses_1", "status": "busy" }, "expect": "run", "sub_agents": [{ "id": "ses_c", "name": "Explore repo", "status": "run" }] },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "idle" }, "expect": "run", "sub_agents": [{ "id": "ses_c", "name": "Explore repo", "status": "run" }] },
+    { "payload": { "hook_event_name": "PermissionAsked", "session_id": "ses_c", "parent_id": "ses_1", "request_id": "per_c", "tool": "edit", "summary": "src/a.ts" }, "expect": "perm", "perm": { "tool": "edit", "summary": "src/a.ts" }, "sub_agents": [{ "id": "ses_c", "name": "Explore repo", "status": "perm" }] },
+    { "payload": { "hook_event_name": "PermissionReplied", "session_id": "ses_c", "parent_id": "ses_1", "request_id": "per_c" }, "expect": "run", "sub_agents": [{ "id": "ses_c", "name": "Explore repo", "status": "run" }] },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_c", "parent_id": "ses_1", "status": "idle" }, "expect": "done", "sub_agents": [{ "id": "ses_c", "name": "Explore repo", "status": "done" }] },
+    { "payload": { "hook_event_name": "SessionStatus", "session_id": "ses_1", "status": "busy" }, "expect": "run", "sub_agents": [] }
+  ]
+}

@@ -1,0 +1,62 @@
+[package]
+name = "lotse-app"
+description = "Lotse Tauri shell: bridges the webview to lotsed."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "lotse_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { workspace = true }
+
+[dependencies]
+lotse-proto = { workspace = true }
+tauri = { workspace = true }
+tauri-plugin-dialog = { workspace = true }
+tauri-plugin-notification = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+
+# Installed-font list (`fonts.rs`) and SF Symbol rendering (`symbols.rs`). Versions already in
+# Cargo.lock (pulled by tao/wry); only the features these two need.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.5", default-features = false, features = ["std"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "NSFontManager",
+    "NSImage",
+    "NSImageRep",
+    "NSBitmapImageRep",
+    "NSGraphics",
+    "NSGraphicsContext",
+    "NSFontDescriptor",
+    "objc2-core-foundation",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSArray", "NSString", "NSData", "NSDictionary", "NSGeometry", "NSBundle"] }
+# Actionable notifications (`un.rs`). Both versions are already in Cargo.lock.
+objc2-user-notifications = { version = "=0.3.2", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "UNNotification",
+    "UNNotificationAction",
+    "UNNotificationCategory",
+    "UNNotificationContent",
+    "UNNotificationRequest",
+    "UNNotificationResponse",
+    "UNNotificationSound",
+    "UNNotificationTrigger",
+    "UNUserNotificationCenter",
+] }
+block2 = { version = "=0.6.2" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

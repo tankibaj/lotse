@@ -1,0 +1,12 @@
+[package]
+name = "lotse-proto"
+description = "Lotse wire protocol: frames, messages, ids, status types. Frozen after WP0."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

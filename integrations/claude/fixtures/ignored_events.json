@@ -1,0 +1,15 @@
+{
+  "description": "Events the adapter does not act on, and malformed ones, never change the status.",
+  "provenance": "authored from the Claude Code hooks reference, not recorded from a live agent",
+  "steps": [
+    {"row": "session_start.startup_resume_clear", "at": 1000, "payload": {"session_id": "c0ffee", "hook_event_name": "SessionStart", "source": "startup"}, "update": true, "status": "idle"},
+    {"row": "ignored", "at": 2000, "payload": {"session_id": "c0ffee", "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash"}, "update": false, "status": "idle"},
+    {"row": "ignored", "at": 3000, "payload": {"session_id": "c0ffee", "hook_event_name": "PreCompact"}, "update": false, "status": "idle"},
+    {"row": "ignored", "at": 3100, "payload": {"session_id": "c0ffee", "hook_event_name": "PostCompact"}, "update": false, "status": "idle"},
+    {"row": "ignored", "at": 3200, "payload": {"session_id": "c0ffee", "hook_event_name": "TeammateIdle", "teammate_name": "x"}, "update": false, "status": "idle"},
+    {"row": "ignored", "at": 4000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStart"}, "update": false, "status": "idle", "sub_agents": []},
+    {"row": "ignored", "at": 5000, "payload": {"session_id": "c0ffee", "hook_event_name": "SubagentStop", "agent_id": "never-started"}, "update": false, "status": "idle", "sub_agents": []},
+    {"row": "ignored", "at": 6000, "payload": {"session_id": "c0ffee"}, "update": false, "status": "idle"},
+    {"row": "ignored", "at": 7000, "payload": {"session_id": "c0ffee", "hook_event_name": ""}, "update": false, "status": "idle"}
+  ]
+}
