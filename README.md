@@ -3,7 +3,8 @@
 **Which agent needs you?** Waiting. Failed. Done. One sidebar.
 
 <p align="center">
-  <a href="docs/media/lotse.mp4"><img src="docs/media/lotse-poster.jpg" alt="Lotse film: five agents, one waiting. Watch the 30 second film." width="820"></a>
+  <img src="docs/media/lotse.gif" alt="Lotse film: five agents, one waiting." width="820"><br>
+  <a href="docs/media/lotse.mp4">Watch the 30 second film with sound</a>
 </p>
 
 Lotse is a macOS terminal for people who run several coding agents (Claude Code, Codex, OpenCode) across several projects. Each agent runs in a real terminal pane. The sidebar shows every session's status, so you never tab-hunt to find the one that is waiting for a permission, has failed, or has finished.
