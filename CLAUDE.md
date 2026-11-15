@@ -52,3 +52,9 @@ cd app && npm run tauri dev           # Tauri window with the real daemon (alway
 - UI: Tailwind, light and dark both. Status names: `run perm fail done idle unknown`; roll-up perm > fail > run > done > idle.
 - Status integrations are per pane (Claude plugin via `--plugin-dir`, mirrored `CODEX_HOME`, OpenCode plugin). Lotse must not write global agent config; it only offers cleanup of old global hooks.
 - Keep `README.md` shortcuts and status-source sections in step with `app/src/lib/state/shortcuts.ts`, `app/src/shell/Shell.tsx` and `crates/lotse-hook`.
+
+## Product film (`video/`)
+- `video/` is the Remotion source of the 30s product film (1920x1080, 60 fps). Render, then `video/scripts/export.sh` (mp4, 25 fps LinkedIn cut, webm, GIF, poster). `video/out/` is gitignored.
+- `video/.gitignore` must keep `!src/lib/`: a global gitignore ignores `lib/`, so without the exception the film source is incomplete in the repo.
+- The README shows the film as `docs/media/lotse.gif` with the mp4 linked (GitHub does not play a linked mp4 inline).
+- Change the film through the product-film workflow (plan, Naim confirms, build, fresh-context critic). The video stays light-themed; the product flips light and dark.
